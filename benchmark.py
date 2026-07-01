@@ -244,7 +244,7 @@ def bench_1bit(seq_len=128, batch=2, steps=30):
 
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     return run_benchmark(
-        model, ids, labels, opt, "1bit-trainer BitLinear", steps, flops_estimate=flops
+        model, ids, labels, opt, "1bit_trainer BitLinear", steps, flops_estimate=flops
     )
 
 
@@ -270,7 +270,7 @@ def bench_1bit_fp(seq_len=128, batch=2, steps=30):
 
     model.get_loss = lambda x, y=None: forward_loss(x, y or x)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    return run_benchmark(model, ids, labels, opt, "1bit-trainer FP (MLP)", steps)
+    return run_benchmark(model, ids, labels, opt, "1bit_trainer FP (MLP)", steps)
 
 
 def bench_subqsa(seq_len=128, batch=2, steps=20):
@@ -313,7 +313,7 @@ def bench_subqsa(seq_len=128, batch=2, steps=20):
 
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     return run_benchmark(
-        model, ids, labels, opt, "subqsa-trainer SubQSA", steps, flops_estimate=flops
+        model, ids, labels, opt, "subqsa_trainer SubQSA", steps, flops_estimate=flops
     )
 
 
@@ -366,7 +366,7 @@ def bench_ultimate(seq_len=128, batch=2, steps=20):
         ids,
         labels,
         opt,
-        "ultimate-trainer (BitLinear + SubQSA)",
+        "ultimate_trainer (BitLinear + SubQSA)",
         steps,
         flops_estimate=flops,
     )
@@ -422,7 +422,7 @@ def bench_ultimate_fp(seq_len=128, batch=2, steps=20):
         ids,
         labels,
         opt,
-        "ultimate-trainer FP-only (SubQSA)",
+        "ultimate_trainer FP-only (SubQSA)",
         steps,
         flops_estimate=flops,
     )
@@ -449,9 +449,6 @@ def main():
     # Set up import paths
     _root = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, _root)
-    sys.path.insert(0, os.path.join(_root, "1bit-trainer"))
-    sys.path.insert(0, os.path.join(_root, "subqsa-trainer"))
-    sys.path.insert(0, os.path.join(_root, "ultimate-trainer"))
 
     results = []
     label = f"seq_len={args.seq_len}, batch={args.batch}, {args.steps} steps"

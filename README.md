@@ -34,8 +34,8 @@
 - [Training Schedule](#training-schedule)
 - [Repository Deep Dive](#repository-deep-dive)
   - [1bit-trainer/](#1bit-trainer)
-  - [subqsa-trainer/](#subqsa-trainer)
-  - [ultimate-trainer/](#ultimate-trainer)
+  - [subqsa_trainer/](#subqsa_trainer)
+  - [ultimate_trainer/](#ultimate_trainer)
   - [kernels/](#kernels)
   - [configs/](#configs)
   - [subqsa_trainer/ and ultimate_trainer/](#subqsa_trainer-and-ultimate_trainer)
@@ -100,7 +100,7 @@ ultimate-ai-model/
 │   │                             #   checkpointing, eval, LR scheduling
 │   └── comparison.py             #   FP vs BitLinear side-by-side comparison
 │
-├── subqsa-trainer/               # Task 2 — NSA-style SubQSA over FP attention
+├── subqsa_trainer/               # Task 2 — NSA-style SubQSA over FP attention
 │   ├── __init__.py               #   (empty)
 │   ├── config.py                 #   SubQSAConfig, ModelConfig, TrainingConfig
 │   ├── subqsa.py                 #   SubQSA module: 3-branch attention + gating
@@ -108,7 +108,7 @@ ultimate-ai-model/
 │   ├── train.py                  #   SubQSATrainer with staged context extension
 │   └── comparison.py             #   Dense vs SubQSA comparison
 │
-├── ultimate-trainer/             # Task 3 — MERGED: BitLinear + SubQSA (THE deliverable)
+├── ultimate_trainer/             # Task 3 — MERGED: BitLinear + SubQSA (THE deliverable)
 │   ├── __init__.py               #   (empty)
 │   ├── config.py                 #   UltimateModelConfig, UltimateTrainingConfig
 │   ├── bitlinear.py              #   2B4T-spec BitLinear (absmax activations)
@@ -121,10 +121,22 @@ ultimate-ai-model/
 │   ├── __init__.py               #   (empty)
 │   └── ternary_matmul.py         #   Fused Triton ternary matmul (5-10× speedup on GPU)
 │
-├── subqsa_trainer/               # Import wrapper → loads from subqsa-trainer/
-│   └── __init__.py               #   importlib-based module loader
-├── ultimate_trainer/             # Import wrapper → loads from ultimate-trainer/
-│   └── __init__.py               #   importlib-based module loader
+├── subqsa_trainer/               # SubQSA attention trainer (proper Python package)
+│   ├── __init__.py               #   (empty, makes it importable)
+│   ├── config.py                 #   SubQSAConfig, ModelConfig, TrainingConfig
+│   ├── subqsa.py                 #   SubQSA module: 3-branch attention + gating
+│   ├── model.py                  #   SubQSAModel: LLaMA-like transformer with SubQSA
+│   ├── train.py                  #   SubQSATrainer with staged context extension
+│   └── comparison.py             #   Dense vs SubQSA comparison
+│
+├── ultimate_trainer/             # MERGED trainer: BitLinear + SubQSA (proper Python package)
+│   ├── __init__.py               #   (empty, makes it importable)
+│   ├── config.py                 #   UltimateModelConfig, UltimateTrainingConfig
+│   ├── bitlinear.py              #   2B4T-spec BitLinear (absmax activations)
+│   ├── subqsa.py                 #   SubQSA with BitLinear projections + subln
+│   ├── model.py                  #   UltimateModel: full merged transformer
+│   ├── train.py                  #   Training loop (dummy + real data)
+│   └── comparison.py             #   4-way comparison: FP / BitLinear / SubQSA / Ultimate
 │
 ├── configs/
 │   └── longctx_config.py         #   ~900M param config for 1M context stress test
@@ -149,7 +161,7 @@ ultimate-ai-model/
 └── .gitignore                    # .*/ __pycache__/ .codegraph
 ```
 
-**Design principle**: Each trainer tier is **independently runnable** for ablation — "1-bit alone", "SubQSA alone", "1-bit + SubQSA". The `subqsa_trainer/` and `ultimate_trainer/` underscore directories are `importlib`-based package wrappers that load modules from the hyphenated source directories, enabling clean `from subqsa_trainer.model import SubQSAModel` imports.
+**Design principle**: Each trainer tier is **independently runnable** for ablation — "1-bit alone", "SubQSA alone", "1-bit + SubQSA". The `subqsa_trainer/` and `ultimate_trainer/` directories are proper Python packages (underscored for clean imports), enabling `from subqsa_trainer.model import SubQSAModel`.
 
 ---
 
@@ -176,7 +188,7 @@ x  ── subln ── SubQSAAttention(BitLinear Q,K,V,O) ─┐
 
 Two residual streams. The **second subln inside each sub-block** (before the output projection) is the BitNet 2B4T trick that makes deep ternary training stable.
 
-**Per transformer block** (from `ultimate-trainer/model.py`):
+**Per transformer block** (from `ultimate_trainer/model.py`):
 
 ```python
 # Attention sub-block
@@ -218,7 +230,7 @@ p_t^slc = aggregate p_t^cmp into grid         # cheap reshape/sum
 top_blocks_t = topk(p_t^slc, n)              # no extra O(n²) work
 ```
 
-**Compression branch** (from `ultimate-trainer/subqsa.py`):
+**Compression branch** (from `ultimate_trainer/subqsa.py`):
 
 ```python
 class CompressionBranch(nn.Module):
@@ -234,7 +246,7 @@ class CompressionBranch(nn.Module):
 - Block length `l = 32`, stride `d = 16` → ~`T/16` compressed keys per layer
 - The MLP φ uses SiLU activation and compresses `l × D` → `D`
 
-**Selection branch** (from `ultimate-trainer/subqsa.py`):
+**Selection branch** (from `ultimate_trainer/subqsa.py`):
 
 ```python
 class SelectionBranch(nn.Module):
@@ -246,7 +258,7 @@ class SelectionBranch(nn.Module):
 - Selection block size `l' = 64`, top-`n = 16` → 1024 selected tokens per query per layer
 - At 1M tokens, sparsity ≈ `(T/16 + 16·64 + 512) / T ≈ 6.4%` — close to NSA's reported ~6%
 
-**Sliding window** (from `ultimate-trainer/subqsa.py`):
+**Sliding window** (from `ultimate_trainer/subqsa.py`):
 
 ```python
 def sliding_window_attention(q, k, v, win_size):
@@ -260,7 +272,7 @@ def sliding_window_attention(q, k, v, win_size):
 - Window size `w = 512` (fits inside 2B4T's RoPE base comfortably)
 - Absorbs local attention so cmp and slc can specialize in global structure (NSA §6.1 ablation confirms this is necessary)
 
-**Gating** (from `ultimate-trainer/subqsa.py`):
+**Gating** (from `ultimate_trainer/subqsa.py`):
 
 ```python
 self.gate_mlp = nn.Sequential(
@@ -281,7 +293,7 @@ o = g[..., 0:1] * o_cmp + g[..., 1:2] * o_slc + g[..., 2:3] * o_win
 
 ### BitLinear — Ternary Weights
 
-**2B4T-spec BitLinear** (from `ultimate-trainer/bitlinear.py`):
+**2B4T-spec BitLinear** (from `ultimate_trainer/bitlinear.py`):
 
 Weight quantization (absmean → ternary):
 
@@ -322,7 +334,7 @@ class BitLinear(nn.Module):
 ### ReLU² Feed-Forward
 
 ```python
-# From ultimate-trainer/model.py
+# From ultimate_trainer/model.py
 gate = F.relu(self.ffn_gate(x)).pow(2)  # ReLU²
 up = self.ffn_up(x)
 hidden = gate * up                       # element-wise gating
@@ -488,16 +500,16 @@ Optional dependencies:
 python 1bit-trainer/comparison.py
 
 # SubQSA trainer — Dense vs SubQSA comparison
-python subqsa-trainer/comparison.py
+python subqsa_trainer/comparison.py
 
 # Ultimate trainer — 4-way comparison (FP / BitLinear / SubQSA / Ultimate)
-python ultimate-trainer/comparison.py
+python ultimate_trainer/comparison.py
 
 # SubQSA smoke training (2 layers, 128 seq_len, 10 steps)
-python subqsa-trainer/train.py --smoke
+python subqsa_trainer/train.py --smoke
 
 # Ultimate smoke training (2 layers, 128 seq_len, 20 steps)
-python ultimate-trainer/train.py --smoke
+python ultimate_trainer/train.py --smoke
 ```
 
 ### Comparison Scripts
@@ -506,11 +518,11 @@ python ultimate-trainer/train.py --smoke
 - FP (nn.Linear + ReLU) vs BitLinear (ternary weights + 8-bit activations)
 - Reports: parameter count, memory (FP32 vs 1.58-bit effective), forward cosine similarity, loss curves over 50 steps, HF Kernels availability
 
-**`subqsa-trainer/comparison.py`** — Runs dense vs SubQSA transformers:
+**`subqsa_trainer/comparison.py`** — Runs dense vs SubQSA transformers:
 - Same config (2 layers, hidden=256, seq=64)
 - Reports: cosine similarity, mean absolute diff, loss curves over 20 steps
 
-**`ultimate-trainer/comparison.py`** — 4-way comparison:
+**`ultimate_trainer/comparison.py`** — 4-way comparison:
 - FP baseline vs Ultimate (BitLinear + SubQSA)
 - Reports: output statistics, cosine similarity, loss curves
 
@@ -558,7 +570,7 @@ python data_pipeline.py --smoke
 
 ```bash
 # Ultimate trainer with FineWeb dataset
-python ultimate-trainer/train.py --real-data
+python ultimate_trainer/train.py --real-data
 ```
 
 Requires:
@@ -569,7 +581,7 @@ Requires:
 
 ```bash
 # SubQSA trainer with DDP
-torchrun --nproc_per_node=8 subqsa-trainer/train.py --smoke
+torchrun --nproc_per_node=8 subqsa_trainer/train.py --smoke
 
 # 1-bit trainer with DDP
 torchrun --nproc_per_node=8 1bit-trainer/train.py --distributed
@@ -667,7 +679,7 @@ python train_longctx.py --smoke --stage 0 --max-steps 10
 
 ---
 
-### subqsa-trainer/
+### subqsa_trainer/
 
 **`config.py`** — Three dataclasses:
 
@@ -708,7 +720,7 @@ python train_longctx.py --smoke --stage 0 --max-steps 10
 
 ---
 
-### ultimate-trainer/
+### ultimate_trainer/
 
 **`config.py`** — Two dataclasses:
 
@@ -799,18 +811,7 @@ python train_longctx.py --smoke --stage 0 --max-steps 10
 
 ### subqsa_trainer/ and ultimate_trainer/
 
-Package wrappers using `importlib.util` to load modules from the hyphenated source directories:
-
-```python
-# subqsa_trainer/__init__.py
-for _name in ['config', 'subqsa', 'model', 'train']:
-    _spec = importlib.util.spec_from_file_location(
-        'subqsa_trainer.' + _name, os.path.join(_hdir, _name + '.py'))
-    _mod = importlib.util.module_from_spec(_spec)
-    sys.modules['subqsa_trainer.' + _name] = _mod
-```
-
-This enables clean imports like `from subqsa_trainer.model import SubQSAModel` without requiring a proper Python package hierarchy.
+These are now proper Python packages (underscore names enable `import` without the `importlib` hack previously needed for hyphenated directory names). All source files live directly in these directories with empty `__init__.py` files.
 
 ---
 
@@ -888,7 +889,7 @@ The data pipeline supports streaming from HuggingFace FineWeb:
 4. **Triton optional**: Fused ternary matmul kernel for GPU (5–10× speedup) — progressive enhancement
 5. **DDP ready**: All trainers accept `--distributed` / `torchrun` for multi-GPU
 6. **HF Kernels compatible**: `use_kernel_forward_from_hub` decorator for future kernel injection from HuggingFace Hub
-7. **Modular tiers**: 1bit-trainer / subqsa-trainer / ultimate-trainer are independently runnable for ablation studies
+7. **Modular tiers**: 1bit_trainer / subqsa_trainer / ultimate_trainer are independently runnable for ablation studies
 8. **Staged context extension**: 4K → 32K → 128K → 256K → 512K → 1M, with RoPE base scaling at each stage
 9. **Two-stage training**: High LR + weight decay in Stage 1, cooldown LR + no weight decay in Stage 2
 10. **SFT with sum-reduction loss**: Empirically improves convergence for 1-bit models (2B4T recipe)
