@@ -76,6 +76,8 @@ The two methods are **co-friendly, not just co-located**: BitNet 2B4T already us
 
 ## Key Results
 
+> ⚠️ **Benchmark results disclaimer**: All throughput, FLOPs, and speedup figures reported in this document and in [REPORT.md](REPORT.md) were obtained on development machines under variable load. They still need further checking and verification on a dedicated machine without any load for the best and most realistic results. Treat reported numbers as preliminary indications, not production guarantees.
+
 From [REPORT.md](REPORT.md):
 
 - **1-bit trainer**: Both FP and BitLinear reduce loss during training. Ternary weights reduce effective memory to **0.05 MB** vs 0.50 MB FP (on small models).
@@ -997,4 +999,4 @@ Detailed research notes included in the repository:
 
 ## License
 
-See repository for license details.
+MIT
