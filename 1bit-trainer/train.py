@@ -511,9 +511,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        import numpy as np
-    except ImportError:
-        print("numpy is required. Install with: pip install numpy")
-        sys.exit(1)
     main()
