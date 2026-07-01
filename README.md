@@ -2,6 +2,8 @@
 
 > A reference trainer that merges **native 1-bit (ternary) quantization** ([BitNet b1.58](https://arxiv.org/abs/2402.17764)) with **SubQSA / Native Sparse Attention** ([NSA](https://arxiv.org/abs/2502.11089)) — achieving both **~10× memory reduction** and **~56× attention speedup** at 1M context.
 
+> ⚠️ **Warning: This project is still a work in progress.** The codebase serves as a research reference and ablation framework. Not all training stages have been validated at scale. Use with caution and expect ongoing changes.
+
 ---
 
 ## Table of Contents
