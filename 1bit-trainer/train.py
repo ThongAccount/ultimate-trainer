@@ -24,6 +24,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.distributed as dist

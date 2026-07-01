@@ -85,7 +85,7 @@ if HAS_TRITON:
             )
 
             # Ternary matmul: adds for +1, subs for -1, skip for 0
-            acc = tl.dot(x.to(tl.float8e5), w_ternary.to(tl.float8e5), acc)
+            acc = tl.dot(x.to(tl.float16), w_ternary.to(tl.float16), acc)
 
             x_ptrs += BLOCK_K * stride_xk
             w_ptrs += BLOCK_K * stride_wk

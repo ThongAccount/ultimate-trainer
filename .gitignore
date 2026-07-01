@@ -1,4 +1,49 @@
-.*/ 
+# ── Python ────────────────────────────────────────────────────────
 __pycache__/
 */__pycache__/
+*/*/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# ── Virtual environments ─────────────────────────────────────────
+.venv/
+venv/
+env/
+.venv*/
+
+# ── IDE / Editor ──────────────────────────────────────────────────
+.*/
+!.gitignore
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── ML / Data ─────────────────────────────────────────────────────
+checkpoints/
+data/tokenized/*.pt
+data/*.json
+!data/tokenizer.json
+!data/fineweb_samples.jsonl
+
+# ── Project-specific ──────────────────────────────────────────────
 .codegraph
+.kimchi
+.opencode
+.omo
+.claude
+
+# ── Logs / Reports ────────────────────────────────────────────────
+*.log
+ruff_cache/
+.ruff_cache/

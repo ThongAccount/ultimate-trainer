@@ -34,7 +34,6 @@ def absmax_quantize_activation(act, bits=8):
     return act + (act_dequant - act).detach()
 
 
-@use_kernel_forward_from_hub("BitLinear")
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-5):
         super().__init__()
@@ -46,6 +45,7 @@ class RMSNorm(nn.Module):
         return x / (rms + self.eps) * self.weight
 
 
+@use_kernel_forward_from_hub("BitLinear")
 class BitLinear(nn.Module):
     def __init__(
         self,
