@@ -47,18 +47,20 @@ ultimate-ai-model/
 │   ├── model.py
 │   └── train.py
 │
-├── subqsa-trainer/               (Task 2 — to build; NSA-style SubQSA over FP attention)
+├── subqsa_trainer/               (Task 2 — NSA-style SubQSA over FP attention)
 │   ├── config.py
 │   ├── subqsa.py                 (CompressionBranch, SelectionBranch, SubQSAAttention)
 │   ├── model.py                  (full transformer with SubQSA)
-│   └── train.py                  (staged ctx extension: 4K→32K→128K→1M)
+│   ├── train.py                  (staged ctx extension: 4K→32K→128K→1M)
+│   └── comparison.py             (dense vs SubQSA comparison)
 │
-└── ultimate-trainer/             (Task 3 — the merged trainer; THE deliverable)
+└── ultimate_trainer/             (Task 3 — the merged trainer; THE deliverable)
     ├── config.py                 (UltimateModelConfig + UltimateTrainingConfig)
-    ├── bitlinear.py              (extracted from 1bit-trainer/model.py — 2B4T spec)
-    ├── subqsa.py                 (extracted from subqsa-trainer/subqsa.py)
+    ├── bitlinear.py              (2B4T-spec BitLinear extracted from 1bit-trainer)
+    ├── subqsa.py                 (SubQSA with BitLinear projections + subln)
     ├── model.py                  (BitLinear FFN/QKV/O + SubQSAAttention)
-    └── train.py                  (pretrain → SFT → DPO/GRPO + staged ctx extension)
+    ├── train.py                  (pretrain → SFT → DPO/GRPO + staged ctx extension)
+    └── comparison.py             (4-way comparison)
 ```
 
 Each tier is independently runnable so we can ablate "1-bit alone", "SubQSA alone", "1-bit + SubQSA" against each other.
@@ -79,10 +81,10 @@ Implements NSA's three-branch sparse attention ([RESEARCH_SUBQSA.md §3](RESEARC
 
 | File | Contents |
 |---|---|
-| [subqsa-trainer/config.py](subqsa-trainer/config.py) | `ModelConfig` with NSA hyperparams: `cmp_block=32`, `cmp_stride=16`, `slc_block=64`, `slc_topk=16`, `win_size=512`. `TrainingConfig` with staged context extension schedule. |
-| [subqsa-trainer/subqsa.py](subqsa-trainer/subqsa.py) | `CompressionBranch` (MLP φ + blockwise pooling), `SelectionBranch` (importance scoring + top-k block gather), `SubQSAAttention` (3 branches + gate MLP). Phase 1: pure PyTorch + FlashAttention v2 per branch. |
-| [subqsa-trainer/model.py](subqsa-trainer/model.py) | LLaMA-like transformer with `SubQSAAttention` replacing dense attention. RMSNorm, SwiGLU, RoPE — standard FP. |
-| [subqsa-trainer/train.py](subqsa-trainer/train.py) | DDP + sequence parallelism (for >256K). Staged context extension loop. Resume from checkpoint per stage. |
+| [subqsa_trainer/config.py](subqsa_trainer/config.py) | `ModelConfig` with NSA hyperparams: `cmp_block=32`, `cmp_stride=16`, `slc_block=64`, `slc_topk=16`, `win_size=512`. `TrainingConfig` with staged context extension schedule. |
+| [subqsa_trainer/subqsa.py](subqsa_trainer/subqsa.py) | `CompressionBranch` (MLP φ + blockwise pooling), `SelectionBranch` (importance scoring + top-k block gather), `SubQSAAttention` (3 branches + gate MLP). Phase 1: pure PyTorch + FlashAttention v2 per branch. |
+| [subqsa_trainer/model.py](subqsa_trainer/model.py) | LLaMA-like transformer with `SubQSAAttention` replacing dense attention. RMSNorm, SwiGLU, RoPE — standard FP. |
+| [subqsa_trainer/train.py](subqsa_trainer/train.py) | DDP + sequence parallelism (for >256K). Staged context extension loop. Resume from checkpoint per stage. |
 
 **Verification before merging**: SubQSA model at 4K context should match dense attention within 0.1 perplexity on a 1B-param ablation. Match NSA paper's qualitative behavior (cmp gate active globally, slc gate active for retrieval, win gate active locally).
 
@@ -92,11 +94,11 @@ The deliverable.
 
 | File | Contents |
 |---|---|
-| [ultimate-trainer/config.py](ultimate-trainer/config.py) | Union of BitNet 2B4T + NSA configs. `use_bitlinear=True`, `use_subqsa=True`, `ffn_activation="relu2"`, `norm_type="subln"`, all NSA hyperparams. |
-| [ultimate-trainer/bitlinear.py](ultimate-trainer/bitlinear.py) | **2B4T-spec** `BitLinear`: absmean weights, **absmax** per-token 8-bit activations (not absmean as v1), STE backward. Packed-int8 inference path is deferred. |
-| [ultimate-trainer/subqsa.py](ultimate-trainer/subqsa.py) | Same as Task 2 but Q/K/V/O projections use `BitLinear`. Internal MLP φ in compression branch also uses `BitLinear`. |
-| [ultimate-trainer/model.py](ultimate-trainer/model.py) | `UltimateModel`: FP16 embedding → N × `[subln → SubQSAAttention (BitLinear projections) → subln → ReLU² FFN (BitLinear gate/up/down)]` → FP16 LM head (tied). |
-| [ultimate-trainer/train.py](ultimate-trainer/train.py) | Two-stage LR (high → cooldown), two-stage WD (0.1 → 0), staged context extension, SFT with sum-reduction loss, DPO with Liger Kernel. |
+| [ultimate_trainer/config.py](ultimate_trainer/config.py) | Union of BitNet 2B4T + NSA configs. `use_bitlinear=True`, `use_subqsa=True`, `ffn_activation="relu2"`, `norm_type="subln"`, all NSA hyperparams. |
+| [ultimate_trainer/bitlinear.py](ultimate_trainer/bitlinear.py) | **2B4T-spec** `BitLinear`: absmean weights, **absmax** per-token 8-bit activations (not absmean as v1), STE backward. Packed-int8 inference path is deferred. |
+| [ultimate_trainer/subqsa.py](ultimate_trainer/subqsa.py) | Same as Task 2 but Q/K/V/O projections use `BitLinear`. Internal MLP φ in compression branch also uses `BitLinear`. |
+| [ultimate_trainer/model.py](ultimate_trainer/model.py) | `UltimateModel`: FP16 embedding → N × `[subln → SubQSAAttention (BitLinear projections) → subln → ReLU² FFN (BitLinear gate/up/down)]` → FP16 LM head (tied). |
+| [ultimate_trainer/train.py](ultimate_trainer/train.py) | Two-stage LR (high → cooldown), two-stage WD (0.1 → 0), staged context extension, SFT with sum-reduction loss, DPO with Liger Kernel. |
 
 ---
 
@@ -220,10 +222,10 @@ Before declaring the trainer "done":
 
 ## 8. Immediate Next Steps (in order)
 
-1. Scaffold [subqsa-trainer/](subqsa-trainer/) — `config.py`, `subqsa.py`, `model.py`, `train.py`. Use fla-org NSA as the reference for `parallel_nsa` kernel call, but keep a pure-PyTorch fallback for correctness testing.
+1. Scaffold [subqsa_trainer/](subqsa_trainer/) — `config.py`, `subqsa.py`, `model.py`, `train.py`. Use fla-org NSA as the reference for `parallel_nsa` kernel call, but keep a pure-PyTorch fallback for correctness testing.
 2. Smoke test SubQSA at 300M params / 4K ctx / 1B tokens. Validate perplexity ≈ dense attention.
 3. Smoke test SubQSA at 300M params / 32K ctx / 1B tokens. Validate NIAH > 90%.
-4. Scaffold [ultimate-trainer/](ultimate-trainer/) — combine `BitLinear` (2B4T spec) with `SubQSAAttention`.
+4. Scaffold [ultimate_trainer/](ultimate_trainer/) — combine `BitLinear` (2B4T spec) with `SubQSAAttention`.
 5. Smoke test Ultimate at 300M params / 4K ctx / 1B tokens. Validate perplexity within 5% of SubQSA-FP baseline.
 6. Scale to 2B / 1T tokens / staged ctx extension.
 

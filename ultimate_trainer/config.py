@@ -65,7 +65,7 @@ class UltimateTrainingConfig:
     log_interval: int = 10
     eval_interval: int = 100
     save_interval: int = 500
-    output_dir: str = "checkpoints/ultimate-trainer"
+    output_dir: str = "checkpoints/ultimate_trainer"
     run_name: str = "ultimate-run1"
 
     distributed: bool = False

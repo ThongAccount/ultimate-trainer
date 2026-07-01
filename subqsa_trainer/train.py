@@ -161,7 +161,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output_dir", default="checkpoints/subqsa-trainer")
+    parser.add_argument("--output_dir", default="checkpoints/subqsa_trainer")
     parser.add_argument(
         "--smoke", action="store_true", default=True, help="Smoke test with tiny config"
     )

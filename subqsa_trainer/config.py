@@ -81,7 +81,7 @@ class TrainingConfig:
     log_interval: int = 10
     eval_interval: int = 100
     save_interval: int = 500
-    output_dir: str = "checkpoints/subqsa-trainer"
+    output_dir: str = "checkpoints/subqsa_trainer"
     run_name: str = "subqsa-run1"
 
     distributed: bool = False
