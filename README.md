@@ -28,9 +28,6 @@ The staged extension targets **1M context**, but stages beyond 256K require sequ
 ### 6. The Architecture Is an Ablation Rig
 Each trainer tier (`1bit-trainer/`, `subqsa_trainer/`, `ultimate_trainer/`) is independently runnable for ablation. They share patterns but **not code** — fixes must be applied to each tier separately. This is intentional for isolation but means more maintenance.
 
-### 7. Checkpoint Paths Changed After Cleanup
-If you used this repo before the cleanup (commit `47824f8`), checkpoint default paths changed from `checkpoints/subqsa-trainer/` and `checkpoints/ultimate-trainer/` to `checkpoints/subqsa_trainer/` and `checkpoints/ultimate_trainer/`. Old checkpoints won't be found automatically.
-
 ---
 
 ## Table of Contents
