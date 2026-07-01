@@ -1,8 +1,35 @@
 # Ultimate AI Model
 
-> A reference trainer that merges **native 1-bit (ternary) quantization** ([BitNet b1.58](https://arxiv.org/abs/2402.17764)) with **SubQSA / Native Sparse Attention** ([NSA](https://arxiv.org/abs/2502.11089)) — achieving both **~10× memory reduction** and **~56× attention speedup** at 1M context.
+A reference trainer that merges **native 1-bit (ternary) quantization** ([BitNet b1.58](https://arxiv.org/abs/2402.17764)) with **SubQSA / Native Sparse Attention** ([NSA](https://arxiv.org/abs/2502.11089)).
 
-> ⚠️ **Warning: This project is still a work in progress.** The codebase serves as a research reference and ablation framework. Not all training stages have been validated at scale. Use with caution and expect ongoing changes.
+---
+
+## ⚠️ READ THIS FIRST — Things That Could Go Wrong
+
+This project is a **research ablation framework**, not a production library. Please read these before diving in:
+
+### 1. Work in Progress — Not Validated at Scale
+The codebase serves as a research reference. Not all training stages have been validated beyond smoke tests (small models, CPU, few steps). Expect bugs, unfinished edges, and breaking changes.
+
+### 2. Benchmark Results Are Preliminary
+All throughput, FLOPs, and speedup figures were obtained on development machines under variable load. They **still need verification on a dedicated machine** with no background load for realistic numbers. Treat every number as an early indication, not a guarantee.
+
+### 3. Combined Stability (BitLinear + SubQSA) Is Unproven
+No public paper has combined native ternary weights (BitNet b1.58) with NSA-style sparse attention. Two known risks:
+- **Gradient flow through ternary compression MLP** may be noisy — the compression branch MLP φ may need to stay BF16 if ternary produces unstable routing.
+- **Selection under quantized projections** — top-k routing on ternary-projected Q/K may produce volatile selections early in training.
+
+### 4. CPU Is for Smoke Tests Only
+All attention variants run on CPU (pure PyTorch SDPA), but training on CPU is **impractically slow** beyond 2–3 layers and 128 sequence length. Real training needs at least one GPU. The Triton kernels (`kernels/ternary_matmul.py`) are optional GPU accelerators.
+
+### 5. Long-Context Training Requires Serious Hardware
+The staged extension targets **1M context**, but stages beyond 256K require sequence parallelism (Ring Attention or DeepSpeed-Ulysses) and multi-node distributed training. Single-GPU users should stay at 4K–32K context.
+
+### 6. The Architecture Is an Ablation Rig
+Each trainer tier (`1bit-trainer/`, `subqsa_trainer/`, `ultimate_trainer/`) is independently runnable for ablation. They share patterns but **not code** — fixes must be applied to each tier separately. This is intentional for isolation but means more maintenance.
+
+### 7. Checkpoint Paths Changed After Cleanup
+If you used this repo before the cleanup (commit `47824f8`), checkpoint default paths changed from `checkpoints/subqsa-trainer/` and `checkpoints/ultimate-trainer/` to `checkpoints/subqsa_trainer/` and `checkpoints/ultimate_trainer/`. Old checkpoints won't be found automatically.
 
 ---
 
@@ -75,8 +102,6 @@ The two methods are **co-friendly, not just co-located**: BitNet 2B4T already us
 ---
 
 ## Key Results
-
-> ⚠️ **Benchmark results disclaimer**: All throughput, FLOPs, and speedup figures reported in this document and in [REPORT.md](REPORT.md) were obtained on development machines under variable load. They still need further checking and verification on a dedicated machine without any load for the best and most realistic results. Treat reported numbers as preliminary indications, not production guarantees.
 
 From [REPORT.md](REPORT.md):
 
