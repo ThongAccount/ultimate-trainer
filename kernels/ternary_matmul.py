@@ -136,11 +136,15 @@ def ternary_matmul(
 
     grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(N, BLOCK_N))
 
+    # Convert scalar tensor to Python float — Triton cannot use 0-dim tensors
+    # as arithmetic operands inside the kernel
+    gamma_scalar = gamma.item() if isinstance(gamma, torch.Tensor) else gamma
+
     _ternary_matmul_kernel[grid](
         x,
         weight,
         out,
-        gamma,
+        gamma_scalar,
         M,
         N,
         K,
