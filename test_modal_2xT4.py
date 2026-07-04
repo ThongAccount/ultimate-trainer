@@ -20,6 +20,30 @@
 # Run cells sequentially. Each section is self-contained.
 
 # %% [markdown]
+# ## 0. Setup — Clone Repo
+#
+# Run this first if starting from a fresh Modal/Jupyter environment.
+# Clones the repo and moves files to the working directory so all
+# imports resolve correctly.
+
+# %%
+import os, subprocess, sys
+
+if not os.path.exists("benchmark.py"):
+    subprocess.run(
+        ["git", "clone", "https://github.com/ThongAccount/ultimate-trainer.git"],
+        check=True,
+    )
+    subprocess.run(
+        "mv ultimate-trainer/* . && mv ultimate-trainer/.* . 2>/dev/null || true",
+        shell=True,
+    )
+    subprocess.run(["rmdir", "ultimate-trainer"], check=False)
+    print("✅ Repo cloned and files copied to working directory")
+else:
+    print("✅ Repo files already present — skipping clone")
+
+# %% [markdown]
 # ## 1. Environment & Sanity Checks
 
 # %%
