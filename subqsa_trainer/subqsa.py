@@ -1,9 +1,26 @@
 """SubQSA — NSA-style 3-branch sparse attention. Clean, verified shapes."""
 
+import importlib.util
 import math
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+# Load the 1bit-trainer RotaryEmbedding implementation so that both trainer tiers
+# share the exact same RoPE code without duplicating it.
+def _load_1bit_rope():
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "_bit_model", os.path.join(_root, "1bit-trainer", "model.py")
+    )
+    _mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_mod)
+    return _mod.RotaryEmbedding
+
+
+RotaryEmbedding = _load_1bit_rope()
 
 try:
     from kernels import use_kernel_forward_from_hub
@@ -50,29 +67,11 @@ class SubQSA(nn.Module):
         self.v_proj = nn.Linear(hidden_dim, num_kv_heads * head_dim, bias=False)
         self.o_proj = nn.Linear(num_heads * head_dim, hidden_dim, bias=False)
 
-        # RoPE
-        inv_freq = 1.0 / (
-            rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)
-        )
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.register_buffer("pos_buffer", torch.arange(max_seq_len), persistent=False)
+        # RoPE — unified with 1bit-trainer implementation
+        self.rope = RotaryEmbedding(head_dim, max_seq_len=max_seq_len, theta=rope_theta)
 
         # Gate: one scalar per head per position
         self.gate_fc = nn.Linear(hidden_dim, 3 * num_heads, bias=False)
-
-    def _rope(self, x, start_pos, seq_len):
-        # x: (B*H, T, head_dim)
-        inv = self.inv_freq[None, None, :].float()  # (1, 1, D/2)
-        pos = (
-            torch.arange(seq_len, device=x.device).unsqueeze(0).unsqueeze(-1).float()
-        )  # (1, seq, 1)
-        angles = pos * inv  # (1, seq, D/2)
-        cos = angles.cos().to(x.dtype)
-        sin = angles.sin().to(x.dtype)
-        x1 = x[..., : self.head_dim // 2]
-        x2 = x[..., self.head_dim // 2 :]
-        x_rot = torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
-        return x_rot
 
     def _compress(self, k, v, B, H, T):
         l, d = self.cmp_block, self.cmp_stride
@@ -107,13 +106,14 @@ class SubQSA(nn.Module):
         k = self.k_proj(x).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # RoPE
-        q = self._rope(
-            q.reshape(B * self.num_heads, T, self.head_dim), start_pos, T
-        ).reshape(B, self.num_heads, T, self.head_dim)
-        k_r = self._rope(
-            k.reshape(B * self.num_kv_heads, T, self.head_dim), start_pos, T
-        ).reshape(B, self.num_kv_heads, T, self.head_dim)
+        # RoPE — unified 1bit-trainer implementation
+        position_ids = (
+            torch.arange(start_pos, start_pos + T, device=x.device)
+            .unsqueeze(0)
+            .expand(B, -1)
+        )
+        q = self.rope(q, position_ids)
+        k_r = self.rope(k, position_ids)
 
         # GQA expand
         if self.num_heads != self.num_kv_heads:

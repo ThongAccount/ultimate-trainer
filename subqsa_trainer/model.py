@@ -79,9 +79,11 @@ class SubQSAModel(nn.Module):
     def get_loss(self, input_ids, labels=None):
         logits = self(input_ids)
         if labels is None:
-            labels = input_ids
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids[..., 1:].contiguous()
+        else:
+            shift_logits = logits.contiguous()
+            shift_labels = labels.contiguous()
         return F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),

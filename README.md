@@ -103,10 +103,11 @@ The two methods are **co-friendly, not just co-located**: BitNet 2B4T already us
 From [REPORT.md](REPORT.md):
 
 - **1-bit trainer**: Both FP and BitLinear reduce loss during training. Ternary weights reduce effective memory to **0.05 MB** vs 0.50 MB FP (on small models).
-- **SubQSA trainer**: 3-branch NSA design passes syntax checks and forward/backward. Compression (block mean pooling), selection (top-k gather), sliding window all verified.
-- **Ultimate trainer**: Merges BitNet b1.58 BitLinear with NSA SubQSA. Full SwiGLU FFN, RMSNorm, RoPE, learned gating. All modules import correctly, forward pass runs on CPU, training step reduces loss.
-- **HF Kernels compatibility**: `use_kernel_forward_from_hub` decorator wraps cleanly with try/except fallback. Registered as `BitLinear` and `SubQSAAttention`.
-- **No GPU required**: CPU-safe pure PyTorch SDPA for all attention variants.
+- **SubQSA trainer**: 3-branch NSA design is implemented and unit-tested. `SelectionBranch` returns exactly `topk` contiguous blocks, and `sliding_window_attention` only attends to the last `win_size` tokens. The dense-vs-SubQSA comparison runs, but **cosine similarity is currently 0.012 vs the target ≥ 0.7** — the mean-pool compression + top-k-by-magnitude selection does not yet match dense attention quality.
+- **Ultimate trainer**: Merges BitNet b1.58 BitLinear with NSA SubQSA. Full ReLU² FFN, RMSNorm, RoPE, learned gating. All modules import correctly and forward/backward run on CPU. The FP-vs-Ultimate comparison runs, but **cosine similarity is ~0 and Ultimate loss is ~46× the FP loss** — the merged architecture is trainable but has not yet reached alignment with the FP baseline.
+- **HF Kernels compatibility**: `use_kernel_forward_from_hub` decorator wraps cleanly with try/except fallback. Registered as `BitLinear`.
+- **No GPU required**: CPU-safe pure PyTorch eager `F.linear` fallback for BitLinear; fused Triton path is used only when CUDA + Triton are available.
+- **Long-context pipeline**: `train_longctx.py --smoke --stage 0 --max-steps 10` runs to completion, supports AMP dtype/autocast, and can save/resume checkpoints.
 
 ---
 
@@ -520,10 +521,13 @@ Optional dependencies:
 ### Smoke Tests (CPU, no GPU required)
 
 ```bash
+# Unit tests
+python -m pytest tests/ -v
+
 # 1-bit trainer — FP vs BitLinear comparison
 python 1bit-trainer/comparison.py
 
-# SubQSA trainer — Dense vs SubQSA comparison
+# SubQSA trainer — Dense vs SubQSA comparison (currently reports CHECK)
 python subqsa_trainer/comparison.py
 
 # Ultimate trainer — 4-way comparison (FP / BitLinear / SubQSA / Ultimate)
@@ -534,6 +538,13 @@ python subqsa_trainer/train.py --smoke
 
 # Ultimate smoke training (2 layers, 128 seq_len, 20 steps)
 python ultimate_trainer/train.py --smoke
+
+# Long-context staged training smoke test
+python train_longctx.py --smoke --stage 0 --max-steps 10
+
+# Checkpoint save/resume smoke test
+python train_longctx.py --smoke --stage 0 --max-steps 5
+python train_longctx.py --smoke --stage 0 --max-steps 10 --resume checkpoints/1B-stress-test/stage_0.pt
 ```
 
 ### Comparison Scripts
@@ -623,7 +634,7 @@ torchrun --nproc_per_node=8 train_longctx.py --stage 0
 torchrun --nproc_per_node=8 train_longctx.py --stage 1
 
 # Stage 3 — extend @ 256K (requires sequence parallelism)
-torchrun --nproc_per_node=8 train_longctx.py --stage 3 --resume checkpoints/1B-stress-test/stage_2/
+torchrun --nproc_per_node=8 train_longctx.py --stage 3 --resume checkpoints/1B-stress-test/stage_2.pt
 
 # Single-GPU smoke test
 python train_longctx.py --smoke --stage 0 --max-steps 10
@@ -631,8 +642,8 @@ python train_longctx.py --smoke --stage 0 --max-steps 10
 
 **CLI options**:
 - `--stage N` — Context extension stage index (0–5)
-- `--resume PATH` — Checkpoint directory to resume from
-- `--smoke` — Use tiny 300M config (6 layers, hidden=768, seq=4K)
+- `--resume PATH` — Checkpoint file path to resume from
+- `--smoke` — Use tiny offline config (2 layers, hidden=128, seq=128) for quick verification
 - `--max-steps N` — Override max training steps
 
 **Stage schedule** (from `configs/longctx_config.py`):
@@ -937,12 +948,15 @@ The data pipeline supports streaming from HuggingFace FineWeb:
 ## Verification
 
 All modules pass:
-- ✅ Syntax checks on all 26 `.py` files
-- ✅ Model forward pass runs on CPU (no GPU required)
-- ✅ Training step reduces loss for all variants (1bit, subqsa, ultimate)
+- ✅ Syntax checks on all `.py` files
+- ✅ Unit tests: `python -m pytest tests/ -v` → 11 passed, 1 skipped (CUDA-only parity test skipped on CPU)
+- ✅ Model forward/backward runs on CPU (no GPU required)
+- ✅ Training step runs for all variants (1bit, subqsa, ultimate, longctx)
 - ✅ FP vs BitLinear comparison: both reduce loss
-- ✅ Dense vs SubQSA comparison: cosine similarity > 0.5, diff < 5.0
-- ✅ 4-way comparison (FP / BitLinear / SubQSA / Ultimate): all pass
+- ✅ Dense vs SubQSA comparison: **runs, but cosine is ~0.012 (target ≥ 0.7)** — a known quality gap
+- ✅ Ultimate comparison: **runs, but FP vs Ultimate cosine is ~0 and Ultimate loss is ~46× FP loss** — a known quality gap
+- ✅ Long-context smoke test: `python train_longctx.py --smoke --stage 0 --max-steps 10` exits 0
+- ✅ Checkpoint save/resume: save at step 5, resume to step 10 works
 - ✅ HF Kernels decorator: available with try/except fallback
 - ✅ All modules import correctly via underscore-wrapper packages
 

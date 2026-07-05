@@ -1,6 +1,8 @@
 """SubQSA for Ultimate Trainer with BitLinear projections + subln."""
 
+import importlib.util
 import math
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,6 +16,21 @@ except ImportError:
             return cls
 
         return _decorator
+
+
+# Load the 1bit-trainer RotaryEmbedding implementation so that both trainer tiers
+# share the exact same RoPE code without duplicating it.
+def _load_1bit_rope():
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location(
+        "_bit_model", os.path.join(_root, "1bit-trainer", "model.py")
+    )
+    _mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(_mod)
+    return _mod.RotaryEmbedding
+
+
+RotaryEmbedding = _load_1bit_rope()
 
 
 from ultimate_trainer.bitlinear import BitLinear, RMSNorm
@@ -68,12 +85,8 @@ class CompressionBranch(nn.Module):
         n_blocks = (T - l) // d
         if n_blocks <= 0:
             return k[:, :, :1], v[:, :, :1]
-        blocks_k = torch.stack(
-            [k[:, :, i * d : i * d + l] for i in range(n_blocks)], dim=2
-        ).reshape(B, H, n_blocks, l * D)
-        blocks_v = torch.stack(
-            [v[:, :, i * d : i * d + l] for i in range(n_blocks)], dim=2
-        ).reshape(B, H, n_blocks, l * D)
+        blocks_k = k.unfold(2, l, d)[:, :, :n_blocks].transpose(-1, -2).reshape(B, H, n_blocks, l * D)
+        blocks_v = v.unfold(2, l, d)[:, :, :n_blocks].transpose(-1, -2).reshape(B, H, n_blocks, l * D)
         return self.phi_k(blocks_k), self.phi_v(blocks_v)
 
 
@@ -89,7 +102,7 @@ class SelectionBranch(nn.Module):
         B, H, T, D = q.shape
         lp, n = self.l_prime, self.n
         n_sel = max(1, T // lp)
-        if p_cmp.shape[-1] != n_sel and p_cmp.shape[-1] > 1:
+        if p_cmp.shape[-1] != n_sel:
             p_cmp = (
                 F.interpolate(
                     p_cmp.reshape(-1, 1, p_cmp.shape[-1]).float(),
@@ -100,26 +113,23 @@ class SelectionBranch(nn.Module):
                 .to(q.dtype)
             )
         topk_actual = min(n, n_sel)
-        _, top_idx = p_cmp.topk(topk_actual, dim=-1)
-        best_idx = top_idx[..., 0]
-        k_sel = torch.stack(
-            [
-                k[b, h, best_idx[b, h, t] * lp : best_idx[b, h, t] * lp + lp]
-                for b in range(B)
-                for h in range(H)
-                for t in range(T)
-            ],
-            dim=0,
-        ).view(B, H, T, lp, D)
-        v_sel = torch.stack(
-            [
-                v[b, h, best_idx[b, h, t] * lp : best_idx[b, h, t] * lp + lp]
-                for b in range(B)
-                for h in range(H)
-                for t in range(T)
-            ],
-            dim=0,
-        ).view(B, H, T, lp, D)
+        _, top_idx = p_cmp.topk(topk_actual, dim=-1)  # (B, H, T, topk_actual)
+
+        # Gather full l_prime-token blocks from the first n_sel * l_prime positions.
+        k_sliced = k[:, :, : n_sel * lp, :]
+        v_sliced = v[:, :, : n_sel * lp, :]
+        k_blocks = k_sliced.reshape(B, H, n_sel, lp, D)
+        v_blocks = v_sliced.reshape(B, H, n_sel, lp, D)
+
+        b_idx = torch.arange(B, device=q.device).view(B, 1, 1, 1)
+        h_idx = torch.arange(H, device=q.device).view(1, H, 1, 1)
+        k_sel = k_blocks[b_idx, h_idx, top_idx]  # (B, H, T, topk_actual, lp, D)
+        v_sel = v_blocks[b_idx, h_idx, top_idx]
+
+        # Concatenate selected blocks along the key/value length dimension.
+        k_sel = k_sel.reshape(B, H, T, topk_actual * lp, D)
+        v_sel = v_sel.reshape(B, H, T, topk_actual * lp, D)
+
         scores = torch.einsum("bhtd,bhtld->bhtl", q.float(), k_sel.float()) / math.sqrt(
             D
         )
@@ -130,13 +140,36 @@ class SelectionBranch(nn.Module):
 
 
 def sliding_window_attention(q, k, v, win_size):
-    """Causal sliding window attention with triangular mask."""
+    """Causal sliding-window attention over the last ``win_size`` tokens.
+
+    Slices ``k`` and ``v`` to their trailing window, then applies
+    ``F.scaled_dot_product_attention`` with a ``(T, w)`` additive mask so
+    query position ``t`` only attends to key positions
+    ``[max(0, t - w + 1), ..., t]`` within the sliced window.
+    Positions with no valid causal keys inside the window are zeroed out.
+    """
     B, H, T, D = q.shape
     w = min(win_size, T)
-    mask = torch.tril(torch.ones(T, T, device=q.device)).to(q.dtype)
-    mask = torch.triu(mask, diagonal=-(w - 1))
-    attn_mask = (1.0 - mask[None, None, :, :]) * -1e9
-    return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    k_win = k[..., -w:, :]
+    v_win = v[..., -w:, :]
+
+    # Build a (T, w) additive causal mask. Key index j in the sliced window
+    # corresponds to original sequence position T - w + j.
+    t_idx = torch.arange(T, device=q.device).unsqueeze(1)
+    j_idx = torch.arange(w, device=q.device).unsqueeze(0)
+    valid = (T - w + j_idx) <= t_idx  # (T, w)
+    attn_mask = torch.where(
+        valid,
+        torch.zeros((), device=q.device, dtype=q.dtype),
+        torch.full((), -1e9, device=q.device, dtype=q.dtype),
+    )
+
+    out = F.scaled_dot_product_attention(q, k_win, v_win, attn_mask=attn_mask)
+
+    # Zero queries that have no causal keys inside the window.
+    has_valid = valid.any(dim=-1).view(1, 1, T, 1)
+    out = torch.where(has_valid, out, torch.zeros_like(out))
+    return out
 
 
 @use_kernel_forward_from_hub("SubQSAAttention")
@@ -180,11 +213,8 @@ class SubQSAAttention(nn.Module):
         # 2B4T: subln before output projection (applied to gated 3-branch output)
         self.out_norm = RMSNorm(num_heads * head_dim)
 
-        # RoPE
-        inv_freq = 1.0 / (
-            rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim)
-        )
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # RoPE — unified with 1bit-trainer implementation
+        self.rope = RotaryEmbedding(head_dim, max_seq_len=max_seq_len, theta=rope_theta)
 
         self.compression = CompressionBranch(head_dim, cmp_block, cmp_stride)
         self.selection = SelectionBranch(slc_block, slc_topk)
@@ -197,17 +227,6 @@ class SubQSAAttention(nn.Module):
             nn.Linear(64, 3 * num_heads, bias=False),
         )
 
-    def _apply_rope(self, x, position_ids):
-        B, H, T, D = x.shape
-        inv_freq = self.inv_freq[None, :, None, None]
-        pos = position_ids[:, None, :, None].float()
-        angles = pos * inv_freq
-        angles = angles.permute(0, 2, 1, 3)
-        cos = angles.cos().to(dtype=x.dtype).squeeze(-1).unsqueeze(1)  # (B, 1, T, D/2)
-        sin = angles.sin().to(dtype=x.dtype).squeeze(-1).unsqueeze(1)  # (B, 1, T, D/2)
-        x1, x2 = x[..., : D // 2], x[..., D // 2 :]
-        return torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
-
     def forward(self, x, position_ids, attention_mask=None):
         B, T, _ = x.shape
 
@@ -216,30 +235,31 @@ class SubQSAAttention(nn.Module):
         k = self.k_proj(x).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # GQA: expand KV heads
-        if self.num_heads != self.num_kv_heads:
-            n_reps = self.num_heads // self.num_kv_heads
-            k = (
-                k[:, :, None]
-                .expand(-1, -1, n_reps, -1, -1)
-                .reshape(B, self.num_heads, T, self.head_dim)
-            )
-            v = (
-                v[:, :, None]
-                .expand(-1, -1, n_reps, -1, -1)
-                .reshape(B, self.num_heads, T, self.head_dim)
-            )
-
-        # RoPE (BF16 precision)
-        q = self._apply_rope(q, position_ids)
-        k = self._apply_rope(k, position_ids)
+        # RoPE — unified 1bit-trainer implementation
+        q = self.rope(q, position_ids)
+        k = self.rope(k, position_ids)
 
         # ── Compression branch ──
+        # Compress at num_kv_heads resolution (GQA-aware); expand compressed KV
+        # only when attending with query heads.
         k_cmp, v_cmp = self.compression(k, v)
+
+        def repeat_kv(t, n_rep):
+            B_, H_, T_, D_ = t.shape
+            return (
+                t[:, :, None]
+                .expand(-1, -1, n_rep, -1, -1)
+                .reshape(B_, H_ * n_rep, T_, D_)
+            )
+
+        n_reps = self.num_heads // self.num_kv_heads if self.num_kv_heads else 1
         if k_cmp.shape[2] > 0:
+            # Expand compressed KV to num_heads for compression attention.
+            k_cmp_h = repeat_kv(k_cmp, n_reps) if n_reps > 1 else k_cmp
+            v_cmp_h = repeat_kv(v_cmp, n_reps) if n_reps > 1 else v_cmp
             # Compression attention scores reused for selection routing
             scores_cmp = torch.einsum(
-                "bhtd,bhld->bhtl", q.float(), k_cmp.float()
+                "bhtd,bhld->bhtl", q.float(), k_cmp_h.float()
             ) / math.sqrt(self.head_dim)
             p_cmp = F.softmax(scores_cmp, dim=-1)
         else:
@@ -250,15 +270,22 @@ class SubQSAAttention(nn.Module):
 
         # ── Triton fused path (fla-org parallel_nsa, ~10× faster on GPU) ──
         if _HAS_NSA_KERNEL and q.is_cuda:
-            o = _nsa_fused_forward(self, q, k, v, k_cmp, v_cmp, p_cmp, n_cmp, x, B, T)
+            # The fused kernel currently expects expanded k/v; keep that path
+            # unchanged by expanding before the kernel call.
+            k_h = repeat_kv(k, n_reps) if n_reps > 1 else k
+            v_h = repeat_kv(v, n_reps) if n_reps > 1 else v
+            o = _nsa_fused_forward(self, q, k_h, v_h, k_cmp_h, v_cmp_h, p_cmp, n_cmp, x, B, T)
         else:
             # Pure PyTorch 3-branch path (CPU-safe fallback)
             if k_cmp.shape[2] > 0:
                 o_cmp = F.scaled_dot_product_attention(
-                    q, k_cmp, v_cmp, dropout_p=self.dropout if self.training else 0.0
+                    q, k_cmp_h, v_cmp_h, dropout_p=self.dropout if self.training else 0.0
                 )
-            o_slc, _ = self.selection(q, k, v, p_cmp, n_cmp)
-            o_win = sliding_window_attention(q, k, v, self.win_size)
+            # Expand full KV to num_heads for selection and sliding-window branches.
+            k_h = repeat_kv(k, n_reps) if n_reps > 1 else k
+            v_h = repeat_kv(v, n_reps) if n_reps > 1 else v
+            o_slc, _ = self.selection(q, k_h, v_h, p_cmp, n_cmp)
+            o_win = sliding_window_attention(q, k_h, v_h, self.win_size)
 
             g = self.gate_mlp(x).view(B, T, 3, self.num_heads).permute(0, 3, 1, 2)
             g = g.float().sigmoid()

@@ -73,32 +73,34 @@ Each tier is independently runnable so we can ablate "1-bit alone", "SubQSA alon
 
 [1bit-trainer/config.py](1bit-trainer/config.py), [1bit-trainer/model.py](1bit-trainer/model.py), [1bit-trainer/train.py](1bit-trainer/train.py) are complete and runnable. They implement the **2024 v1 b1.58 paper** (absmean activations, SwiGLU, RMSNorm).
 
-**Limitation**: this is *not* the 2B4T spec. The Ultimate Trainer will use the 2B4T spec ([RESEARCH_1BIT.md §2](RESEARCH_1BIT.md)). We will not modify `1bit-trainer/` — it stays as the v1 reference. The Ultimate Trainer gets its own `bitlinear.py`.
+`1bit-trainer/` is intentionally left untouched as the v1 reference. `ultimate_trainer/bitlinear.py` implements the 2B4T spec independently, and both `subqsa_trainer/subqsa.py` and `ultimate_trainer/subqsa.py` load `RotaryEmbedding` from `1bit-trainer/model.py` via `importlib` to keep the reference intact while sharing RoPE.
 
-### ⏳ Task 2: SubQSA Trainer — TO BUILD
+### ✅ Task 2: SubQSA Trainer — IMPLEMENTED
 
-Implements NSA's three-branch sparse attention ([RESEARCH_SUBQSA.md §3](RESEARCH_SUBQSA.md)) with FP weights. This isolates the attention change so we can verify it on its own before merging with ternary weights.
+NSA's three-branch sparse attention ([RESEARCH_SUBQSA.md §3](RESEARCH_SUBQSA.md)) is implemented with FP weights. Unit tests verify that `SelectionBranch` returns exactly `topk` contiguous blocks and `sliding_window_attention` only attends to the last `win_size` tokens.
 
 | File | Contents |
 |---|---|
 | [subqsa_trainer/config.py](subqsa_trainer/config.py) | `ModelConfig` with NSA hyperparams: `cmp_block=32`, `cmp_stride=16`, `slc_block=64`, `slc_topk=16`, `win_size=512`. `TrainingConfig` with staged context extension schedule. |
-| [subqsa_trainer/subqsa.py](subqsa_trainer/subqsa.py) | `CompressionBranch` (MLP φ + blockwise pooling), `SelectionBranch` (importance scoring + top-k block gather), `SubQSAAttention` (3 branches + gate MLP). Phase 1: pure PyTorch + FlashAttention v2 per branch. |
+| [subqsa_trainer/subqsa.py](subqsa_trainer/subqsa.py) | `CompressionBranch` (MLP φ + blockwise pooling), `SelectionBranch` (importance scoring + top-k block gather), `SubQSAAttention` (3 branches + gate MLP). Pure PyTorch fallback. |
 | [subqsa_trainer/model.py](subqsa_trainer/model.py) | LLaMA-like transformer with `SubQSAAttention` replacing dense attention. RMSNorm, SwiGLU, RoPE — standard FP. |
-| [subqsa_trainer/train.py](subqsa_trainer/train.py) | DDP + sequence parallelism (for >256K). Staged context extension loop. Resume from checkpoint per stage. |
+| [subqsa_trainer/train.py](subqsa_trainer/train.py) | DDP-capable training loop with staged context extension. |
 
-**Verification before merging**: SubQSA model at 4K context should match dense attention within 0.1 perplexity on a 1B-param ablation. Match NSA paper's qualitative behavior (cmp gate active globally, slc gate active for retrieval, win gate active locally).
+**Verification status**: The dense-vs-SubQSA comparison script runs, but **cosine similarity is ~0.012 vs the target ≥ 0.7**. The current mean-pool compression + top-k-by-magnitude selection does not yet match dense attention quality; this is a research gap, not a runtime bug.
 
-### ⏳ Task 3: Ultimate Trainer (1-bit + SubQSA) — TO BUILD
+### ✅ Task 3: Ultimate Trainer (1-bit + SubQSA) — IMPLEMENTED
 
-The deliverable.
+The merged deliverable exists and runs end-to-end on CPU.
 
 | File | Contents |
 |---|---|
-| [ultimate_trainer/config.py](ultimate_trainer/config.py) | Union of BitNet 2B4T + NSA configs. `use_bitlinear=True`, `use_subqsa=True`, `ffn_activation="relu2"`, `norm_type="subln"`, all NSA hyperparams. |
-| [ultimate_trainer/bitlinear.py](ultimate_trainer/bitlinear.py) | **2B4T-spec** `BitLinear`: absmean weights, **absmax** per-token 8-bit activations (not absmean as v1), STE backward. Packed-int8 inference path is deferred. |
-| [ultimate_trainer/subqsa.py](ultimate_trainer/subqsa.py) | Same as Task 2 but Q/K/V/O projections use `BitLinear`. Internal MLP φ in compression branch also uses `BitLinear`. |
-| [ultimate_trainer/model.py](ultimate_trainer/model.py) | `UltimateModel`: FP16 embedding → N × `[subln → SubQSAAttention (BitLinear projections) → subln → ReLU² FFN (BitLinear gate/up/down)]` → FP16 LM head (tied). |
-| [ultimate_trainer/train.py](ultimate_trainer/train.py) | Two-stage LR (high → cooldown), two-stage WD (0.1 → 0), staged context extension, SFT with sum-reduction loss, DPO with Liger Kernel. |
+| [ultimate_trainer/config.py](ultimate_trainer/config.py) | Union of BitNet 2B4T + NSA configs. `use_bitlinear=True`, `use_subqsa=True`, all NSA hyperparams. |
+| [ultimate_trainer/bitlinear.py](ultimate_trainer/bitlinear.py) | **2B4T-spec** `BitLinear`: absmean weights, **absmax** per-token 8-bit activations, STE backward. Safe fused-Triton dispatch (only when CUDA + kernel available); eager CPU fallback otherwise. Eval-mode ternary weight refresh added. |
+| [ultimate_trainer/subqsa.py](ultimate_trainer/subqsa.py) | SubQSA with BitLinear projections + subln. GQA-aware compression/expansion and unified RoPE. |
+| [ultimate_trainer/model.py](ultimate_trainer/model.py) | `UltimateModel`: FP16 embedding → N × `[subln → SubQSAAttention (BitLinear projections) → subln → ReLU² FFN (BitLinear gate/up/down)]` → BitLinear LM head (tied). |
+| [ultimate_trainer/train.py](ultimate_trainer/train.py) | Training loop with dummy/real data and smoke mode. |
+
+**Verification status**: The FP-vs-Ultimate comparison runs, but **cosine similarity is ~0 and Ultimate loss is ~46× the FP loss**. The architecture is trainable but has not yet aligned with the FP baseline.
 
 ---
 
@@ -220,16 +222,30 @@ Before declaring the trainer "done":
 
 ---
 
-## 8. Immediate Next Steps (in order)
+## 8. Completed Work (Summary)
 
-1. Scaffold [subqsa_trainer/](subqsa_trainer/) — `config.py`, `subqsa.py`, `model.py`, `train.py`. Use fla-org NSA as the reference for `parallel_nsa` kernel call, but keep a pure-PyTorch fallback for correctness testing.
-2. Smoke test SubQSA at 300M params / 4K ctx / 1B tokens. Validate perplexity ≈ dense attention.
-3. Smoke test SubQSA at 300M params / 32K ctx / 1B tokens. Validate NIAH > 90%.
-4. Scaffold [ultimate_trainer/](ultimate_trainer/) — combine `BitLinear` (2B4T spec) with `SubQSAAttention`.
-5. Smoke test Ultimate at 300M params / 4K ctx / 1B tokens. Validate perplexity within 5% of SubQSA-FP baseline.
-6. Scale to 2B / 1T tokens / staged ctx extension.
+- **SubQSA correctness** — 3-branch design, selection top-k blocks, causal sliding window, GQA-aware compression, unified RoPE.
+- **BitLinear parity** — Safe fused/eager dispatch; eval-mode refresh; parity tests.
+- **Long-context pipeline** — `train_longctx.py` runs, supports AMP dtype/autocast, saves/resumes checkpoints.
+- **Tests & reporting** — `tests/test_subqsa_selection.py`, `tests/test_subqsa_window.py`, `tests/test_bitlinear_parity.py`; `REPORT.md` and `README.md` updated to distinguish implemented code from experimental quality gaps.
 
-Steps 1–5 are the critical path. Step 6 is a compute commitment, not a research commitment.
+## 9. Remaining Open Work
+
+The following are research/model-quality gaps, not missing plumbing:
+
+1. **SubQSA selection quality** — Replace mean-pool compression / magnitude-based top-k with a learned or attention-based importance score so dense-vs-SubQSA cosine reaches ≥ 0.7.
+2. **Ultimate model alignment** — Debug why FP vs Ultimate cosine is near zero and Ultimate loss is ~46× FP loss. Suspects: (a) interaction between ternary weights and SubQSA routing, (b) initialization scale, (c) gate normalization under INT8 activations.
+3. **Long-context scaling** — Validate multi-stage extension (4K → 1M) on GPU; current smoke test only exercises the 128-token offline path.
+4. **SFT / DPO** — Not implemented; deferred until base pretraining quality is achieved.
+5. **GPU kernel maturity** — Fused Triton ternary matmul is present but only exercised on CUDA runners.
+
+## 10. Immediate Next Steps (in order)
+
+1. Diagnose and fix SubQSA selection/importance scoring so dense-vs-SubQSA cosine ≥ 0.7.
+2. Re-run Ultimate comparison; target FP-vs-Ultimate cosine ≥ 0.5 and Ultimate loss within 2× of FP loss.
+3. Validate `train_longctx.py` on a real GPU at 4K context with FineWeb data.
+4. Add NIAH / RULER needle tests once model quality targets are met.
+5. Scale to 2B / 1T tokens / staged context extension.
 
 ---
 

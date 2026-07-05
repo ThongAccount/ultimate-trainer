@@ -37,10 +37,30 @@ from data_pipeline import BPETokenizer
 # ── Long-context dataset: concatenate FineWeb docs ────────────────────
 
 
+class _SmokeLongCtxDataset(IterableDataset):
+    """Tiny offline dataset for --smoke runs (no network)."""
+
+    def __init__(self, seq_len: int, vocab_size: int, num_samples: int = 100):
+        self.seq_len = seq_len
+        self.vocab_size = vocab_size
+        self.num_samples = num_samples
+
+    def __iter__(self):
+        rng = torch.Generator().manual_seed(42)
+        for _ in range(self.num_samples):
+            ids = torch.randint(
+                0, self.vocab_size, (self.seq_len + 1,), generator=rng
+            ).long()
+            yield {
+                "input_ids": ids[: self.seq_len],
+                "labels": ids[1 : self.seq_len + 1],
+            }
+
+
 class FineWebLongCtxDataset(IterableDataset):
     """Streaming FineWeb dataset that concatenates documents to fill context.
 
-    Combines multiple FineWeb documents with <|endoftext|> separators
+    Combines multiple FineWeb documents with an EOS-style separator
     until each training sample reaches exactly `seq_len` tokens.
     """
 
@@ -55,8 +75,21 @@ class FineWebLongCtxDataset(IterableDataset):
         self.max_docs = max_docs
         self.tokenizer = BPETokenizer()
         self.tokenizer.load(tokenizer_path)
-        self.eot_id = self.tokenizer.tokenizer.token_to_id("<|endoftext|>") or 0
+        # This tokenizer is trained with <|eos|> / <|pad|>; avoid assuming
+        # a GPT-2-style <|endoftext|> token that may not exist.
+        self.eot_id = self._resolve_special_token(
+            ["<|endoftext|>", "<|eos|>", "<|pad|>"]
+        )
+        self.pad_id = self._resolve_special_token(["<|pad|>", "<|eos|>"])
         self.dataset_name = dataset_name
+
+    def _resolve_special_token(self, candidates: list[str]) -> int:
+        """Return the ID of the first special token that exists in the tokenizer."""
+        for tok in candidates:
+            tid = self.tokenizer.tokenizer.token_to_id(tok)
+            if tid is not None:
+                return tid
+        return 0
 
     def __iter__(self) -> Iterator[dict]:
         from datasets import load_dataset
@@ -92,7 +125,7 @@ class FineWebLongCtxDataset(IterableDataset):
         # Last partial sequence (pad or discard)
         if len(buffer) > self.seq_len // 2:
             pad_len = self.seq_len + 1 - len(buffer)
-            buffer.extend([self.eot_id] * pad_len)
+            buffer.extend([self.pad_id] * pad_len)
             yield {
                 "input_ids": torch.tensor(buffer[: self.seq_len], dtype=torch.long),
                 "labels": torch.tensor(buffer[1 : self.seq_len + 1], dtype=torch.long),
@@ -125,7 +158,14 @@ def get_schedule(optimizer, tc: TrainingConfig1M):
 
 
 class LongCtxTrainer:
-    def __init__(self, mc: ModelConfig1B, tc: TrainingConfig1M, stage: int = 0):
+    def __init__(
+        self,
+        mc: ModelConfig1B,
+        tc: TrainingConfig1M,
+        stage: int = 0,
+        dataset: Optional[IterableDataset] = None,
+        resume: Optional[str] = None,
+    ):
         self.mc = mc
         self.tc = tc
         self.stage = stage
@@ -150,6 +190,14 @@ class LongCtxTrainer:
         from ultimate_trainer.model import UltimateModel
 
         self.model = UltimateModel(mc).to(self.device)
+
+        # Cast to configured dtype; keep embeddings FP32 when requested
+        self.amp_dtype = tc.get_torch_dtype()
+        if self.amp_dtype != torch.float32:
+            if mc.full_precision_embeddings:
+                self.model.embed.float()
+            else:
+                self.model = self.model.to(self.amp_dtype)
         logger.info(f"Model built: {count_params(mc)['total_M']:.0f}M params")
         logger.info(
             f"Stage {stage}: seq_len={seq_len}, rope_base={rope_base}, steps={tc.max_steps}"
@@ -170,13 +218,54 @@ class LongCtxTrainer:
         self.scheduler = get_schedule(self.optimizer, tc)
 
         # Data
-        self.dataset = FineWebLongCtxDataset(
+        self.dataset = dataset or FineWebLongCtxDataset(
             seq_len=seq_len,
             max_docs=100_000 if stage == 0 else 10_000,
         )
 
+        # Resume from checkpoint if requested
+        if resume:
+            self.load_checkpoint(resume)
+
     def _get_model(self):
         return self.model.module if hasattr(self.model, "module") else self.model
+
+    def save_checkpoint(self, checkpoint_dir: Optional[str] = None):
+        """Save model, optimizer, scheduler, and training state."""
+        if self.local_rank != 0:
+            return
+        checkpoint_dir = checkpoint_dir or self.tc.output_dir
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        path = os.path.join(checkpoint_dir, f"stage_{self.stage}.pt")
+        state = {
+            "stage": self.stage,
+            "global_step": self.global_step,
+            "model": self._get_model().state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict(),
+            "mc": self.mc,
+            "tc": self.tc,
+        }
+        torch.save(state, path)
+        logger.info(f"Saved checkpoint to {path}")
+        return path
+
+    def load_checkpoint(self, checkpoint_path: str):
+        """Resume model, optimizer, scheduler, and training state."""
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        state = torch.load(
+            checkpoint_path,
+            map_location=self.device,
+            weights_only=False,
+        )
+        self._get_model().load_state_dict(state["model"])
+        self.optimizer.load_state_dict(state["optimizer"])
+        self.scheduler.load_state_dict(state["scheduler"])
+        self.global_step = state.get("global_step", 0)
+        logger.info(
+            f"Loaded checkpoint from {checkpoint_path} (global_step={self.global_step})"
+        )
 
     def train(self):
         if self.local_rank == 0:
@@ -184,6 +273,7 @@ class LongCtxTrainer:
             logger.info(f"  Context: {self.mc.max_seq_len:,} tokens")
             logger.info(f"  Steps: {self.tc.max_steps:,}")
             logger.info(f"  Device: {self.device}")
+            logger.info(f"  AMP dtype: {self.amp_dtype}")
 
         self._get_model().train()
         data_iter = iter(self.dataset)
@@ -194,13 +284,18 @@ class LongCtxTrainer:
             # Gradient accumulation
             for _ in range(self.tc.gradient_accumulation_steps):
                 batch = next(data_iter)
-                ids = batch["input_ids"].to(self.device)
-                lbl = batch["labels"].to(self.device)
+                ids = batch["input_ids"].to(self.device).unsqueeze(0)
+                lbl = batch["labels"].to(self.device).unsqueeze(0)
 
-                loss = (
-                    self._get_model().get_loss(ids, labels=lbl)
-                    / self.tc.gradient_accumulation_steps
-                )
+                with torch.autocast(
+                    device_type=self.device.type,
+                    dtype=self.amp_dtype,
+                    enabled=self.amp_dtype != torch.float32,
+                ):
+                    loss = (
+                        self._get_model().get_loss(ids, labels=lbl)
+                        / self.tc.gradient_accumulation_steps
+                    )
                 loss.backward()
                 accum_loss += loss.item() * self.tc.gradient_accumulation_steps
 
@@ -214,6 +309,13 @@ class LongCtxTrainer:
             self.global_step += 1
 
             # Logging
+            if (
+                self.tc.save_interval > 0
+                and step % self.tc.save_interval == 0
+                and self.local_rank == 0
+            ):
+                self.save_checkpoint()
+
             if step % self.tc.log_interval == 0 and self.local_rank == 0:
                 dt = time.perf_counter() - t0
                 tps = (
@@ -248,7 +350,7 @@ def main():
         "--stage", type=int, default=0, help="Context extension stage index"
     )
     parser.add_argument(
-        "--resume", type=str, default=None, help="Checkpoint dir to resume from"
+        "--resume", type=str, default=None, help="Checkpoint path to resume from"
     )
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--max-steps", type=int, default=None)
@@ -257,15 +359,17 @@ def main():
     mc = ModelConfig1B()
     tc = TrainingConfig1M()
 
+    dataset = None
     if args.smoke:
-        # Tiny 300M ablation for quick smoke test
+        # Tiny model + offline synthetic data for quick smoke test
         mc = ModelConfig1B(
-            hidden_dim=768,
-            intermediate_dim=2048,
-            num_layers=6,
-            num_attention_heads=8,
-            num_kv_heads=2,
-            max_seq_len=4096,
+            hidden_dim=128,
+            intermediate_dim=256,
+            num_layers=2,
+            num_attention_heads=4,
+            num_kv_heads=1,
+            max_seq_len=128,
+            rope_theta=10_000.0,
         )
         tc.max_steps = args.max_steps or 20
         tc.log_interval = 5
@@ -273,11 +377,21 @@ def main():
         tc.dtype = "float32"
         tc.gradient_accumulation_steps = 1
         tc.micro_batch_size = 1
+        tc.cooldown_start_step = tc.max_steps  # no cooldown in smoke
+        tc.save_interval = 2  # save frequently for smoke/resume verification
+        tc.context_stages = ((mc.max_seq_len, tc.max_steps, mc.rope_theta),)
+        dataset = _SmokeLongCtxDataset(
+            seq_len=mc.max_seq_len,
+            vocab_size=mc.vocab_size,
+            num_samples=tc.max_steps * 4,
+        )
 
     if args.max_steps:
         tc.max_steps = args.max_steps
 
-    trainer = LongCtxTrainer(mc, tc, stage=args.stage)
+    trainer = LongCtxTrainer(
+        mc, tc, stage=args.stage, dataset=dataset, resume=args.resume
+    )
     trainer.train()
 
     # Print next step

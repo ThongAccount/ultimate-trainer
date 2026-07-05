@@ -80,6 +80,20 @@ class BitLinear(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
         self._w_ternary.copy_(self.weight.detach())
 
+    def _refresh_ternary_weights(self):
+        """Recompute cached gamma and ternary weights from current self.weight."""
+        gamma = compute_gamma(self.weight)
+        if gamma.ndim == 0:
+            gamma = gamma.reshape(1)
+        self._gamma = gamma
+        w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
+        self._w_ternary = self.weight + (w_q - self.weight).detach()
+
+    def eval(self):
+        super().eval()
+        self._refresh_ternary_weights()
+        return self
+
     def forward(self, x):
         if self.quantize_activations and self.training:
             x = absmax_quantize_activation(x, bits=self.activation_bits)
@@ -87,11 +101,9 @@ class BitLinear(nn.Module):
             self._quant_step += 1
             stale = self._quant_step % self.quant_update_freq == 1
             if stale:
-                self._gamma = compute_gamma(self.weight)
-                w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
-                self._w_ternary = self.weight + (w_q - self.weight).detach()
+                self._refresh_ternary_weights()
 
-        if x.is_cuda and _HAS_FUSED_KERNEL:
+        if self.quantize_activations and x.is_cuda and _HAS_FUSED_KERNEL:
             return fused_bitlinear_forward(x, self.weight, self._gamma, self.bias)
         return F.linear(x, self._w_ternary, self.bias)
 
