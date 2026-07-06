@@ -151,11 +151,10 @@ class SubQSA(nn.Module):
                 dtype=q.dtype,
             )
             win_out = torch.cat([pad, win_out], dim=2)
-        win_out = win_out + q  # residual
 
         # Gate blending
         g = self.gate_fc(x).view(B, T, 3, self.num_heads).permute(0, 3, 1, 2).sigmoid()
-        g = g / g.sum(dim=-1, keepdim=True)
+        g = g / (g.sum(dim=-1, keepdim=True) + 1e-8)
         out = g[..., 0:1] * cmp_out + g[..., 1:2] * slc_out + g[..., 2:3] * win_out
         out = out.transpose(1, 2).reshape(B, T, -1)
         return self.o_proj(out)

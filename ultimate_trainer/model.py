@@ -58,7 +58,7 @@ class TransformerBlock(nn.Module):
         # ── ReLU² FFN sub-block (subln → gate/up → ReLU² → subln → down → +) ──
         r = x
         x = self.ffn_norm(x)
-        gate = F.relu(self.ffn_gate(x)).pow(2)  # ReLU²
+        gate = self.ffn_gate(x).clamp(min=0).pow(2)  # ReLU²
         up = self.ffn_up(x)
         hidden = gate * up
         hidden = self.ffn_out_norm(hidden)  # subln before down projection
@@ -96,7 +96,12 @@ class UltimateModel(nn.Module):
     def forward(self, input_ids, start_pos=0):
         x = self.embed(input_ids)
         for layer in self.layers:
-            x = layer(x, start_pos=start_pos)
+            if self.cfg.use_checkpoint and self.training:
+                x = torch.utils.checkpoint.checkpoint(
+                    layer, x, start_pos, use_reentrant=True
+                )
+            else:
+                x = layer(x, start_pos=start_pos)
         return self.lm_head(self.norm(x))
 
     def get_loss(self, input_ids, labels=None):

@@ -37,6 +37,9 @@ class ModelConfig1B:
     slc_topk: int = 16
     win_size: int = 512
 
+    # Compute / memory
+    use_checkpoint: bool = True  # activation checkpointing saves memory for long context
+
     def __post_init__(self):
         assert self.hidden_dim % self.num_attention_heads == 0
         if self.num_kv_heads is None:

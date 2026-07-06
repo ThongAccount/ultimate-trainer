@@ -106,8 +106,10 @@ From [REPORT.md](REPORT.md):
 - **SubQSA trainer**: 3-branch NSA design is implemented and unit-tested. `SelectionBranch` returns exactly `topk` contiguous blocks, and `sliding_window_attention` only attends to the last `win_size` tokens. The dense-vs-SubQSA comparison runs, but **cosine similarity is currently 0.012 vs the target ≥ 0.7** — the mean-pool compression + top-k-by-magnitude selection does not yet match dense attention quality.
 - **Ultimate trainer**: Merges BitNet b1.58 BitLinear with NSA SubQSA. Full ReLU² FFN, RMSNorm, RoPE, learned gating. All modules import correctly and forward/backward run on CPU. The FP-vs-Ultimate comparison runs, but **cosine similarity is ~0 and Ultimate loss is ~46× the FP loss** — the merged architecture is trainable but has not yet reached alignment with the FP baseline.
 - **HF Kernels compatibility**: `use_kernel_forward_from_hub` decorator wraps cleanly with try/except fallback. Registered as `BitLinear`.
-- **No GPU required**: CPU-safe pure PyTorch eager `F.linear` fallback for BitLinear; fused Triton path is used only when CUDA + Triton are available.
-- **Long-context pipeline**: `train_longctx.py --smoke --stage 0 --max-steps 10` runs to completion, supports AMP dtype/autocast, and can save/resume checkpoints.
+- **No GPU required**: CPU-safe pure PyTorch eager `F.linear` fallback for BitLinear; fused Triton path is guarded with `not self.training` to prevent gradient graph severance during training.
+- **Long-context pipeline**: `train_longctx.py --smoke --stage 0 --max-steps 10` runs to completion, supports AMP dtype/autocast, and can save/resume checkpoints without overtraining.
+- **Bug fixes applied (Jul 2026)**: 11 bugs fixed including CRITICAL GPU gradient severance, zero-input NaN crashes, checkpoint resume overtraining, dataset exhaustion crashes, and gate normalization NaN propagation. See [REPORT.md](REPORT.md) for full changelog.
+- **Test coverage**: Expanded from 12 to **157 tests** (~60% coverage) across 8 files, covering all critical code paths.
 
 ---
 
@@ -176,6 +178,16 @@ ultimate-ai-model/
 ├── data_pipeline.py              # FineWeb streaming download + BPE tokenization
 ├── train_longctx.py              # Staged long-context training (4K → 1M)
 ├── benchmark.py                  # Multi-trainer benchmark with TPS/FLOPs estimation
+│
+├── tests/                        # 157 tests, ~60% coverage
+│   ├── test_bitlinear_parity.py  #   Eager/fused dispatch, eval refresh
+│   ├── test_bitlinear_advanced.py #   STE gradient, NaN guard, quantization math
+│   ├── test_subqsa_selection.py  #   SelectionBranch top-k correctness
+│   ├── test_subqsa_window.py     #   Sliding window causal mask
+│   ├── test_subqsa_comprehensive.py # Compression branch, gate, GQA, caching
+│   ├── test_model_core.py        #   RoPE, GQA mapping, SwiGLU, weight tying
+│   ├── test_training_infra.py    #   LR schedule, checkpoint, dataset
+│   └── test_kernels.py           #   Triton kernel edge cases, gamma determinism
 │
 ├── PLAN.md                       # Full project plan + architecture decisions
 ├── REPORT.md                     # Build report + verification results
@@ -286,12 +298,15 @@ class SelectionBranch(nn.Module):
 **Sliding window** (from `ultimate_trainer/subqsa.py`):
 
 ```python
-def sliding_window_attention(q, k, v, win_size):
-    # Causal sliding window with triangular mask
-    mask = torch.tril(torch.ones(T, T))
-    mask = torch.triu(mask, diagonal=-(w - 1))
-    attn_mask = (1.0 - mask) * -1e9
-    return F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+def sliding_window_attention(q, k, v, win_size, cache=None):
+    # Causal sliding window with cached (T, w) mask
+    if cache is not None and (T, w) in cache:
+        attn_mask = cache[(T, w)]
+    else:
+        attn_mask = build_mask(...)  # triangular causal within window
+        if cache is not None:
+            cache[(T, w)] = attn_mask
+    return F.scaled_dot_product_attention(q, k_win, v_win, attn_mask=attn_mask)
 ```
 
 - Window size `w = 512` (fits inside 2B4T's RoPE base comfortably)
@@ -949,14 +964,18 @@ The data pipeline supports streaming from HuggingFace FineWeb:
 
 All modules pass:
 - ✅ Syntax checks on all `.py` files
-- ✅ Unit tests: `python -m pytest tests/ -v` → 11 passed, 1 skipped (CUDA-only parity test skipped on CPU)
+- ✅ Unit tests: `uv run pytest tests/ -v` → **157 passed, 1 skipped** (CUDA-only parity test skipped on CPU)
 - ✅ Model forward/backward runs on CPU (no GPU required)
 - ✅ Training step runs for all variants (1bit, subqsa, ultimate, longctx)
 - ✅ FP vs BitLinear comparison: both reduce loss
 - ✅ Dense vs SubQSA comparison: **runs, but cosine is ~0.012 (target ≥ 0.7)** — a known quality gap
 - ✅ Ultimate comparison: **runs, but FP vs Ultimate cosine is ~0 and Ultimate loss is ~46× FP loss** — a known quality gap
-- ✅ Long-context smoke test: `python train_longctx.py --smoke --stage 0 --max-steps 10` exits 0
-- ✅ Checkpoint save/resume: save at step 5, resume to step 10 works
+- ✅ Long-context smoke test: `uv run python train_longctx.py --smoke --stage 0 --max-steps 10` exits 0
+- ✅ Checkpoint save/resume: resume correctly trains remaining steps (not extra `max_steps`)
+- ✅ Dataset exhaustion: `StopIteration` is caught and iterator recreated
+- ✅ Zero-input activation quantization: NaN guarded in both `absmax_quantize_activation` and `quantize_activation_per_token`
+- ✅ Fused Triton kernel: safe eval-only dispatch (avoids gradient graph severance during training)
+- ✅ FLOP estimator: selection, compression, and GQA formulas corrected
 - ✅ HF Kernels decorator: available with try/except fallback
 - ✅ All modules import correctly via underscore-wrapper packages
 

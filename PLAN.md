@@ -227,7 +227,39 @@ Before declaring the trainer "done":
 - **SubQSA correctness** — 3-branch design, selection top-k blocks, causal sliding window, GQA-aware compression, unified RoPE.
 - **BitLinear parity** — Safe fused/eager dispatch; eval-mode refresh; parity tests.
 - **Long-context pipeline** — `train_longctx.py` runs, supports AMP dtype/autocast, saves/resumes checkpoints.
-- **Tests & reporting** — `tests/test_subqsa_selection.py`, `tests/test_subqsa_window.py`, `tests/test_bitlinear_parity.py`; `REPORT.md` and `README.md` updated to distinguish implemented code from experimental quality gaps.
+- **Tests & reporting** — 157 tests across 8 test files (~60% coverage).
+
+### Bug Fixes Applied (2026-07-06)
+
+| Severity | Fix | Files |
+|----------|-----|-------|
+| CRITICAL | Fused Triton kernel guarded with `not self.training` — autograd graph no longer severed on GPU | `ultimate_trainer/bitlinear.py` |
+| HIGH | Zero-input NaN prevented in both activation quant functions | Both `bitlinear.py`, `1bit-trainer/model.py` |
+| HIGH | Checkpoint resume now trains remaining steps, not extra full run | `train_longctx.py` |
+| HIGH | Dataset `StopIteration` caught and iterator recreated | `train_longctx.py` |
+| HIGH | Gate normalization epsilon added to prevent NaN | `subqsa_trainer/subqsa.py` |
+| HIGH | Dead NSA fused kernel code removed (never called `parallel_nsa`) | `ultimate_trainer/subqsa.py` |
+| MEDIUM | `_load_from_state_dict` properly strips non-persistent `_w_ternary` from `missing_keys` | Both `bitlinear.py` |
+| MEDIUM | FLOP estimator formulas corrected (selection 20x overcount, compression 2x undercount, GQA overcount) | `benchmark.py` |
+| MEDIUM | SelectionBranch probability interpolation fixed (sum-pool replaces `F.interpolate`) | `ultimate_trainer/subqsa.py` |
+| MEDIUM | SubQSA sliding window residual fixed (removed `win_out + q`) | `subqsa_trainer/subqsa.py` |
+| MEDIUM | CompressionBranch empty fallback now mean-pools all tokens | `ultimate_trainer/subqsa.py` |
+
+### Optimizations Applied (2026-07-06)
+
+| Area | Optimization | Files |
+|------|-------------|-------|
+| GPU | SelectionBranch FlashAttention (3 kernel launches → 1 fused call) | `ultimate_trainer/subqsa.py` |
+| GPU | Sliding window mask caching (`_sw_mask_cache` dict) | `ultimate_trainer/subqsa.py` |
+| GPU | RoPE cos/sin table caching (precomputed, indexed by position_ids) | `1bit-trainer/model.py` |
+| GPU | ReLU² fusion (`.clamp(min=0).pow(2)` — single fused kernel) | `ultimate_trainer/model.py` |
+| Memory | Compression attention at KV-head resolution (avoids 4x expansion) | `ultimate_trainer/subqsa.py` |
+| Memory | `_w_ternary` buffers made non-persistent (halves checkpoint size) | Both `bitlinear.py` |
+| Memory | Activation checkpointing support (`use_checkpoint` config flag) | `ultimate_trainer/model.py`, `config.py` |
+| Memory | FineWebDataset uses `np.memmap` instead of in-memory list | `data_pipeline.py` |
+| Memory | FineWebLongCtxDataset buffer uses `array('I')` instead of `list[int]` | `train_longctx.py` |
+| Training | Checkpoint resume adjusts `max_steps` | `train_longctx.py` |
+| Training | Dataset iterator resurrection on exhaustion | `train_longctx.py` |
 
 ## 9. Remaining Open Work
 
@@ -237,15 +269,17 @@ The following are research/model-quality gaps, not missing plumbing:
 2. **Ultimate model alignment** — Debug why FP vs Ultimate cosine is near zero and Ultimate loss is ~46× FP loss. Suspects: (a) interaction between ternary weights and SubQSA routing, (b) initialization scale, (c) gate normalization under INT8 activations.
 3. **Long-context scaling** — Validate multi-stage extension (4K → 1M) on GPU; current smoke test only exercises the 128-token offline path.
 4. **SFT / DPO** — Not implemented; deferred until base pretraining quality is achieved.
-5. **GPU kernel maturity** — Fused Triton ternary matmul is present but only exercised on CUDA runners.
+5. **GPU kernel maturity** — Fused Triton ternary matmul is present but eval-only; needs custom `torch.autograd.Function` wrapper for training use.
+6. **RMSNorm fused Triton kernel** — Would fuse pow+mean+sqrt into single kernel launch for ~2x speedup on a common operation.
 
 ## 10. Immediate Next Steps (in order)
 
 1. Diagnose and fix SubQSA selection/importance scoring so dense-vs-SubQSA cosine ≥ 0.7.
 2. Re-run Ultimate comparison; target FP-vs-Ultimate cosine ≥ 0.5 and Ultimate loss within 2× of FP loss.
-3. Validate `train_longctx.py` on a real GPU at 4K context with FineWeb data.
-4. Add NIAH / RULER needle tests once model quality targets are met.
-5. Scale to 2B / 1T tokens / staged context extension.
+3. Write a `torch.autograd.Function` wrapper for the fused Triton kernel to enable training-time use.
+4. Validate `train_longctx.py` on a real GPU at 4K context with FineWeb data.
+5. Add NIAH / RULER needle tests once model quality targets are met.
+6. Scale to 2B / 1T tokens / staged context extension.
 
 ---
 

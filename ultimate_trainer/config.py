@@ -39,6 +39,9 @@ class UltimateModelConfig:
     slc_topk: int = 16
     win_size: int = 512
 
+    # ── Compute / memory ──
+    use_checkpoint: bool = False  # activation checkpointing, saves memory at ~15% compute overhead
+
     def __post_init__(self):
         assert self.hidden_dim % self.num_attention_heads == 0
         if self.num_kv_heads is None:

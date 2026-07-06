@@ -14,6 +14,7 @@ Usage:
 import os, sys, math, time, json, logging, argparse
 from dataclasses import dataclass
 from typing import Optional, Iterator
+from array import array
 
 import torch
 import torch.nn as nn
@@ -96,7 +97,7 @@ class FineWebLongCtxDataset(IterableDataset):
 
         ds = load_dataset(self.dataset_name, split="train", streaming=True)
 
-        buffer: list[int] = []
+        buffer = array("I")
         doc_count = 0
 
         for sample in ds:
@@ -114,7 +115,7 @@ class FineWebLongCtxDataset(IterableDataset):
             # Yield full sequences
             while len(buffer) >= self.seq_len + 1:
                 chunk = buffer[: self.seq_len + 1]
-                buffer = buffer[self.seq_len :]
+                del buffer[:self.seq_len]
                 yield {
                     "input_ids": torch.tensor(chunk[: self.seq_len], dtype=torch.long),
                     "labels": torch.tensor(
@@ -126,9 +127,10 @@ class FineWebLongCtxDataset(IterableDataset):
         if len(buffer) > self.seq_len // 2:
             pad_len = self.seq_len + 1 - len(buffer)
             buffer.extend([self.pad_id] * pad_len)
+            chunk = list(buffer)
             yield {
-                "input_ids": torch.tensor(buffer[: self.seq_len], dtype=torch.long),
-                "labels": torch.tensor(buffer[1 : self.seq_len + 1], dtype=torch.long),
+                "input_ids": torch.tensor(chunk[: self.seq_len], dtype=torch.long),
+                "labels": torch.tensor(chunk[1 : self.seq_len + 1], dtype=torch.long),
             }
 
 
@@ -283,7 +285,13 @@ class LongCtxTrainer:
         for step in range(self.tc.max_steps):
             # Gradient accumulation
             for _ in range(self.tc.gradient_accumulation_steps):
-                batch = next(data_iter)
+                try:
+                    batch = next(data_iter)
+                except StopIteration:
+                    # Dataset exhausted mid-epoch; reinitialize iterator
+                    logger.info("Dataset exhausted, restarting data iterator")
+                    data_iter = iter(self.dataset)
+                    batch = next(data_iter)
                 ids = batch["input_ids"].to(self.device).unsqueeze(0)
                 lbl = batch["labels"].to(self.device).unsqueeze(0)
 
@@ -392,6 +400,17 @@ def main():
     trainer = LongCtxTrainer(
         mc, tc, stage=args.stage, dataset=dataset, resume=args.resume
     )
+
+    if args.resume:
+        completed_steps = trainer.global_step
+        total_steps = tc.max_steps
+        logger.info(f"Adjusting total_steps: {total_steps} -> {total_steps - completed_steps} remaining")
+        if completed_steps >= total_steps:
+            logger.warning("Checkpoint already completed total_steps; exiting early.")
+            return
+        tc.max_steps -= completed_steps
+        trainer.tc.max_steps = tc.max_steps
+
     trainer.train()
 
     # Print next step

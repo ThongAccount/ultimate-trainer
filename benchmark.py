@@ -43,7 +43,8 @@ def estimate_flops_per_step(
 
     # Attention projections: QKV + O = 4 linear layers
     # Each linear: 2 * B * T * in_features * out_features
-    qkv_flops = 2 * B * T * H * (num_heads * head_dim) * 3  # Q,K,V
+    qkv_flops = 2 * B * T * H * (num_heads * head_dim)      # Q
+    qkv_flops += 2 * B * T * H * (num_kv_heads * head_dim) * 2  # K,V
     o_flops = 2 * B * T * (num_heads * head_dim) * H  # O
     proj_flops = qkv_flops + o_flops  # per layer
 
@@ -57,11 +58,11 @@ def estimate_flops_per_step(
             2 * B * num_heads * n_cmp * (head_dim * 2) * head_dim * 2
         )  # second layer *2
 
-        # Compression attention: B*num_heads * (T * n_cmp * head_dim * 2)
-        cmp_attn_flops = 2 * B * num_heads * T * n_cmp * head_dim
+        # Compression attention: QK^T + PV = 2 × (B*num_heads * T * n_cmp * head_dim)
+        cmp_attn_flops = 4 * B * num_heads * T * n_cmp * head_dim
 
         # Selection: full attention on top-k blocks
-        n_sel = num_heads * subqsa_slc_topk * subqsa_slc_block
+        n_sel = subqsa_slc_topk * subqsa_slc_block
         sel_flops = 2 * B * num_heads * T * n_sel * head_dim
 
         # Sliding window

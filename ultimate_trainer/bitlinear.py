@@ -28,7 +28,7 @@ except ImportError:
 def absmax_quantize_activation(act, bits=8):
     q_max = float(2 ** (bits - 1) - 1)
     abs_max = act.abs().max(dim=-1, keepdim=True).values
-    scale = abs_max / (q_max + 1e-5)
+    scale = (abs_max + 1e-8) / (q_max + 1e-5)
     act_quant = torch.clamp(torch.round(act / scale), -q_max, q_max)
     act_dequant = act_quant * scale
     return act + (act_dequant - act).detach()
@@ -65,7 +65,7 @@ class BitLinear(nn.Module):
         self._quant_step = 0
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         self.register_buffer("_gamma", torch.ones(1))
-        self.register_buffer("_w_ternary", torch.empty(out_features, in_features))
+        self.register_buffer("_w_ternary", torch.empty(out_features, in_features), persistent=False)
         if bias:
             self.bias = nn.Parameter(torch.empty(out_features))
         else:
@@ -89,6 +89,22 @@ class BitLinear(nn.Module):
         w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
         self._w_ternary = self.weight + (w_q - self.weight).detach()
 
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata,
+                              strict, missing_keys, unexpected_keys,
+                              error_msgs):
+        """After loading weights, recompute ternary cache from restored self.weight."""
+        # _w_ternary is non-persistent; strip from both directions.
+        if f"{prefix}_w_ternary" in state_dict:
+            del state_dict[f"{prefix}_w_ternary"]
+        elif f"{prefix}_w_ternary" in missing_keys:
+            missing_keys.remove(f"{prefix}_w_ternary")
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata,
+            strict, missing_keys, unexpected_keys,
+            error_msgs,
+        )
+        self._refresh_ternary_weights()
+
     def eval(self):
         super().eval()
         self._refresh_ternary_weights()
@@ -103,7 +119,7 @@ class BitLinear(nn.Module):
             if stale:
                 self._refresh_ternary_weights()
 
-        if self.quantize_activations and x.is_cuda and _HAS_FUSED_KERNEL:
+        if not self.training and self.quantize_activations and x.is_cuda and _HAS_FUSED_KERNEL:
             return fused_bitlinear_forward(x, self.weight, self._gamma, self.bias)
         return F.linear(x, self._w_ternary, self.bias)
 

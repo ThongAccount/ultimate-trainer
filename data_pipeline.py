@@ -7,6 +7,7 @@ Usage:
 """
 
 import os, json, math, logging
+import numpy as np
 from typing import Optional
 from dataclasses import dataclass
 
@@ -70,64 +71,71 @@ class DataConfig:
 
 
 class FineWebDataset(Dataset):
-    """Streaming FineWeb dataset with on-the-fly tokenization + caching."""
+    """Streaming FineWeb dataset with memory-mapped disk-backed storage via np.memmap.
+
+    Avoids loading all samples into RAM — essential for 1M-context training
+    where samples can be 8 MB each (10K samples = 80 GB).
+    """
 
     def __init__(self, config: DataConfig, tokenizer: BPETokenizer):
         self.config = config
         self.tokenizer = tokenizer
-        self.samples: list[torch.Tensor] = []
+        self.num_samples = 0
         os.makedirs(config.cache_dir, exist_ok=True)
-        cache_path = os.path.join(config.cache_dir, f"samples_{config.max_seq_len}.pt")
+        cache_path = os.path.join(config.cache_dir, f"samples_{config.max_seq_len}.mmap")
+        self.cache_path = cache_path
 
         if os.path.exists(cache_path):
-            self.samples = torch.load(cache_path)
-            logger.info(f"Loaded {len(self.samples)} cached samples from {cache_path}")
-            return
+            meta_path = cache_path + ".meta"
+            self.num_samples, seq_len = torch.load(meta_path)
+            self._mmap = np.memmap(
+                cache_path, dtype=np.int64, mode="r",
+                shape=(self.num_samples, config.max_seq_len + 1)
+            )
+        else:
+            self._build(config, tokenizer)
 
-        self._build(config, tokenizer)
-        torch.save(self.samples, cache_path)
-        logger.info(f"Cached {len(self.samples)} samples to {cache_path}")
-
-    def _build(self, config: DataConfig, tokenizer: BPETokenizer):
+    def _build(self, config, tokenizer):
         from datasets import load_dataset
+        ds = load_dataset(config.dataset_name, split=config.split, streaming=True)
+        seq_len = config.max_seq_len
 
-        ds = load_dataset(
-            config.dataset_name,
-            split=config.split,
-            streaming=True,
-        )
-        count = 0
+        all_chunks = []
         for i, sample in enumerate(ds):
             if i >= config.max_samples:
                 break
             text = sample["text"]
             ids = tokenizer.encode(text)
-            # Chunk into max_seq_len segments
-            for start in range(0, len(ids), config.max_seq_len):
-                chunk = ids[start : start + config.max_seq_len + 1]
-                if len(chunk) < config.max_seq_len // 2:
+            for start in range(0, len(ids), seq_len):
+                chunk = ids[start:start + seq_len + 1]
+                if len(chunk) < seq_len // 2:
                     continue
-                if len(chunk) < config.max_seq_len + 1:
-                    chunk = chunk + [0] * (config.max_seq_len + 1 - len(chunk))
-                t = torch.tensor(chunk[: config.max_seq_len + 1], dtype=torch.long)
-                self.samples.append(t)
-                count += 1
-                if count >= config.max_samples * 2:
+                if len(chunk) < seq_len + 1:
+                    chunk = chunk + [0] * (seq_len + 1 - len(chunk))
+                all_chunks.append(chunk[:seq_len + 1])
+                if len(all_chunks) >= config.max_samples * 2:
                     break
-            if count >= config.max_samples * 2:
+            if len(all_chunks) >= config.max_samples * 2:
                 break
-        logger.info(
-            f"Built {len(self.samples)} chunks from {min(config.max_samples, i + 1)} documents"
-        )
+
+        self.num_samples = len(all_chunks)
+        arr = np.memmap(self.cache_path, dtype=np.int64, mode="w+",
+                        shape=(self.num_samples, seq_len + 1))
+        for i, chunk in enumerate(all_chunks):
+            arr[i] = chunk
+        arr.flush()
+        torch.save((self.num_samples, seq_len), self.cache_path + ".meta")
+        self._mmap = arr
+        logger.info(f"Built {self.num_samples} samples to mmap cache: {self.cache_path}")
 
     def __len__(self):
-        return len(self.samples)
+        return self.num_samples
 
     def __getitem__(self, idx):
-        t = self.samples[idx]
+        t = torch.from_numpy(self._mmap[idx])
         return {
-            "input_ids": t[: self.config.max_seq_len],
-            "labels": t[1 : self.config.max_seq_len + 1],
+            "input_ids": t[:self.config.max_seq_len],
+            "labels": t[1:self.config.max_seq_len + 1],
         }
 
 

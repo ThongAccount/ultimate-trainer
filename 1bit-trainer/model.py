@@ -78,7 +78,7 @@ def quantize_activation_per_token(
     q_max = float(2 ** (bits - 1) - 1)
     abs_max = act.abs().max(dim=-1, keepdim=True).values
     scale = abs_max / q_max
-    scale = torch.clamp(scale, min=1e-5)
+    scale = torch.clamp(scale, min=torch.finfo(act.dtype).tiny)
     act_quant = torch.clamp(torch.round(act / scale), -q_max, q_max)
     act_dequant = act_quant * scale  # dequantize back to original scale
     # STE: forward = act_dequant (in original scale), backward = identity
@@ -123,7 +123,7 @@ class BitLinear(nn.Module):
         # Master weights stored in FP32 for stable training
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         self.register_buffer("_gamma", torch.ones(1))
-        self.register_buffer("_w_ternary", self.weight.detach().clone())
+        self.register_buffer("_w_ternary", torch.empty(out_features, in_features), persistent=False)
         if bias:
             self.bias = nn.Parameter(torch.empty(out_features))
         else:
@@ -137,6 +137,8 @@ class BitLinear(nn.Module):
             fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             nn.init.uniform_(self.bias, -bound, bound)
+        # Sync the non-persistent ternary weight buffer
+        self._w_ternary.copy_(self.weight.detach())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # 1. Quantize input activations per token (optional)
@@ -161,6 +163,39 @@ class BitLinear(nn.Module):
             f"act_quant={'on' if self.quantize_activations else 'off'}"
         )
 
+    def _recompute_from_master(self) -> None:
+        """Recompute _w_ternary and _gamma from the FP32 master weight.
+
+        Called after loading a checkpoint so the non-persistent ternary buffer
+        is rebuilt from the deserialized master weight.
+        """
+        g = self.weight.abs().mean() + 1e-5
+        self._gamma.fill_(g)
+        w_q = torch.clamp(torch.round(self.weight / g), -1, 1)
+        self._w_ternary.copy_(self.weight + (w_q - self.weight).detach())
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict,
+        missing_keys, unexpected_keys, error_msgs,
+    ):
+        """Override to skip non-persistent buffers and recompute on load."""
+        # Remove _w_ternary from the state dict keys we expect — it is
+        # non-persistent and will be recomputed from master weight.
+        if f"{prefix}_w_ternary" in state_dict:
+            # Old checkpoint included _w_ternary — discard it (non-persistent now).
+            del state_dict[f"{prefix}_w_ternary"]
+        elif f"{prefix}_w_ternary" in missing_keys:
+            # New checkpoint omits it — remove from missing so strict=False works.
+            missing_keys.remove(f"{prefix}_w_ternary")
+
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict,
+            missing_keys, unexpected_keys, error_msgs,
+        )
+
+        # Recompute ternary buffer from loaded master weight
+        self._recompute_from_master()
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  RoPE (Rotary Position Embedding)
@@ -183,6 +218,13 @@ class RotaryEmbedding(nn.Module):
         inv_freq = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
+        # Precompute cos/sin tables for all positions 0..max_seq_len-1
+        # This replaces dynamic GPU trig computation with cheap tensor indexing (~60ms savings at 4K).
+        pos = torch.arange(max_seq_len, dtype=torch.float32)
+        angles = pos[:, None] * inv_freq[None, :]  # (max_seq_len, dim//2)
+        self.register_buffer("cos_cached", angles.cos())
+        self.register_buffer("sin_cached", angles.sin())
+
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -191,13 +233,18 @@ class RotaryEmbedding(nn.Module):
         Returns:
             x with RoPE applied (cos/sin rotated)
         """
-        inv_freq = self.inv_freq[None, :, None].float()  # (1, dim/2, 1)
-        # (batch, seq_len, dim/2, 1)
-        pos = position_ids[:, :, None, None].float()
-        angles = pos * inv_freq  # (batch, seq_len, dim/2, 1)
-        angles = angles.squeeze(-1)  # (batch, seq_len, dim/2)
-        cos = angles.cos().to(dtype=x.dtype)
-        sin = angles.sin().to(dtype=x.dtype)
+        if position_ids.max() < self.max_seq_len:
+            # Fast path: index into precomputed tables
+            cos = self.cos_cached[position_ids].to(dtype=x.dtype)  # (B, seq_len, dim/2)
+            sin = self.sin_cached[position_ids].to(dtype=x.dtype)  # (B, seq_len, dim/2)
+        else:
+            # Fallback: dynamic computation for positions beyond max_seq_len
+            inv_freq = self.inv_freq[None, :, None].float()  # (1, dim/2, 1)
+            pos = position_ids[:, :, None, None].float()
+            angles = pos * inv_freq  # (B, seq_len, dim/2, 1)
+            angles = angles.squeeze(-1)  # (B, seq_len, dim/2)
+            cos = angles.cos().to(dtype=x.dtype)
+            sin = angles.sin().to(dtype=x.dtype)
 
         # Apply rotary transform
         x_rotated = self._apply_rotary(x, cos, sin)
@@ -489,8 +536,9 @@ class BitNetModel(nn.Module):
             quantize_activations=True,
         )
 
-        # Tie weights
+        # Tie weights and recompute ternary buffer from the shared weight
         self.lm_head.weight = self.embed_tokens.weight
+        self.lm_head._recompute_from_master()
 
         # RoPE cache
         self.register_buffer(
