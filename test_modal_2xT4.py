@@ -414,6 +414,11 @@ if torch.cuda.device_count() >= 2:
     print("10. DDP Smoke Test (2 GPUs)")
     print("=" * 60)
 
+    # mp.spawn with start_method="spawn" needs MASTER_ADDR/MASTER_PORT
+    import os
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    os.environ.setdefault("MASTER_PORT", "29500")
+
     import torch.multiprocessing as mp
     from scripts.ddp_worker import ddp_worker
 
