@@ -357,8 +357,8 @@ print(
 # Verify ternary weights and INT8 activations produce plausible outputs.
 
 # %%
-bitlinear = BitLinear(256, 512).to(device)
-x_fp = torch.randn(2, 64, 256, device=device) * 0.1
+# Larger input range so 8-bit quantization produces measurable rounding
+x_fp = torch.randn(2, 64, 256, device=device) * 5.0
 
 # Forward with quantization enabled
 bitlinear.train()
@@ -370,7 +370,8 @@ bitlinear.quantize_activations = False
 y_fp = bitlinear(x_fp)
 
 cos_q = torch.nn.functional.cosine_similarity(y_q.view(-1), y_fp.view(-1), dim=0)
-print(f"BitLinear quant vs FP cosine sim: {cos_q.item():.4f}")
+quant_diff = (y_q - y_fp).abs().max().item()
+print(f"BitLinear quant vs FP cosine sim: {cos_q.item():.6f}  (max abs diff: {quant_diff:.4f})")
 
 # Check ternary weight sparsity
 w_ternary = bitlinear._w_ternary
