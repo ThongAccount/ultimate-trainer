@@ -125,12 +125,12 @@ class BenchResult:
 def run_benchmark(
     model: nn.Module,
     input_ids: torch.LongTensor,
-    labels: torch.LongTensor,
     optimizer: torch.optim.Optimizer,
     name: str,
     n_steps: int = 30,
     warmup: int = 3,
     flops_estimate: Optional[dict] = None,
+    labels: Optional[torch.Tensor] = None,
 ) -> BenchResult:
     """Run training steps with timing."""
     device = next(model.parameters()).device
@@ -142,13 +142,14 @@ def run_benchmark(
             t0 = time.perf_counter()
 
         optimizer.zero_grad()
-        loss = (
-            model.__class__.get_loss(model, input_ids, labels=labels)
-            if hasattr(model, "get_loss")
-            else nn.functional.cross_entropy(
+        if hasattr(model.__class__, "get_loss"):
+            # Proper model with language modeling get_loss — use auto-shift (no labels)
+            loss = model.__class__.get_loss(model, input_ids)
+        else:
+            # Fallback for non-LM models (e.g. MLP benchmarks with MSE)
+            loss = nn.functional.cross_entropy(
                 model(input_ids).view(-1, model(input_ids).size(-1)), labels.view(-1)
             )
-        )
         loss.backward()
         optimizer.step()
 
@@ -228,7 +229,6 @@ def bench_1bit(seq_len=128, batch=2, steps=30):
     tc = _cfg.TrainingConfig(max_steps=steps, learning_rate=1e-3)
     model = _mod.BitNetModel(mc)
     ids = torch.randint(0, 4096, (batch, seq_len))
-    labels = ids.clone()
 
     flops = estimate_flops_per_step(
         n_layers=mc.num_layers,
@@ -269,9 +269,8 @@ def bench_1bit_fp(seq_len=128, batch=2, steps=30):
     def forward_loss(x, y):
         return loss_fn(model(x), y)
 
-    model.get_loss = lambda x, y=None: forward_loss(x, y or x)
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    return run_benchmark(model, ids, labels, opt, "1bit_trainer FP (MLP)", steps)
+    return run_benchmark(model, ids, opt, "1bit_trainer FP (MLP)", steps, labels=labels)
 
 
 def bench_subqsa(seq_len=128, batch=2, steps=20):
@@ -293,7 +292,6 @@ def bench_subqsa(seq_len=128, batch=2, steps=20):
     )
     model = SubQSAModel(mc)
     ids = torch.randint(0, 4096, (batch, seq_len))
-    labels = ids.clone()
 
     flops = estimate_flops_per_step(
         n_layers=mc.num_layers,
@@ -341,8 +339,6 @@ def bench_ultimate(seq_len=128, batch=2, steps=20):
     )
     model = UltimateModel(mc)
     ids = torch.randint(0, 4096, (batch, seq_len))
-    labels = ids.clone()
-
     flops = estimate_flops_per_step(
         n_layers=mc.num_layers,
         hidden_dim=mc.hidden_dim,
@@ -365,7 +361,6 @@ def bench_ultimate(seq_len=128, batch=2, steps=20):
     return run_benchmark(
         model,
         ids,
-        labels,
         opt,
         "ultimate_trainer (BitLinear + SubQSA)",
         steps,
@@ -397,8 +392,6 @@ def bench_ultimate_fp(seq_len=128, batch=2, steps=20):
     )
     model = UltimateModel(mc)
     ids = torch.randint(0, 4096, (batch, seq_len))
-    labels = ids.clone()
-
     flops = estimate_flops_per_step(
         n_layers=mc.num_layers,
         hidden_dim=mc.hidden_dim,
@@ -421,7 +414,6 @@ def bench_ultimate_fp(seq_len=128, batch=2, steps=20):
     return run_benchmark(
         model,
         ids,
-        labels,
         opt,
         "ultimate_trainer FP-only (SubQSA)",
         steps,
