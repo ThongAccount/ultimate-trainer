@@ -245,7 +245,7 @@ def bench_1bit(seq_len=128, batch=2, steps=30):
 
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     return run_benchmark(
-        model, ids, labels, opt, "1bit_trainer BitLinear", steps, flops_estimate=flops
+        model, ids, opt, "1bit_trainer BitLinear", steps, flops_estimate=flops
     )
 
 

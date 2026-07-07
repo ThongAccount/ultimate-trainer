@@ -71,7 +71,7 @@ if HAS_TRITON:
         # Transposed load: w is loaded as (BLOCK_K, BLOCK_N) so tl.dot's
         # reduction dimension (K) aligns correctly.  Triton 3.x requires
         # tl.dot(a, b) where a: [M, K], b: [K, N].
-        w_ptrs = w_ptr + offs_k[None, :] * stride_wk + offs_n[:, None] * stride_wn
+        w_ptrs = w_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn
 
         acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
