@@ -68,23 +68,17 @@ if HAS_TRITON:
         offs_k = tl.arange(0, BLOCK_K)
 
         x_ptrs = x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk
-        # Transposed load: w is loaded as (BLOCK_K, BLOCK_N) so tl.dot's
-        # reduction dimension (K) aligns correctly.  Triton 3.x requires
-        # tl.dot(a, b) where a: [M, K], b: [K, N].
-        w_ptrs = w_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn
+        # Row-major w load: (BLOCK_N, BLOCK_K) — coalesced for GPU.
+        # tl.dot in Triton 3.x requires b: [K, N], so we use .T in the call.
+        w_ptrs = w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :] * stride_wk
 
         acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
         for k in range(0, K, BLOCK_K):
-            # Masks for the K-dimension boundary.
-            # x: (BLOCK_M, BLOCK_K)  → mask along dim=1  → offs_k[None, :]
-            # w: (BLOCK_K, BLOCK_N)  → mask along dim=0  → offs_k[:, None]
-            k_mask_x = offs_k[None, :] < K - k
-            k_mask_w = offs_k[:, None] < K - k
-            # Load activations (INT8 but stored as FP32 in PyTorch)
-            x = tl.load(x_ptrs, mask=k_mask_x, other=0.0)
-            # Load master weights (FP32) — transposed: (BLOCK_K, BLOCK_N)
-            w = tl.load(w_ptrs, mask=k_mask_w, other=0.0)
+            # Mask for K-dim boundary (both x and w have K as last dim)
+            k_mask = offs_k[None, :] < K - k
+            x = tl.load(x_ptrs, mask=k_mask, other=0.0)
+            w = tl.load(w_ptrs, mask=k_mask, other=0.0)
 
             # Quantize weights to ternary on-the-fly in SRAM
             w_scaled = w / gamma
