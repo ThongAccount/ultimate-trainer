@@ -4,6 +4,7 @@ Must be a standalone module so torch.multiprocessing.spawn can pickle it.
 """
 
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 import torch.nn as nn
 from ultimate_trainer.config import UltimateModelConfig
@@ -24,7 +25,12 @@ def ddp_worker(rank, world_size, mc_kwargs: dict):
 
     for step in range(10):
         opt.zero_grad()
-        loss = ddp_model.get_loss(ids)
+        # Call DDP directly (goes through forward hook -> gradient sync)
+        logits = ddp_model(ids)
+        loss = F.cross_entropy(
+            logits[:, :-1, :].reshape(-1, logits.size(-1)),
+            ids[:, 1:].reshape(-1),
+        )
         loss.backward()
         opt.step()
 
