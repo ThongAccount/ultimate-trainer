@@ -68,15 +68,23 @@ if HAS_TRITON:
         offs_k = tl.arange(0, BLOCK_K)
 
         x_ptrs = x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk
-        w_ptrs = w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :] * stride_wk
+        # Transposed load: w is loaded as (BLOCK_K, BLOCK_N) so tl.dot's
+        # reduction dimension (K) aligns correctly.  Triton 3.x requires
+        # tl.dot(a, b) where a: [M, K], b: [K, N].
+        w_ptrs = w_ptr + offs_k[None, :] * stride_wk + offs_n[:, None] * stride_wn
 
         acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
         for k in range(0, K, BLOCK_K):
+            # Masks for the K-dimension boundary.
+            # x: (BLOCK_M, BLOCK_K)  → mask along dim=1  → offs_k[None, :]
+            # w: (BLOCK_K, BLOCK_N)  → mask along dim=0  → offs_k[:, None]
+            k_mask_x = offs_k[None, :] < K - k
+            k_mask_w = offs_k[:, None] < K - k
             # Load activations (INT8 but stored as FP32 in PyTorch)
-            x = tl.load(x_ptrs, mask=offs_k[None, :] < K - k, other=0.0)
-            # Load master weights (FP32)
-            w = tl.load(w_ptrs, mask=offs_k[None, :] < K - k, other=0.0)
+            x = tl.load(x_ptrs, mask=k_mask_x, other=0.0)
+            # Load master weights (FP32) — transposed: (BLOCK_K, BLOCK_N)
+            w = tl.load(w_ptrs, mask=k_mask_w, other=0.0)
 
             # Quantize weights to ternary on-the-fly in SRAM
             w_scaled = w / gamma
@@ -84,10 +92,8 @@ if HAS_TRITON:
                 w_scaled > 0.5, 1.0, tl.where(w_scaled < -0.5, -1.0, 0.0)
             )
 
-            # Ternary matmul: adds for +1, subs for -1, skip for 0
-            x_fp16 = x.to(tl.float16)
-            w_fp16 = w_ternary.to(tl.float16)
-            acc = tl.dot(x_fp16, w_fp16, acc, input_precision="ieee")
+            # Ternary matmul via tl.dot  (x: [M,K], w: [K,N]  →  acc: [M,N])
+            acc = tl.dot(x.to(tl.float16), w_ternary.to(tl.float16), acc)
 
             x_ptrs += BLOCK_K * stride_xk
             w_ptrs += BLOCK_K * stride_wk
