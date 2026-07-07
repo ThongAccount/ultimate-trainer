@@ -415,42 +415,15 @@ if torch.cuda.device_count() >= 2:
     print("=" * 60)
 
     import torch.multiprocessing as mp
+    from scripts.ddp_worker import ddp_worker
 
-    def ddp_worker(rank, world_size):
-        dist.init_process_group("nccl", rank=rank, world_size=world_size)
-        torch.cuda.set_device(rank)
-        device = torch.device(f"cuda:{rank}")
-
-        mc = MC1(
-            vocab_size=4096,
-            hidden_dim=128,
-            intermediate_dim=256,
-            num_layers=2,
-            num_attention_heads=2,
-            max_seq_len=64,
-        )
-        model = BitNetModel(mc).to(device)
-        ddp_model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-
-        opt = torch.optim.AdamW(ddp_model.parameters(), lr=1e-3)
-        ids = torch.randint(0, 4096, (2, 64), device=device)
-        labels = ids.clone()
-
-        loss_val = None
-        for step in range(10):
-            opt.zero_grad()
-            loss = ddp_model.get_loss(ids)  # calls through DDP forward hook → gradient sync
-            loss.backward()
-            opt.step()
-            loss_val = loss.item()
-
-        if rank == 0:
-            print(f"  DDP rank0 final loss: {loss_val:.4f}")
-
-        dist.destroy_process_group()
-
-    mp.spawn(ddp_worker, nprocs=2, args=())
-    print("  ✅ DDP smoke test passed")
+    mc_kwargs = dict(
+        vocab_size=4096, hidden_dim=128, intermediate_dim=256,
+        num_layers=2, num_attention_heads=2, num_kv_heads=1,
+        max_seq_len=64,
+    )
+    mp.spawn(ddp_worker, nprocs=2, args=(2, mc_kwargs))
+    print("  DDP smoke test passed")
 else:
     print("⚠️  Skipping DDP test — need 2 GPUs")
 
