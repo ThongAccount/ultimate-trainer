@@ -239,10 +239,10 @@ print("6a. 1-Bit: FP vs BitLinear comparison")
 print("=" * 60)
 _cmp1 = _load_1bit("1bit_comparison", "comparison.py")
 make_fp_mlp = _cmp1.make_fp_mlp
-make_bitlinear_mlp = _cmp1.make_bit_mlp
+make_bit_mlp = _cmp1.make_bit_mlp
 
 _fp = make_fp_mlp(256, 4).to(device)
-_bl = make_bitlinear_mlp(256, 4).to(device)
+_bl = make_bit_mlp(256, 4).to(device)
 x = torch.randn(2, 64, 256, device=device)
 fp_out = _fp(x)
 bl_out = _bl(x)
