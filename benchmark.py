@@ -312,7 +312,7 @@ def bench_subqsa(seq_len=128, batch=2, steps=20):
 
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     return run_benchmark(
-        model, ids, labels, opt, "subqsa_trainer SubQSA", steps, flops_estimate=flops
+        model, ids, opt, "subqsa_trainer SubQSA", steps, flops_estimate=flops
     )
 
 
