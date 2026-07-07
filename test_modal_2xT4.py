@@ -177,7 +177,7 @@ opt2 = torch.optim.AdamW(model2.parameters(), lr=1e-3)
 losses_subqsa = []
 for step in range(30):
     opt2.zero_grad()
-    loss = model2.get_loss(ids, labels=labels)
+    loss = model2.get_loss(ids)
     loss.backward()
     opt2.step()
     losses_subqsa.append(loss.item())
@@ -217,7 +217,7 @@ print(f"  Ultimate model params: {sum(p.numel() for p in model3.parameters()):,}
 losses_ultimate = []
 for step in range(40):
     opt3.zero_grad()
-    loss = model3.get_loss(ids, labels=labels)
+    loss = model3.get_loss(ids)
     loss.backward()
     opt3.step()
     losses_ultimate.append(loss.item())
@@ -268,7 +268,7 @@ _cfg_b.subqsa = SubQSAHyper(
 from subqsa_trainer.model import SubQSAModel
 _dense = DenseAttentionModel(_cfg_b).to(device)
 _subqsa = SubQSAModel(_cfg_b).to(device)
-x2 = torch.randn(2, 64, 256, device=device)
+x2 = torch.randint(0, 4096, (2, 64), device=device)
 dense_out = _dense(x2)
 subqsa_out = _subqsa(x2)
 cos2 = torch.nn.functional.cosine_similarity(
@@ -296,7 +296,7 @@ _cfg_c = UltimateModelConfig(
 )
 _fp2 = FPModel(_cfg_c).to(device)
 _ult = UltimateModel(_cfg_c).to(device)
-x3 = torch.randn(2, 64, 256, device=device)
+x3 = torch.randint(0, 4096, (2, 64), device=device)
 fp2_out = _fp2(x3)
 ult_out = _ult(x3)
 cos3 = torch.nn.functional.cosine_similarity(fp2_out.view(-1), ult_out.view(-1), dim=0)
