@@ -27,8 +27,12 @@ try:
     import triton
     import triton.language as tl
 
-    HAS_TRITON = True
-except ImportError:
+    # Triton 3.x changed tl.dot semantics — the implicit transpose of the second
+    # argument was removed, and .T on a block is not supported inside tl.dot.
+    # Fall back to eager F.linear on 3.x until the kernel is re-written.
+    _TRITON_VERSION = tuple(int(x) for x in triton.__version__.split(".")[:2])
+    HAS_TRITON = _TRITON_VERSION < (3, 0)
+except (ImportError, AttributeError, ValueError):
     HAS_TRITON = False
 
 
@@ -68,17 +72,15 @@ if HAS_TRITON:
         offs_k = tl.arange(0, BLOCK_K)
 
         x_ptrs = x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk
-        # Row-major w load: (BLOCK_N, BLOCK_K) — coalesced for GPU.
-        # tl.dot in Triton 3.x requires b: [K, N], so we use .T in the call.
         w_ptrs = w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :] * stride_wk
 
         acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
         for k in range(0, K, BLOCK_K):
-            # Mask for K-dim boundary (both x and w have K as last dim)
-            k_mask = offs_k[None, :] < K - k
-            x = tl.load(x_ptrs, mask=k_mask, other=0.0)
-            w = tl.load(w_ptrs, mask=k_mask, other=0.0)
+            # Load activations (INT8 but stored as FP32 in PyTorch)
+            x = tl.load(x_ptrs, mask=offs_k[None, :] < K - k, other=0.0)
+            # Load master weights (FP32)
+            w = tl.load(w_ptrs, mask=offs_k[None, :] < K - k, other=0.0)
 
             # Quantize weights to ternary on-the-fly in SRAM
             w_scaled = w / gamma
@@ -86,7 +88,7 @@ if HAS_TRITON:
                 w_scaled > 0.5, 1.0, tl.where(w_scaled < -0.5, -1.0, 0.0)
             )
 
-            # Ternary matmul via tl.dot  (x: [M,K], w: [K,N]  →  acc: [M,N])
+            # Ternary matmul: adds for +1, subs for -1, skip for 0
             acc = tl.dot(x.to(tl.float16), w_ternary.to(tl.float16), acc)
 
             x_ptrs += BLOCK_K * stride_xk
