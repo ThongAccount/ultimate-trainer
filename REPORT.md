@@ -10,7 +10,7 @@ A merged architecture combining:
 
 - `ultimate_trainer/` — merged BitNet b1.58 + SubQSA model, BitLinear, SubQSA modules
 - `subqsa_trainer/` — standalone SubQSA trainer (kept as a separate tier)
-- `1bit-trainer/` — v1 b1.58 reference implementation
+- `1bit_trainer/` — v1 b1.58 reference implementation
 - `kernels/` — optional fused Triton ternary matmul (CUDA only)
 - `configs/` — long-context config (`longctx_config.py`)
 - `tests/` — 157 tests across 8 files (~60% coverage)
@@ -24,7 +24,7 @@ A merged architecture combining:
 | SubQSA 3-branch design (compression, selection, sliding window) | ✅ Implemented | `tests/test_subqsa_selection.py`, `tests/test_subqsa_window.py`, `tests/test_subqsa_comprehensive.py` |
 | SelectionBranch returns exactly `topk` contiguous blocks | ✅ Verified | Shape, count, and manual-gather parity tests pass |
 | Sliding-window attention only attends to last `win_size` tokens | ✅ Verified | Causal test with position-averaged values |
-| RoPE unification across all three trainer tiers | ✅ Implemented | Both tiers load `RotaryEmbedding` from `1bit-trainer/model.py` via `importlib` |
+| RoPE unification across all three trainer tiers | ✅ Implemented | Both tiers load `RotaryEmbedding` from `1bit_trainer/model.py` via `importlib` |
 | RoPE cos/sin table caching | ✅ Optimized | Precomputed tables eliminate GPU trig per forward (~60ms saved at 4K) |
 | BitLinear eager/fused dispatch safety | ✅ Implemented + Fixed | Fused kernel guarded with `not self.training` — prevents gradient graph severance on GPU |
 | BitLinear eval-mode ternary weight refresh | ✅ Implemented | `eval()` recomputes `_gamma` and `_w_ternary` from master weight |

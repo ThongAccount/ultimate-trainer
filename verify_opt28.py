@@ -47,7 +47,7 @@ section("2.5 RoPE caching: cached cos/sin matches dynamic computation")
 
 import importlib.util
 spec = importlib.util.spec_from_file_location(
-    "_bit_model", os.path.join(os.path.dirname(os.path.abspath(__file__)), "1bit-trainer", "model.py")
+    "_bit_model", os.path.join(os.path.dirname(os.path.abspath(__file__)), "1bit_trainer", "model.py")
 )
 _bit_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(_bit_mod)

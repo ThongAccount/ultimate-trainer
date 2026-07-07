@@ -466,7 +466,7 @@ def main():
     parser.add_argument("--config", type=str, default=None, help="Config file (JSON)")
     parser.add_argument("--resume", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--dataset", type=str, default="data/redpajama")
-    parser.add_argument("--output_dir", type=str, default="checkpoints/1bit-trainer")
+    parser.add_argument("--output_dir", type=str, default="checkpoints/1bit_trainer")
     args = parser.parse_args()
 
     # Model config

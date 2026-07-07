@@ -79,7 +79,7 @@ class TrainingConfig:
     log_interval: int = 10
     eval_interval: int = 500
     save_interval: int = 2000
-    output_dir: str = "checkpoints/1bit-trainer"
+    output_dir: str = "checkpoints/1bit_trainer"
     run_name: str = "bitnet-b1.58-run1"
 
     # Distributed

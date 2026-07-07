@@ -26,7 +26,7 @@ All attention variants run on CPU (pure PyTorch SDPA), but training on CPU is **
 The staged extension targets **1M context**, but stages beyond 256K require sequence parallelism (Ring Attention or DeepSpeed-Ulysses) and multi-node distributed training. Single-GPU users should stay at 4K–32K context.
 
 ### 6. The Architecture Is an Ablation Rig
-Each trainer tier (`1bit-trainer/`, `subqsa_trainer/`, `ultimate_trainer/`) is independently runnable for ablation. They share patterns but **not code** — fixes must be applied to each tier separately. This is intentional for isolation but means more maintenance.
+Each trainer tier (`1bit_trainer/`, `subqsa_trainer/`, `ultimate_trainer/`) is independently runnable for ablation. They share patterns but **not code** — fixes must be applied to each tier separately. This is intentional for isolation but means more maintenance.
 
 ---
 
@@ -57,7 +57,7 @@ Each trainer tier (`1bit-trainer/`, `subqsa_trainer/`, `ultimate_trainer/`) is i
   - [Long-Context Staged Training](#long-context-staged-training)
 - [Training Schedule](#training-schedule)
 - [Repository Deep Dive](#repository-deep-dive)
-  - [1bit-trainer/](#1bit-trainer)
+  - [1bit_trainer/](#1bit_trainer)
   - [subqsa_trainer/](#subqsa_trainer)
   - [ultimate_trainer/](#ultimate_trainer)
   - [kernels/](#kernels)
@@ -118,7 +118,7 @@ From [REPORT.md](REPORT.md):
 ```
 ultimate-ai-model/
 │
-├── 1bit-trainer/                 # Task 1 — v1 BitNet b1.58 reference trainer
+├── 1bit_trainer/                 # Task 1 — v1 BitNet b1.58 reference trainer
 │   ├── __init__.py               #   (empty, makes it importable)
 │   ├── config.py                 #   ModelConfig + TrainingConfig dataclasses
 │   ├── model.py                  #   BitLinear, RotaryEmbedding, RMSNorm, SwiGLU,
@@ -403,7 +403,7 @@ This dampens activation magnitude before the second BitLinear and is what makes 
 
 ### RoPE (Rotary Position Embedding)
 
-From `1bit-trainer/model.py`:
+From `1bit_trainer/model.py`:
 
 ```python
 class RotaryEmbedding(nn.Module):
@@ -540,7 +540,7 @@ Optional dependencies:
 python -m pytest tests/ -v
 
 # 1-bit trainer — FP vs BitLinear comparison
-python 1bit-trainer/comparison.py
+python 1bit_trainer/comparison.py
 
 # SubQSA trainer — Dense vs SubQSA comparison (currently reports CHECK)
 python subqsa_trainer/comparison.py
@@ -564,7 +564,7 @@ python train_longctx.py --smoke --stage 0 --max-steps 10 --resume checkpoints/1B
 
 ### Comparison Scripts
 
-**`1bit-trainer/comparison.py`** — Runs a 4-layer MLP side-by-side:
+**`1bit_trainer/comparison.py`** — Runs a 4-layer MLP side-by-side:
 - FP (nn.Linear + ReLU) vs BitLinear (ternary weights + 8-bit activations)
 - Reports: parameter count, memory (FP32 vs 1.58-bit effective), forward cosine similarity, loss curves over 50 steps, HF Kernels availability
 
@@ -634,7 +634,7 @@ Requires:
 torchrun --nproc_per_node=8 subqsa_trainer/train.py --smoke
 
 # 1-bit trainer with DDP
-torchrun --nproc_per_node=8 1bit-trainer/train.py --distributed
+torchrun --nproc_per_node=8 1bit_trainer/train.py --distributed
 ```
 
 ### Long-Context Staged Training
@@ -692,7 +692,7 @@ python train_longctx.py --smoke --stage 0 --max-steps 10
 
 ## Repository Deep Dive
 
-### 1bit-trainer/
+### 1bit_trainer/
 
 **`config.py`** — Two dataclasses:
 
@@ -789,7 +789,7 @@ python train_longctx.py --smoke --stage 0 --max-steps 10
   - Quant update frequency (default 10 steps)
   - Optional fused Triton kernel path (`fused_bitlinear_forward()`)
   - HF Kernels decorator
-- `RMSNorm` — Same as 1bit-trainer
+- `RMSNorm` — Same as 1bit_trainer
 
 **`subqsa.py`** — SubQSA with BitLinear + subln:
 

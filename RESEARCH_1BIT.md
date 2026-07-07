@@ -170,9 +170,9 @@ For small models (<100M), b1.58 needs **roughly 2× the hidden dimension** to ma
 
 ---
 
-## 7. Implementation Status (`1bit-trainer/`)
+## 7. Implementation Status (`1bit_trainer/`)
 
-The current `1bit-trainer/` implements **the v1 b1.58 paper recipe** (absmean activations, SwiGLU, RMSNorm). For the Ultimate Trainer we will upgrade to 2B4T-spec:
+The current `1bit_trainer/` implements **the v1 b1.58 paper recipe** (absmean activations, SwiGLU, RMSNorm). For the Ultimate Trainer we will upgrade to 2B4T-spec:
 
 - [ ] Switch FFN to squared ReLU
 - [ ] Switch normalization to subln (two norms per sub-block)

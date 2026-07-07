@@ -42,7 +42,7 @@ ultimate-ai-model/
 ├── RESEARCH_1BIT.md              (deep research — done)
 ├── RESEARCH_SUBQSA.md            (deep research — done)
 │
-├── 1bit-trainer/                 (Task 1 — done; v1 b1.58 reference)
+├── 1bit_trainer/                 (Task 1 — done; v1 b1.58 reference)
 │   ├── config.py
 │   ├── model.py
 │   └── train.py
@@ -56,7 +56,7 @@ ultimate-ai-model/
 │
 └── ultimate_trainer/             (Task 3 — the merged trainer; THE deliverable)
     ├── config.py                 (UltimateModelConfig + UltimateTrainingConfig)
-    ├── bitlinear.py              (2B4T-spec BitLinear extracted from 1bit-trainer)
+    ├── bitlinear.py              (2B4T-spec BitLinear extracted from 1bit_trainer)
     ├── subqsa.py                 (SubQSA with BitLinear projections + subln)
     ├── model.py                  (BitLinear FFN/QKV/O + SubQSAAttention)
     ├── train.py                  (pretrain → SFT → DPO/GRPO + staged ctx extension)
@@ -71,9 +71,9 @@ Each tier is independently runnable so we can ablate "1-bit alone", "SubQSA alon
 
 ### ✅ Task 1: 1-Bit Trainer (v1 b1.58) — DONE
 
-[1bit-trainer/config.py](1bit-trainer/config.py), [1bit-trainer/model.py](1bit-trainer/model.py), [1bit-trainer/train.py](1bit-trainer/train.py) are complete and runnable. They implement the **2024 v1 b1.58 paper** (absmean activations, SwiGLU, RMSNorm).
+[1bit_trainer/config.py](1bit_trainer/config.py), [1bit_trainer/model.py](1bit_trainer/model.py), [1bit_trainer/train.py](1bit_trainer/train.py) are complete and runnable. They implement the **2024 v1 b1.58 paper** (absmean activations, SwiGLU, RMSNorm).
 
-`1bit-trainer/` is intentionally left untouched as the v1 reference. `ultimate_trainer/bitlinear.py` implements the 2B4T spec independently, and both `subqsa_trainer/subqsa.py` and `ultimate_trainer/subqsa.py` load `RotaryEmbedding` from `1bit-trainer/model.py` via `importlib` to keep the reference intact while sharing RoPE.
+`1bit_trainer/` is intentionally left untouched as the v1 reference. `ultimate_trainer/bitlinear.py` implements the 2B4T spec independently, and both `subqsa_trainer/subqsa.py` and `ultimate_trainer/subqsa.py` load `RotaryEmbedding` from `1bit_trainer/model.py` via `importlib` to keep the reference intact while sharing RoPE.
 
 ### ✅ Task 2: SubQSA Trainer — IMPLEMENTED
 
@@ -234,7 +234,7 @@ Before declaring the trainer "done":
 | Severity | Fix | Files |
 |----------|-----|-------|
 | CRITICAL | Fused Triton kernel guarded with `not self.training` — autograd graph no longer severed on GPU | `ultimate_trainer/bitlinear.py` |
-| HIGH | Zero-input NaN prevented in both activation quant functions | Both `bitlinear.py`, `1bit-trainer/model.py` |
+| HIGH | Zero-input NaN prevented in both activation quant functions | Both `bitlinear.py`, `1bit_trainer/model.py` |
 | HIGH | Checkpoint resume now trains remaining steps, not extra full run | `train_longctx.py` |
 | HIGH | Dataset `StopIteration` caught and iterator recreated | `train_longctx.py` |
 | HIGH | Gate normalization epsilon added to prevent NaN | `subqsa_trainer/subqsa.py` |
@@ -251,7 +251,7 @@ Before declaring the trainer "done":
 |------|-------------|-------|
 | GPU | SelectionBranch FlashAttention (3 kernel launches → 1 fused call) | `ultimate_trainer/subqsa.py` |
 | GPU | Sliding window mask caching (`_sw_mask_cache` dict) | `ultimate_trainer/subqsa.py` |
-| GPU | RoPE cos/sin table caching (precomputed, indexed by position_ids) | `1bit-trainer/model.py` |
+| GPU | RoPE cos/sin table caching (precomputed, indexed by position_ids) | `1bit_trainer/model.py` |
 | GPU | ReLU² fusion (`.clamp(min=0).pow(2)` — single fused kernel) | `ultimate_trainer/model.py` |
 | Memory | Compression attention at KV-head resolution (avoids 4x expansion) | `ultimate_trainer/subqsa.py` |
 | Memory | `_w_ternary` buffers made non-persistent (halves checkpoint size) | Both `bitlinear.py` |

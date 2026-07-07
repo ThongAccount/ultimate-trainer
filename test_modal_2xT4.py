@@ -81,7 +81,7 @@ _root = os.getcwd()
 
 def _load_1bit(mod_name, file_name):
     spec = importlib.util.spec_from_file_location(
-        mod_name, os.path.join(_root, "1bit-trainer", file_name)
+        mod_name, os.path.join(_root, "1bit_trainer", file_name)
     )
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)

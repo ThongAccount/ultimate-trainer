@@ -214,8 +214,8 @@ def bench_1bit(seq_len=128, batch=2, steps=30):
         spec.loader.exec_module(m)
         return m
 
-    _cfg = _load("1bit_config", "1bit-trainer/config.py")
-    _mod = _load("1bit_model", "1bit-trainer/model.py")
+    _cfg = _load("1bit_config", "1bit_trainer/config.py")
+    _mod = _load("1bit_model", "1bit_trainer/model.py")
 
     mc = _cfg.ModelConfig(
         vocab_size=4096,
@@ -255,7 +255,7 @@ def bench_1bit_fp(seq_len=128, batch=2, steps=30):
 
     _root = os.path.dirname(os.path.abspath(__file__))
     spec = importlib.util.spec_from_file_location(
-        "1bit_comp", os.path.join(_root, "1bit-trainer/comparison.py")
+        "1bit_comp", os.path.join(_root, "1bit_trainer/comparison.py")
     )
     _comp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(_comp)

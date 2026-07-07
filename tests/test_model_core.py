@@ -1,6 +1,6 @@
 """Tests for core model components: RoPE, GQA, SwiGLU, ReLU-squared, weight tying, loss, generation.
 
-Imports from 1bit-trainer/model.py and ultimate_trainer/model.py as needed.
+Imports from 1bit_trainer/model.py and ultimate_trainer/model.py as needed.
 All tests run on CPU with PyTorch and pytest.
 """
 
@@ -20,11 +20,11 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 # ---------------------------------------------------------------------------
-# Import 1bit-trainer/model.py  (hyphen in directory name -> importlib)
+# Import 1bit_trainer/model.py
 # ---------------------------------------------------------------------------
 def _load_1bit_model():
     spec = importlib.util.spec_from_file_location(
-        "bit_model", os.path.join(PROJECT_ROOT, "1bit-trainer", "model.py")
+        "bit_model", os.path.join(PROJECT_ROOT, "1bit_trainer", "model.py")
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -97,7 +97,7 @@ def tiny_ultimate_config():
 # ===================================================================
 
 class TestRotaryEmbedding:
-    """Rotary Position Embedding tests (from 1bit-trainer/model.py)."""
+    """Rotary Position Embedding tests (from 1bit_trainer/model.py)."""
 
     def test_rope_position_zero_is_identity(self):
         """Rotating by position 0 should return the input tensor unchanged."""
@@ -156,7 +156,7 @@ class TestGQA:
         """Verify the expand-reshape GQA pattern maps query head 0 to KV head 0.
 
         Uses the same ``expand().reshape()`` logic found in
-        ``Attention.forward`` (1bit-trainer) and ``repeat_kv`` (SubQSA).
+        ``Attention.forward`` (1bit_trainer) and ``repeat_kv`` (SubQSA).
         """
         num_heads, num_kv_heads = 8, 4
         n_reps = num_heads // num_kv_heads
@@ -192,7 +192,7 @@ class TestGQA:
 # ===================================================================
 
 class TestSwiGLU:
-    """SwiGLU feed-forward tests (from 1bit-trainer/model.py)."""
+    """SwiGLU feed-forward tests (from 1bit_trainer/model.py)."""
 
     def test_swiglu_output_shape(self):
         """SwiGLU's down projection must return (B, T, hidden_dim)."""
