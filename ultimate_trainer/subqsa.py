@@ -58,8 +58,16 @@ class CompressionBranch(nn.Module):
         n_blocks = (T - l) // d
         if n_blocks <= 0:
             return k.mean(dim=2, keepdim=True), v.mean(dim=2, keepdim=True)
-        blocks_k = k.unfold(2, l, d)[:, :, :n_blocks].transpose(-1, -2).reshape(B, H, n_blocks, l * D)
-        blocks_v = v.unfold(2, l, d)[:, :, :n_blocks].transpose(-1, -2).reshape(B, H, n_blocks, l * D)
+        blocks_k = (
+            k.unfold(2, l, d)[:, :, :n_blocks]
+            .transpose(-1, -2)
+            .reshape(B, H, n_blocks, l * D)
+        )
+        blocks_v = (
+            v.unfold(2, l, d)[:, :, :n_blocks]
+            .transpose(-1, -2)
+            .reshape(B, H, n_blocks, l * D)
+        )
         return self.phi_k(blocks_k), self.phi_v(blocks_v)
 
 
@@ -79,10 +87,16 @@ class SelectionBranch(nn.Module):
             n_c = p_cmp.shape[-1]
             if n_c > n_sel:
                 stride = n_c // n_sel
-                p_cmp = p_cmp[..., :stride * n_sel].reshape(B, H, T, n_sel, stride).sum(dim=-1)
+                p_cmp = (
+                    p_cmp[..., : stride * n_sel]
+                    .reshape(B, H, T, n_sel, stride)
+                    .sum(dim=-1)
+                )
             else:
                 repeats = n_sel - n_c
-                p_cmp = torch.cat([p_cmp, p_cmp[..., -1:].expand(-1, -1, -1, repeats)], dim=-1)
+                p_cmp = torch.cat(
+                    [p_cmp, p_cmp[..., -1:].expand(-1, -1, -1, repeats)], dim=-1
+                )
             p_cmp = p_cmp / p_cmp.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         topk_actual = min(n, n_sel)
         _, top_idx = p_cmp.topk(topk_actual, dim=-1)  # (B, H, T, topk_actual)
@@ -130,8 +144,7 @@ def sliding_window_attention(q, k, v, win_size, cache=None):
 
     # Use or build a (T, w) additive causal mask.
     if cache is not None and (T, w) in cache:
-        attn_mask = cache[(T, w)]
-        valid = None
+        attn_mask, valid = cache[(T, w)]
     else:
         t_idx = torch.arange(T, device=q.device).unsqueeze(1)
         j_idx = torch.arange(w, device=q.device).unsqueeze(0)
@@ -142,16 +155,11 @@ def sliding_window_attention(q, k, v, win_size, cache=None):
             torch.full((), -1e9, device=q.device, dtype=q.dtype),
         )
         if cache is not None:
-            cache[(T, w)] = attn_mask
+            cache[(T, w)] = (attn_mask, valid)
 
     out = F.scaled_dot_product_attention(q, k_win, v_win, attn_mask=attn_mask)
 
-    if valid is None:
-        # Recompute validity to zero queries with no causal keys inside window.
-        t_idx = torch.arange(T, device=q.device).unsqueeze(1)
-        j_idx = torch.arange(w, device=q.device).unsqueeze(0)
-        valid = (T - w + j_idx) <= t_idx
-    # Zero queries that have no causal keys inside the window.
+    # Use cached valid mask; never recompute on cache hit.
     has_valid = valid.any(dim=-1).view(1, 1, T, 1)
     out = torch.where(has_valid, out, torch.zeros_like(out))
     return out
@@ -245,28 +253,31 @@ class SubQSAAttention(nn.Module):
             # q: (B, 20, T, D), k_cmp: (B, 5, n_cmp, D)
             # Split 20 Q heads into n_reps=4 groups of 5, each attending to the
             # corresponding KV head's compressed representation.
+            n_cmp = k_cmp.shape[2]
+            # Compute p_cmp ONCE at KV-head resolution via single einsum/softmax.
+            # q: (B, num_heads, T, D) → (B, num_kv_heads, n_reps, T, D)
+            # einsum w/ k_cmp (B, num_kv_heads, n_cmp, D) → (B, num_kv_heads, n_reps, T, n_cmp)
+            q_re = q.reshape(B, self.num_kv_heads, n_reps, T, self.head_dim)
+            scores_cmp = torch.einsum(
+                "bhrtd,bhld->bhrtl", q_re.float(), k_cmp.float()
+            ) / math.sqrt(self.head_dim)
+            p_cmp = F.softmax(scores_cmp, dim=-1)  # (B, num_kv_heads, n_reps, T, n_cmp)
+            p_cmp = p_cmp.reshape(
+                B, self.num_heads, T, n_cmp
+            )  # (B, num_heads, T, n_cmp)
+
+            # GQA-aware SDPA output per group (no redundant softmax)
             o_cmp_parts = []
-            p_cmp_parts = []
-            n_kv = self.num_kv_heads
             for gi in range(n_reps):
-                # Every n_reps-th query head maps to KV head j:
-                # group 0: heads [0, 4,  8, 12, 16]; group 1: heads [1, 5,  9, 13, 17]; etc.
-                q_g = q[:, gi::n_reps, :, :]  # (B, 5, T, D)
-                scores_g = torch.einsum(
-                    "bhtd,bhld->bhtl", q_g.float(), k_cmp.float()
-                ) / math.sqrt(self.head_dim)
-                p_cmp_g = F.softmax(scores_g, dim=-1)
-                p_cmp_parts.append(p_cmp_g)
-                # SDPA at KV-head resolution
+                q_g = q[:, gi::n_reps, :, :]
                 o_g = F.scaled_dot_product_attention(
-                    q_g, k_cmp, v_cmp,
-                    dropout_p=self.dropout if self.training else 0.0
+                    q_g, k_cmp, v_cmp, dropout_p=self.dropout if self.training else 0.0
                 )
                 o_cmp_parts.append(o_g)
             # Interleave groups back to original head order
-            n_cmp = k_cmp.shape[2]
-            o_cmp = torch.stack(o_cmp_parts, dim=2).reshape(B, self.num_heads, T, self.head_dim)
-            p_cmp = torch.stack(p_cmp_parts, dim=2).reshape(B, self.num_heads, T, n_cmp)
+            o_cmp = torch.stack(o_cmp_parts, dim=2).reshape(
+                B, self.num_heads, T, self.head_dim
+            )
         elif k_cmp.shape[2] > 0:
             # No GQA or n_reps==1 — full attention at query-head resolution
             scores_cmp = torch.einsum(
@@ -285,7 +296,9 @@ class SubQSAAttention(nn.Module):
         k_h = repeat_kv(k, n_reps) if n_reps > 1 else k
         v_h = repeat_kv(v, n_reps) if n_reps > 1 else v
         o_slc, _ = self.selection(q, k_h, v_h, p_cmp, n_cmp)
-        o_win = sliding_window_attention(q, k_h, v_h, self.win_size, self._sw_mask_cache)
+        o_win = sliding_window_attention(
+            q, k_h, v_h, self.win_size, self._sw_mask_cache
+        )
 
         g = self.gate_mlp(x).view(B, T, 3, self.num_heads).permute(0, 3, 1, 2)
         g = g.float().sigmoid()

@@ -123,7 +123,9 @@ class BitLinear(nn.Module):
         # Master weights stored in FP32 for stable training
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         self.register_buffer("_gamma", torch.ones(1))
-        self.register_buffer("_w_ternary", torch.empty(out_features, in_features), persistent=False)
+        self.register_buffer(
+            "_w_ternary", torch.empty(out_features, in_features), persistent=False
+        )
         if bias:
             self.bias = nn.Parameter(torch.empty(out_features))
         else:
@@ -147,14 +149,27 @@ class BitLinear(nn.Module):
 
         if self.training:
             self._quant_step += 1
-            stale = self._quant_step % self.quant_update_freq == 1
-            if stale:
-                g = self.weight.abs().mean() + 1e-5
-                self._gamma = g
-                w_q = torch.clamp(torch.round(self.weight / g), -1, 1)
-                self._w_ternary = self.weight + (w_q - self.weight).detach()
+            if self._quant_step % self.quant_update_freq == 1:
+                # Sync buffers for eval readiness (mean reduction is the expensive part)
+                self._refresh_ternary_weights()
 
+            # STE expression: forward uses ternary {-1,0,+1}, backward is identity
+            # Always recomputed so the autograd graph connects to self.weight —
+            # this prevents "element 0 does not require grad or grad_fn" even if
+            # forward() was previously called under torch.no_grad() (e.g. comparison
+            # script range check) which poisons the _w_ternary buffer.
+            w_q = torch.clamp(torch.round(self.weight / self._gamma), -1, 1)
+            w_ste = self.weight + (w_q - self.weight).detach()
+            return F.linear(x, w_ste, self.bias)
+
+        # Eval: use cached ternary buffer (efficient, single memory read)
         return F.linear(x, self._w_ternary, self.bias)
+
+    def eval(self):
+        """Sync ternary weights for inference when entering eval mode."""
+        super().eval()
+        self._refresh_ternary_weights()
+        return self
 
     def extra_repr(self) -> str:
         return (
@@ -163,11 +178,11 @@ class BitLinear(nn.Module):
             f"act_quant={'on' if self.quantize_activations else 'off'}"
         )
 
-    def _recompute_from_master(self) -> None:
-        """Recompute _w_ternary and _gamma from the FP32 master weight.
+    def _refresh_ternary_weights(self) -> None:
+        """Recompute cached gamma and ternary weights from current self.weight.
 
-        Called after loading a checkpoint so the non-persistent ternary buffer
-        is rebuilt from the deserialized master weight.
+        Uses .fill_() / .copy_() so the registered buffers remain tracked
+        (avoids the RuntimeError from reassigning self._w_ternary = ...).
         """
         g = self.weight.abs().mean() + 1e-5
         self._gamma.fill_(g)
@@ -175,8 +190,14 @@ class BitLinear(nn.Module):
         self._w_ternary.copy_(self.weight + (w_q - self.weight).detach())
 
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict,
-        missing_keys, unexpected_keys, error_msgs,
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
     ):
         """Override to skip non-persistent buffers and recompute on load."""
         # Remove _w_ternary from the state dict keys we expect — it is
@@ -189,12 +210,17 @@ class BitLinear(nn.Module):
             missing_keys.remove(f"{prefix}_w_ternary")
 
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict,
-            missing_keys, unexpected_keys, error_msgs,
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
         )
 
         # Recompute ternary buffer from loaded master weight
-        self._recompute_from_master()
+        self._refresh_ternary_weights()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -538,7 +564,7 @@ class BitNetModel(nn.Module):
 
         # Tie weights and recompute ternary buffer from the shared weight
         self.lm_head.weight = self.embed_tokens.weight
-        self.lm_head._recompute_from_master()
+        self.lm_head._refresh_ternary_weights()
 
         # RoPE cache
         self.register_buffer(

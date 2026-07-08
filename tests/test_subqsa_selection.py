@@ -41,8 +41,12 @@ def test_selection_output_shape():
         out, idx = sb(q, k, v, p_cmp, n_cmp)
         n_sel = max(1, T // l_prime)
         topk_actual = min(topk, n_sel)
-        assert out.shape == (B, H, T, D), f"out shape mismatch for {(B,H,T,D,l_prime,topk)}"
-        assert idx.shape == (B, H, T, topk_actual), f"idx shape mismatch for {(B,H,T,D,l_prime,topk)}"
+        assert out.shape == (B, H, T, D), (
+            f"out shape mismatch for {(B, H, T, D, l_prime, topk)}"
+        )
+        assert idx.shape == (B, H, T, topk_actual), (
+            f"idx shape mismatch for {(B, H, T, D, l_prime, topk)}"
+        )
 
 
 def test_selection_topk_count_when_enough_blocks():
@@ -52,9 +56,13 @@ def test_selection_topk_count_when_enough_blocks():
         out, idx = sb(q, k, v, p_cmp, n_cmp)
         n_sel = max(1, T // l_prime)
         topk_actual = min(topk, n_sel)
-        assert idx.shape[-1] == topk_actual, f"topk count mismatch for {(B,H,T,D,l_prime,topk)}"
-        assert (idx >= 0).all(), f"negative index for {(B,H,T,D,l_prime,topk)}"
-        assert (idx < n_sel).all(), f"out-of-range index for {(B,H,T,D,l_prime,topk)}"
+        assert idx.shape[-1] == topk_actual, (
+            f"topk count mismatch for {(B, H, T, D, l_prime, topk)}"
+        )
+        assert (idx >= 0).all(), f"negative index for {(B, H, T, D, l_prime, topk)}"
+        assert (idx < n_sel).all(), (
+            f"out-of-range index for {(B, H, T, D, l_prime, topk)}"
+        )
 
 
 def test_selection_matches_manual_topk_gather():
@@ -101,6 +109,57 @@ def test_selection_interpolates_compression_scores():
     assert (idx >= 0).all() and (idx < n_sel).all()
 
 
+def test_subqsa_trainer_score_and_select_uses_p_cmp_topk():
+    """Regression: _score_and_select() must select blocks via p_cmp.topk() from full KV.
+
+    Shapes: T=64, slc_block=32 → n_sel=2, slc_topk=4 → k_actual=2.
+    n_cmp = 2 (matches compression for T=64, cmp_block=32, cmp_stride=16).
+    p_cmp sets block 1 as high importance → top_idx must select [1, 0].
+    k_sel/v_sel must be (B, H, k_actual * slc_block, D) = (1, 1, 64, 16).
+    """
+    from subqsa_trainer.subqsa import SubQSA
+
+    torch.manual_seed(42)
+    B, H, D = 1, 1, 16
+    T = 64
+    slc_block = 32
+    slc_topk = 4
+    n_sel = T // slc_block
+    n_cmp = 2
+    topk_actual = min(slc_topk, n_sel)
+
+    subqsa = SubQSA(
+        hidden_dim=64,
+        num_heads=H,
+        num_kv_heads=H,
+        head_dim=D,
+        slc_block=slc_block,
+        slc_topk=slc_topk,
+    )
+    subqsa.eval()
+
+    q = torch.randn(B, H, T, D)
+    k = torch.randn(B, H, T, D)
+    v = torch.randn(B, H, T, D)
+
+    p_cmp_agg = torch.zeros(B, H, n_cmp)
+    p_cmp_agg[..., 1] = 100.0
+
+    k_sel, v_sel, top_idx = subqsa._score_and_select(q, k, v, p_cmp_agg, n_cmp)
+
+    expected = torch.tensor([[1, 0]]).view(1, 1, -1).expand(B, H, -1)
+    assert top_idx.shape == (B, H, topk_actual), (
+        f"Expected (B,H,k) shape, got {top_idx.shape}"
+    )
+    assert (top_idx == expected).all(), f"Expected selection {expected}, got {top_idx}"
+    assert k_sel.shape == (B, H, topk_actual * slc_block, D), (
+        f"k_sel shape mismatch: {k_sel.shape}"
+    )
+    assert v_sel.shape == (B, H, topk_actual * slc_block, D), (
+        f"v_sel shape mismatch: {v_sel.shape}"
+    )
+
+
 if __name__ == "__main__":
     test_selection_output_shape()
     print("test_selection_output_shape passed")
@@ -110,4 +169,6 @@ if __name__ == "__main__":
     print("test_selection_matches_manual_topk_gather passed")
     test_selection_interpolates_compression_scores()
     print("test_selection_interpolates_compression_scores passed")
+    test_subqsa_trainer_score_and_select_uses_p_cmp_topk()
+    print("test_subqsa_trainer_score_and_select_uses_p_cmp_topk passed")
     print("All tests passed")

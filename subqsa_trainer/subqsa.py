@@ -86,15 +86,38 @@ class SubQSA(nn.Module):
         v_b = torch.stack([v[:, :, i * d : i * d + l] for i in range(n)], dim=2).mean(2)
         return k_b, v_b
 
-    def _score_and_select(self, q, k_cmp, v_cmp, B, H, T):
-        # q: (B, H, T, D), k_cmp: (B, H, n, D)
-        k_mag = k_cmp.abs().mean(dim=-1)  # (B, H, n)
-        _, top_idx = k_mag.topk(min(self.slc_topk, k_cmp.shape[2]), dim=-1)  # (B, H, k)
-        # gather
-        ki = top_idx.unsqueeze(-1).expand(-1, -1, -1, self.head_dim)
-        vi = top_idx.unsqueeze(-1).expand(-1, -1, -1, self.head_dim)
-        k_sel = torch.gather(k_cmp, dim=2, index=ki)
-        v_sel = torch.gather(v_cmp, dim=2, index=vi)
+    def _score_and_select(self, q, k, v, p_cmp, n_cmp):
+        """Select top-k blocks from full GQA-expanded K/V via p_cmp importance.
+
+        Args:
+            q: (B, H, T, D) — queries (unused, kept for interface compat).
+            k: (B, H, T, D) — full RoPE'd GQA-expanded keys.
+            v: (B, H, T, D) — full GQA-expanded values.
+            p_cmp: (B, H, n_sel) — per-compression-block importance aggregated
+                across query positions, already resampled to the selection grid.
+            n_cmp: int — number of compressed blocks (unused, kept for compat).
+
+        Returns:
+            k_sel: (B, H, k_actual * l_prime, D) — selected key blocks flattened.
+            v_sel: (B, H, k_actual * l_prime, D) — selected value blocks flattened.
+            top_idx: (B, H, k_actual) — indices of selected blocks.
+        """
+        B, H, T, D = k.shape
+        l_prime = self.slc_block
+        n_sel = p_cmp.shape[-1]  # already resampled to selection grid in forward()
+
+        k_blocks = k[:, :, : n_sel * l_prime].reshape(B, H, n_sel, l_prime, D)
+        v_blocks = v[:, :, : n_sel * l_prime].reshape(B, H, n_sel, l_prime, D)
+
+        k_actual = min(self.slc_topk, n_sel)
+        _, top_idx = p_cmp.topk(k_actual, dim=-1)
+
+        bi = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, l_prime, D)
+        k_sel = torch.gather(k_blocks, dim=2, index=bi)
+        v_sel = torch.gather(v_blocks, dim=2, index=bi)
+        k_sel = k_sel.reshape(B, H, k_actual * l_prime, D)
+        v_sel = v_sel.reshape(B, H, k_actual * l_prime, D)
+
         return k_sel, v_sel, top_idx
 
     def forward(self, x, start_pos=0, seq_len=None):
@@ -124,8 +147,31 @@ class SubQSA(nn.Module):
         # Compression branch
         k_cmp, v_cmp = self._compress(k_r, v, B, self.num_heads, T)
 
-        # Selection branch (top-k magnitude on compressed KV)
-        k_sel, v_sel, _ = self._score_and_select(q, k_cmp, v_cmp, B, self.num_heads, T)
+        # Compression attention probabilities as selection signal.
+        scores = (q @ k_cmp.transpose(-2, -1)) * (self.head_dim**-0.5)
+        p_cmp = F.softmax(scores, dim=-1)  # (B, H, T, n_cmp)
+        p_cmp_agg = p_cmp.mean(dim=2)  # (B, H, n_cmp) — per-block importance
+
+        # Resample p_cmp_agg to selection grid if shapes differ.
+        n_cmp = k_cmp.shape[2]
+        n_sel = max(1, T // self.slc_block)
+        if n_cmp != n_sel:
+            if n_cmp > n_sel:
+                stride = n_cmp // n_sel
+                p_cmp_agg = (
+                    p_cmp_agg[..., : stride * n_sel]
+                    .reshape(B, self.num_heads, n_sel, stride)
+                    .sum(dim=-1)
+                )
+            else:
+                repeats = n_sel - n_cmp
+                p_cmp_agg = torch.cat(
+                    [p_cmp_agg, p_cmp_agg[..., -1:].expand(-1, -1, repeats)], dim=-1
+                )
+            p_cmp_agg = p_cmp_agg / (p_cmp_agg.sum(dim=-1, keepdim=True) + 1e-8)
+
+        # Selection branch (top-k from compression attention probs)
+        k_sel, v_sel, _ = self._score_and_select(q, k_r, v, p_cmp_agg, k_cmp.shape[2])
 
         # All 3 branches use standard SDPA (shapes verified to match)
         # 1) Compression: q (B,H,T,D) x k_cmp (B,H,n,D) -> (B,H,T,n) -> (B,H,T,D)
