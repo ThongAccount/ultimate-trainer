@@ -19,15 +19,19 @@
  * Or via PyTorch's JIT:
  *   from torch.utils.cpp_extension import load_inline
  *
- * Benchmark (after compiling):
- *   nvcc -O3 -arch=sm_75 -o bench_addsub addsub.cu -lcudart
- *   ./bench_addsub  # runs 1B-element benchmark
+ * Run tests & benchmark (standalone):
+ *   nvcc -O3 -arch=sm_75 -o test_addsub addsub.cu -lcudart
+ *   ./test_addsub               # benchmark only (default)
+ *   ./test_addsub --test        # comprehensive tests only
+ *   ./test_addsub --all         # tests + benchmark
+ *   ./test_addsub --bench       # benchmark only (same as default)
  */
 
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <cstring>
 #include <chrono>
 
 // ── Error-checking macro ────────────────────────────────────────────
@@ -141,7 +145,17 @@ void vec_add_sub(const float* a, const float* b, float* add, float* sub,
 
 }  // extern "C"
 
-// ── Standalone benchmark ────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+//  TEST SUITE & BENCHMARK
+// ═══════════════════════════════════════════════════════════════════
+//
+// Compile & run:
+//   nvcc -O3 -arch=sm_75 -o test_addsub addsub.cu -lcudart
+//   ./test_addsub               # benchmark only (default)
+//   ./test_addsub --test        # run all tests
+//   ./test_addsub --all         # tests + benchmark
+//
+// ═══════════════════════════════════════════════════════════════════
 
 #ifndef BUILD_AS_SHARED
 
@@ -149,7 +163,449 @@ double bandwidth_gb_s(size_t bytes, double seconds) {
   return (double)bytes / (1e9 * seconds);
 }
 
-int main() {
+// ── Test tracking ──────────────────────────────────────────────────
+
+static int g_tests_passed = 0;
+static int g_tests_failed = 0;
+
+#define TEST_ASSERT(cond, fmt, ...)                                           \
+  do {                                                                        \
+    if (!(cond)) {                                                            \
+      printf("  ❌ FAIL: " fmt " [%s:%d]\n", ##__VA_ARGS__, __FILE__, __LINE__); \
+      g_tests_failed++;                                                       \
+      return;                                                                 \
+    }                                                                         \
+  } while (0)
+
+#define TEST_SECTION(name)                                                    \
+  printf("\n  ── %s ──\n", name);                                             \
+  g_tests_passed = g_tests_failed = 0;
+
+#define TEST_REPORT()                                                         \
+  do {                                                                        \
+    printf("  ✅ %d passed, %d failed\n", g_tests_passed, g_tests_failed);     \
+    g_tests_passed = g_tests_failed = 0;                                      \
+  } while (0)
+
+// ── Test helpers ───────────────────────────────────────────────────
+
+static float* run_vec_add(const float* d_a, const float* d_b, size_t N,
+                          cudaStream_t stream) {
+  float *d_c;
+  CUDA_CHECK(cudaMalloc(&d_c, N * sizeof(float)));
+  vec_add(d_a, d_b, d_c, N, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  float* h_c = (float*)malloc(N * sizeof(float));
+  CUDA_CHECK(cudaMemcpy(h_c, d_c, N * sizeof(float), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaFree(d_c));
+  return h_c;
+}
+
+static float* run_vec_sub(const float* d_a, const float* d_b, size_t N,
+                          cudaStream_t stream) {
+  float *d_c;
+  CUDA_CHECK(cudaMalloc(&d_c, N * sizeof(float)));
+  vec_sub(d_a, d_b, d_c, N, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  float* h_c = (float*)malloc(N * sizeof(float));
+  CUDA_CHECK(cudaMemcpy(h_c, d_c, N * sizeof(float), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaFree(d_c));
+  return h_c;
+}
+
+static void run_vec_add_sub(const float* d_a, const float* d_b, size_t N,
+                            cudaStream_t stream,
+                            float** h_add, float** h_sub) {
+  float *d_add, *d_sub;
+  CUDA_CHECK(cudaMalloc(&d_add, N * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&d_sub, N * sizeof(float)));
+  vec_add_sub(d_a, d_b, d_add, d_sub, N, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  *h_add = (float*)malloc(N * sizeof(float));
+  *h_sub = (float*)malloc(N * sizeof(float));
+  CUDA_CHECK(cudaMemcpy(*h_add, d_add, N * sizeof(float), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(*h_sub, d_sub, N * sizeof(float), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaFree(d_add));
+  CUDA_CHECK(cudaFree(d_sub));
+}
+
+static float* upload_to_gpu(const float* h_data, size_t N, cudaStream_t stream) {
+  float* d_data;
+  CUDA_CHECK(cudaMalloc(&d_data, N * sizeof(float)));
+  CUDA_CHECK(cudaMemcpyAsync(d_data, h_data, N * sizeof(float),
+                              cudaMemcpyHostToDevice, stream));
+  return d_data;
+}
+
+// ── Test: correctness on tiny vectors ──────────────────────────────
+
+static void test_tiny_vectors(cudaStream_t stream) {
+  TEST_SECTION("Tiny vectors (1..256 elements)");
+
+  size_t sizes[] = {1, 2, 3, 7, 13, 31, 64, 128, 256};
+  for (int s = 0; s < (int)(sizeof(sizes)/sizeof(sizes[0])); s++) {
+    size_t N = sizes[s];
+    float* h_a = (float*)malloc(N * sizeof(float));
+    float* h_b = (float*)malloc(N * sizeof(float));
+    for (size_t i = 0; i < N; i++) {
+      h_a[i] = (float)(i * 3 + 1);
+      h_b[i] = (float)(i * 2 + 5);
+    }
+
+    float* d_a = upload_to_gpu(h_a, N, stream);
+    float* d_b = upload_to_gpu(h_b, N, stream);
+
+    float* h_c = run_vec_add(d_a, d_b, N, stream);
+    for (size_t i = 0; i < N; i++) {
+      TEST_ASSERT(fabsf(h_c[i] - (h_a[i] + h_b[i])) < 1e-6f,
+                  "add N=%zu [%zu]: got %f, expected %f", N, i, h_c[i], h_a[i] + h_b[i]);
+    }
+    free(h_c);
+
+    h_c = run_vec_sub(d_a, d_b, N, stream);
+    for (size_t i = 0; i < N; i++) {
+      TEST_ASSERT(fabsf(h_c[i] - (h_a[i] - h_b[i])) < 1e-6f,
+                  "sub N=%zu [%zu]: got %f, expected %f", N, i, h_c[i], h_a[i] - h_b[i]);
+    }
+    free(h_c);
+
+    float *h_add, *h_sub;
+    run_vec_add_sub(d_a, d_b, N, stream, &h_add, &h_sub);
+    for (size_t i = 0; i < N; i++) {
+      TEST_ASSERT(fabsf(h_add[i] - (h_a[i] + h_b[i])) < 1e-6f,
+                  "fused-add N=%zu [%zu]: got %f, expected %f", N, i, h_add[i], h_a[i] + h_b[i]);
+      TEST_ASSERT(fabsf(h_sub[i] - (h_a[i] - h_b[i])) < 1e-6f,
+                  "fused-sub N=%zu [%zu]: got %f, expected %f", N, i, h_sub[i], h_a[i] - h_b[i]);
+    }
+    free(h_add); free(h_sub);
+
+    CUDA_CHECK(cudaFree(d_a));
+    CUDA_CHECK(cudaFree(d_b));
+    free(h_a); free(h_b);
+    g_tests_passed++;
+  }
+  TEST_REPORT();
+}
+
+// ── Test: edge values (zeros, negatives, large) ────────────────────
+
+static void test_edge_values(cudaStream_t stream) {
+  TEST_SECTION("Edge values (zeros, negatives, near limits)");
+
+  struct { float a_val; float b_val; const char* desc; } cases[] = {
+    {0.0f, 0.0f, "both zero"},
+    {0.0f, 1.0f, "zero + positive"},
+    {1.0f, 0.0f, "positive + zero"},
+    {0.0f, -1.0f, "zero + negative"},
+    {-1.0f, 0.0f, "negative + zero"},
+    {1e-10f, 1e-10f, "very small"},
+    {1e10f, 1e10f, "very large"},
+    {-1e10f, 1e10f, "large negative + large positive"},
+    {3.14159265f, 2.71828182f, "pi + e"},
+  };
+
+  const size_t N = 1024;
+  for (int c = 0; c < (int)(sizeof(cases)/sizeof(cases[0])); c++) {
+    float* h_a = (float*)malloc(N * sizeof(float));
+    float* h_b = (float*)malloc(N * sizeof(float));
+    for (size_t i = 0; i < N; i++) {
+      h_a[i] = cases[c].a_val + (float)i * 1e-7f;
+      h_b[i] = cases[c].b_val + (float)i * 1e-7f;
+    }
+
+    float* d_a = upload_to_gpu(h_a, N, stream);
+    float* d_b = upload_to_gpu(h_b, N, stream);
+
+    float* h_c = run_vec_add(d_a, d_b, N, stream);
+    for (size_t i = 0; i < N; i++) {
+      float expected_a = h_a[i] + h_b[i];
+      TEST_ASSERT(fabsf(h_c[i] - expected_a) < 1e-4f * fmaxf(1.0f, fabsf(expected_a)),
+                  "add %s [%zu]: got %f, expected %f", cases[c].desc, i, h_c[i], expected_a);
+    }
+    free(h_c);
+
+    h_c = run_vec_sub(d_a, d_b, N, stream);
+    for (size_t i = 0; i < N; i++) {
+      float expected_s = h_a[i] - h_b[i];
+      TEST_ASSERT(fabsf(h_c[i] - expected_s) < 1e-4f * fmaxf(1.0f, fabsf(expected_s)),
+                  "sub %s [%zu]: got %f, expected %f", cases[c].desc, i, h_c[i], expected_s);
+    }
+    free(h_c);
+
+    CUDA_CHECK(cudaFree(d_a));
+    CUDA_CHECK(cudaFree(d_b));
+    free(h_a); free(h_b);
+    g_tests_passed++;
+  }
+  TEST_REPORT();
+}
+
+// ── Test: power-of-two sizes ───────────────────────────────────────
+
+static void test_power_of_two(cudaStream_t stream) {
+  TEST_SECTION("Power-of-two sizes (1K..16M)");
+
+  size_t sizes[] = {1024, 4096, 65536, 1048576, 4194304, 16777216};
+  for (int s = 0; s < (int)(sizeof(sizes)/sizeof(sizes[0])); s++) {
+    size_t N = sizes[s];
+    float* h_a = (float*)malloc(N * sizeof(float));
+    float* h_b = (float*)malloc(N * sizeof(float));
+    for (size_t i = 0; i < N; i++) {
+      h_a[i] = (float)((i * 1234567) % 1000000) / 1000.0f;
+      h_b[i] = (float)((i * 7654321) % 1000000) / 1000.0f;
+    }
+
+    float* d_a = upload_to_gpu(h_a, N, stream);
+    float* d_b = upload_to_gpu(h_b, N, stream);
+
+    float* h_c = run_vec_add(d_a, d_b, N, stream);
+    for (size_t i = 0; i < N; i += N/8) {
+      TEST_ASSERT(fabsf(h_c[i] - (h_a[i] + h_b[i])) < 1e-4f,
+                  "add N=%zu [%zu]: got %f, expected %f", N, i, h_c[i], h_a[i] + h_b[i]);
+    }
+    free(h_c);
+
+    h_c = run_vec_sub(d_a, d_b, N, stream);
+    for (size_t i = 0; i < N; i += N/8) {
+      TEST_ASSERT(fabsf(h_c[i] - (h_a[i] - h_b[i])) < 1e-4f,
+                  "sub N=%zu [%zu]: got %f, expected %f", N, i, h_c[i], h_a[i] - h_b[i]);
+    }
+    free(h_c);
+
+    CUDA_CHECK(cudaFree(d_a)); CUDA_CHECK(cudaFree(d_b));
+    free(h_a); free(h_b);
+    g_tests_passed++;
+  }
+  TEST_REPORT();
+}
+
+// ── Test: non-power-of-two sizes ───────────────────────────────────
+
+static void test_non_power_of_two(cudaStream_t stream) {
+  TEST_SECTION("Non-power-of-two sizes (100..10M)");
+
+  size_t sizes[] = {100, 500, 1000, 777, 12345, 99999, 10000000};
+  for (int s = 0; s < (int)(sizeof(sizes)/sizeof(sizes[0])); s++) {
+    size_t N = sizes[s];
+    float* h_a = (float*)malloc(N * sizeof(float));
+    float* h_b = (float*)malloc(N * sizeof(float));
+    for (size_t i = 0; i < N; i++) {
+      h_a[i] = (float)(i % 1000);
+      h_b[i] = (float)((i * 3) % 1000);
+    }
+
+    float* d_a = upload_to_gpu(h_a, N, stream);
+    float* d_b = upload_to_gpu(h_b, N, stream);
+
+    float* h_c = run_vec_add(d_a, d_b, N, stream);
+    for (size_t i = 0; i < N; i++) {
+      TEST_ASSERT(fabsf(h_c[i] - (h_a[i] + h_b[i])) < 1e-5f,
+                  "add N=%zu [%zu]: got %f, expected %f", N, i, h_c[i], h_a[i] + h_b[i]);
+    }
+    free(h_c);
+
+    CUDA_CHECK(cudaFree(d_a)); CUDA_CHECK(cudaFree(d_b));
+    free(h_a); free(h_b);
+    g_tests_passed++;
+  }
+  TEST_REPORT();
+}
+
+// ── Test: fused vs separate (cross-validate) ───────────────────────
+
+static void test_fused_vs_separate(cudaStream_t stream) {
+  TEST_SECTION("Fused add_sub vs separate add + sub");
+
+  size_t sizes[] = {1, 31, 256, 999, 65536, 1048576};
+  for (int s = 0; s < (int)(sizeof(sizes)/sizeof(sizes[0])); s++) {
+    size_t N = sizes[s];
+    float* h_a = (float*)malloc(N * sizeof(float));
+    float* h_b = (float*)malloc(N * sizeof(float));
+    for (size_t i = 0; i < N; i++) {
+      h_a[i] = (float)((i * 12345) % 1000);
+      h_b[i] = (float)((i * 67890) % 1000);
+    }
+
+    float* d_a = upload_to_gpu(h_a, N, stream);
+    float* d_b = upload_to_gpu(h_b, N, stream);
+
+    float* h_add_sep = run_vec_add(d_a, d_b, N, stream);
+    float* h_sub_sep = run_vec_sub(d_a, d_b, N, stream);
+
+    float *h_add_fus, *h_sub_fus;
+    run_vec_add_sub(d_a, d_b, N, stream, &h_add_fus, &h_sub_fus);
+
+    for (size_t i = 0; i < N; i++) {
+      TEST_ASSERT(fabsf(h_add_fus[i] - h_add_sep[i]) < 1e-6f,
+                  "add mismatch N=%zu [%zu]: fused=%f separate=%f",
+                  N, i, h_add_fus[i], h_add_sep[i]);
+      TEST_ASSERT(fabsf(h_sub_fus[i] - h_sub_sep[i]) < 1e-6f,
+                  "sub mismatch N=%zu [%zu]: fused=%f separate=%f",
+                  N, i, h_sub_fus[i], h_sub_sep[i]);
+    }
+
+    free(h_a); free(h_b);
+    free(h_add_sep); free(h_sub_sep);
+    free(h_add_fus); free(h_sub_fus);
+    CUDA_CHECK(cudaFree(d_a)); CUDA_CHECK(cudaFree(d_b));
+    g_tests_passed++;
+  }
+  TEST_REPORT();
+}
+
+// ── Test: random data — large-scale full validation ────────────────
+
+static void test_random_large(cudaStream_t stream) {
+  TEST_SECTION("Random data — full validation (1M elements)");
+
+  const size_t N = 1UL << 20;  // 1,048,576
+  float* h_a = (float*)malloc(N * sizeof(float));
+  float* h_b = (float*)malloc(N * sizeof(float));
+
+  unsigned seed = 42;
+  for (size_t i = 0; i < N; i++) {
+    seed = seed * 1103515245 + 12345;
+    h_a[i] = (float)(seed % 1000000) / 1000.0f - 500.0f;
+    seed = seed * 1103515245 + 67890;
+    h_b[i] = (float)(seed % 1000000) / 1000.0f - 500.0f;
+  }
+
+  float* d_a = upload_to_gpu(h_a, N, stream);
+  float* d_b = upload_to_gpu(h_b, N, stream);
+
+  float* h_c = run_vec_add(d_a, d_b, N, stream);
+  for (size_t i = 0; i < N; i++) {
+    TEST_ASSERT(fabsf(h_c[i] - (h_a[i] + h_b[i])) < 1e-3f,
+                "add [%zu]: got %f, expected %f", i, h_c[i], h_a[i] + h_b[i]);
+  }
+  free(h_c);
+
+  h_c = run_vec_sub(d_a, d_b, N, stream);
+  for (size_t i = 0; i < N; i++) {
+    TEST_ASSERT(fabsf(h_c[i] - (h_a[i] - h_b[i])) < 1e-3f,
+                "sub [%zu]: got %f, expected %f", i, h_c[i], h_a[i] - h_b[i]);
+  }
+  free(h_c);
+
+  float *h_add, *h_sub;
+  run_vec_add_sub(d_a, d_b, N, stream, &h_add, &h_sub);
+  for (size_t i = 0; i < N; i++) {
+    TEST_ASSERT(fabsf(h_add[i] - (h_a[i] + h_b[i])) < 1e-3f,
+                "fused-add [%zu]: got %f, expected %f", i, h_add[i], h_a[i] + h_b[i]);
+    TEST_ASSERT(fabsf(h_sub[i] - (h_a[i] - h_b[i])) < 1e-3f,
+                "fused-sub [%zu]: got %f, expected %f", i, h_sub[i], h_a[i] - h_b[i]);
+  }
+  free(h_add); free(h_sub);
+
+  CUDA_CHECK(cudaFree(d_a)); CUDA_CHECK(cudaFree(d_b));
+  free(h_a); free(h_b);
+  g_tests_passed++;
+  TEST_REPORT();
+}
+
+// ── Test: zero-size vector (boundary) ──────────────────────────────
+
+static void test_zero_size(cudaStream_t stream) {
+  TEST_SECTION("Zero-size vector (N=0)");
+
+  const size_t N = 0;
+  float *d_a = nullptr, *d_b = nullptr, *d_c = nullptr;
+  CUDA_CHECK(cudaMalloc(&d_c, 1));
+  vec_add(d_a, d_b, d_c, N, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  vec_sub(d_a, d_b, d_c, N, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  vec_add_sub(d_a, d_b, d_c, d_c, N, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  CUDA_CHECK(cudaFree(d_c));
+
+  g_tests_passed++;
+  TEST_REPORT();
+}
+
+// ── Test: negation (subtract from zero) ───────────────────────────
+
+static void test_negation(cudaStream_t stream) {
+  TEST_SECTION("Negation (0 - val) and identity (val + 0)");
+
+  size_t sizes[] = {1, 7, 256, 1000};
+  for (int s = 0; s < (int)(sizeof(sizes)/sizeof(sizes[0])); s++) {
+    size_t N = sizes[s];
+    float* h_a = (float*)malloc(N * sizeof(float));
+    float* h_zero = (float*)calloc(N, sizeof(float));
+    for (size_t i = 0; i < N; i++) h_a[i] = (float)(i * 3 + 1);
+
+    float* d_a = upload_to_gpu(h_a, N, stream);
+    float* d_zero = upload_to_gpu(h_zero, N, stream);
+
+    // 0 - a should give -a
+    float* h_neg = run_vec_sub(d_zero, d_a, N, stream);
+    for (size_t i = 0; i < N; i++) {
+      TEST_ASSERT(fabsf(h_neg[i] - (-h_a[i])) < 1e-6f,
+                  "neg N=%zu [%zu]: got %f, expected %f", N, i, h_neg[i], -h_a[i]);
+    }
+    free(h_neg);
+
+    // a + 0 should give a
+    float* h_id = run_vec_add(d_a, d_zero, N, stream);
+    for (size_t i = 0; i < N; i++) {
+      TEST_ASSERT(fabsf(h_id[i] - h_a[i]) < 1e-6f,
+                  "id N=%zu [%zu]: got %f, expected %f", N, i, h_id[i], h_a[i]);
+    }
+    free(h_id);
+
+    CUDA_CHECK(cudaFree(d_a)); CUDA_CHECK(cudaFree(d_zero));
+    free(h_a); free(h_zero);
+    g_tests_passed++;
+  }
+  TEST_REPORT();
+}
+
+// ── Run all tests ──────────────────────────────────────────────────
+
+static int run_all_tests() {
+  printf("╔══════════════════════════════════════════════════╗\n");
+  printf("║  CUDA Add/Sub — Comprehensive Test Suite        ║\n");
+  printf("╚══════════════════════════════════════════════════╝\n");
+
+  cudaStream_t stream;
+  CUDA_CHECK(cudaStreamCreate(&stream));
+
+  int total_passed = 0, total_failed = 0;
+
+#define RUN_TEST(test_fn)                                                     \
+  do {                                                                        \
+    int prev_failed = g_tests_failed;                                         \
+    test_fn(stream);                                                          \
+    int f = g_tests_failed - prev_failed;                                     \
+    if (f == 0) total_passed++; else total_failed++;                          \
+  } while (0)
+
+  RUN_TEST(test_tiny_vectors);
+  RUN_TEST(test_edge_values);
+  RUN_TEST(test_power_of_two);
+  RUN_TEST(test_non_power_of_two);
+  RUN_TEST(test_fused_vs_separate);
+  RUN_TEST(test_random_large);
+  RUN_TEST(test_zero_size);
+  RUN_TEST(test_negation);
+
+  CUDA_CHECK(cudaStreamDestroy(stream));
+
+  printf("\n════════════════════════════════════════════════════\n");
+  if (total_failed == 0) {
+    printf("  ✅ ALL TESTS PASSED  (%d test groups)\n", total_passed);
+  } else {
+    printf("  ❌ %d FAILED, %d passed\n", total_failed, total_passed);
+  }
+  printf("════════════════════════════════════════════════════\n\n");
+
+  return total_failed > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+// ── Standalone benchmark ───────────────────────────────────────────
+
+static int run_benchmark() {
   printf("╔══════════════════════════════════════════════════╗\n");
   printf("║  CUDA Vector Add/Sub Benchmark                  ║\n");
   printf("╚══════════════════════════════════════════════════╝\n\n");
@@ -162,7 +618,6 @@ int main() {
   printf("Compute Cap  : %d.%d\n", prop.major, prop.minor);
   printf("HBM size     : %.1f GB\n\n", prop.totalGlobalMem / 1e9);
 
-  // Benchmark parameters
   const size_t N = 1UL << 28;          // ~268M elements = 1 GB per vector
   const size_t bytes_per_vec = N * sizeof(float);
   const int warmup = 10;
@@ -173,14 +628,12 @@ int main() {
   printf("Warmup       : %d iterations\n", warmup);
   printf("Measure      : %d iterations\n\n", iters);
 
-  // Allocate
   float *d_a, *d_b, *d_add, *d_sub;
   CUDA_CHECK(cudaMalloc(&d_a, bytes_per_vec));
   CUDA_CHECK(cudaMalloc(&d_b, bytes_per_vec));
   CUDA_CHECK(cudaMalloc(&d_add, bytes_per_vec));
   CUDA_CHECK(cudaMalloc(&d_sub, bytes_per_vec));
 
-  // Initialize with known values
   float* h_a = (float*)malloc(bytes_per_vec);
   float* h_b = (float*)malloc(bytes_per_vec);
   for (size_t i = 0; i < N; i++) {
@@ -204,7 +657,6 @@ int main() {
   CUDA_CHECK(cudaStreamSynchronize(stream));
   auto t1 = std::chrono::high_resolution_clock::now();
   double add_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
-  // Read: a + b = 2 reads, write: c = 1 write => 3 * bytes_per_vec traffic
   double add_bw = bandwidth_gb_s(3 * bytes_per_vec, add_ms / 1000.0);
   printf("vec_add       : %8.2f ms  (%7.1f GB/s)  c[i] = a[i] + b[i]\n",
          add_ms, add_bw);
@@ -235,7 +687,6 @@ int main() {
   CUDA_CHECK(cudaStreamSynchronize(stream));
   t1 = std::chrono::high_resolution_clock::now();
   double fused_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
-  // Read: a + b = 2 reads, write: add + sub = 2 writes => 4 * bytes_per_vec
   double fused_bw = bandwidth_gb_s(4 * bytes_per_vec, fused_ms / 1000.0);
   printf("vec_add_sub   : %8.2f ms  (%7.1f GB/s)  fused a±b\n",
          fused_ms, fused_bw);
@@ -265,18 +716,44 @@ int main() {
     printf("❌ %d errors found\n", errors);
   }
 
-  // ── Cleanup ──
-  free(h_a);
-  free(h_b);
-  free(h_add);
-  free(h_sub);
+  free(h_a); free(h_b); free(h_add); free(h_sub);
   CUDA_CHECK(cudaStreamDestroy(stream));
-  CUDA_CHECK(cudaFree(d_a));
-  CUDA_CHECK(cudaFree(d_b));
-  CUDA_CHECK(cudaFree(d_add));
-  CUDA_CHECK(cudaFree(d_sub));
+  CUDA_CHECK(cudaFree(d_a)); CUDA_CHECK(cudaFree(d_b));
+  CUDA_CHECK(cudaFree(d_add)); CUDA_CHECK(cudaFree(d_sub));
 
   return errors ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+// ── Main entry point ───────────────────────────────────────────────
+
+int main(int argc, char** argv) {
+  bool run_tests_flag = false;
+  bool run_bench_flag = true;  // default: bench only
+
+  for (int i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--test") == 0) {
+      run_tests_flag = true;
+      run_bench_flag = false;
+    } else if (strcmp(argv[i], "--all") == 0) {
+      run_tests_flag = true;
+      run_bench_flag = true;
+    } else if (strcmp(argv[i], "--bench") == 0) {
+      run_tests_flag = false;
+      run_bench_flag = true;
+    }
+  }
+
+  if (run_tests_flag) {
+    int test_result = run_all_tests();
+    if (test_result != EXIT_SUCCESS) return test_result;
+  }
+
+  if (run_bench_flag) {
+    int bench_result = run_benchmark();
+    if (bench_result != EXIT_SUCCESS) return bench_result;
+  }
+
+  return EXIT_SUCCESS;
 }
 
 #endif  // BUILD_AS_SHARED

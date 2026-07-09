@@ -16,20 +16,28 @@
  *     in registers, never written to HBM
  *
  * Kernel types:
- *   forward_ternary_matmul  — y = x @ q(W)^T, fused on-the-fly quantization
- *   backward_dx_ternary     — dx = dy @ q(W), fused (for STE backward through x)
+ *   forward_ternary_matmul  — y = x @ Q(W)^T, fused on-the-fly quantization
+ *   backward_dx_ternary     — dx = dy @ Q(W), fused (for STE backward through x)
  *
  * Both exploit the same add/sub trick since both multiply by ternary W.
  *
- * Compile:
+ * Compile (shared lib for PyTorch):
  *   nvcc -O3 -arch=sm_75 -o libternary.so --shared -Xcompiler -fPIC ternary_matmul.cu
  *
- * Or via PyTorch's load_inline (preferred).
+ * Run tests & benchmark (standalone):
+ *   nvcc -O3 -arch=sm_75 -o test_ternary ternary_matmul.cu -lcudart
+ *   ./test_ternary               # benchmark only (default)
+ *   ./test_ternary --test        # comprehensive tests only
+ *   ./test_ternary --all         # tests + benchmark
  */
 
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
+#include <cstring>
+#include <chrono>
+#include <cfloat>
 
 // ── Tile sizes (tuned for T4/L4: 48 KB shared memory, 1024 threads/block) ──
 // BM × BN = 32 × 32 = 1024 threads = 1 warp × 32 warps
@@ -89,7 +97,6 @@ __global__ void forward_ternary_matmul_kernel(
 
     for (int k_base = 0; k_base < K; k_base += BK) {
         // ── Cooperative load X tile (BM × BK) ──
-        // Each thread loads one element, striding to cover the tile
         for (int i = threadIdx.y; i < BM; i += blockDim.y) {
             for (int j = threadIdx.x; j < BK; j += blockDim.x) {
                 int m = m_base + i;
@@ -110,23 +117,15 @@ __global__ void forward_ternary_matmul_kernel(
         __syncthreads();
 
         // ── Compute partial sum for output element (m, n) ──
-        // Each thread handles one output element at position (threadIdx.y, threadIdx.x)
-        // within the BM × BN tile.
         int m = m_base + threadIdx.y;
         int n = n_base + threadIdx.x;
 
         if (m < M && n < N) {
-            // Unrolled over BK — compute using adds/subs only
-            // w_tile[threadIdx.x][k] gives W[n][k_base + k]
-            // x_tile[threadIdx.y][k] gives X[m][k_base + k]
             #pragma unroll
             for (int k = 0; k < BK; k++) {
                 float w_raw = w_tile[threadIdx.x][k];
                 float x_val = x_tile[threadIdx.y][k];
-
-                // On-the-fly ternary quantization with predication
-                // w_scaled = w_raw / gamma; clamp(round(w_scaled), -1, 1)
-                // Then: if w_q == +1: add; if w_q == -1: subtract; if 0: skip
+                // On-the-fly ternary quantization: add/sub only
                 float w_scaled = w_raw / gamma;
                 sum += (w_scaled > 0.5f) ? x_val : 0.0f;  // w = +1
                 sum -= (w_scaled < -0.5f) ? x_val : 0.0f;  // w = -1
@@ -137,7 +136,6 @@ __global__ void forward_ternary_matmul_kernel(
         __syncthreads();
     }
 
-    // ── Write output ──
     int m = m_base + threadIdx.y;
     int n = n_base + threadIdx.x;
     if (m < M && n < N) {
@@ -155,31 +153,8 @@ __global__ void backward_dx_ternary_kernel(
     float gamma,
     int M, int N, int K)
 {
-    // Tile: each block computes a BM × BK tile of dx
-    // Load: dy_tile (BM × BN) from (M, N), w_tile (BK × BN?) — need transposed access
-    //
-    // dx[m][k] = Σ_n dy[m][n] * Q(W)[n][k]
-    //
-    // Using tile approach: load dy (BM × BN) and W_transposed (BK × BN) into shared memory
-    // Then each thread (ty, tx) computes dx[m_base+ty][k_base+tx]
-    //
-    // But W is stored row-major as (N, K). For the backward, we need W[n][k].
-    // We can load W tiles as they are (BN × BK) and accumulate differently.
-    //
-    // Alternative: compute dx as x^T matrix where each thread sums over N
-    //   dx[m][k] += Σ_n dy[m][n] * Q(W)[n][k]
-    //   For each N-tile of size BN:
-    //     Load dy_tile (BM × BN) — row-major
-    //     Load w_tile (BN × BK) — row-major, quantize inline
-    //     For each output k in BK:
-    //       For each input n in BN:
-    //         dx[m][k] += dy[m][n] * w_q[n][k]
-
-    // Actually, let's use a simpler approach: thread (ty, tx) handles dx[m][k] where
-    // m = m_base + ty, k = k_base + tx, and we accumulate over the N dimension.
-
-    __shared__ float dy_tile[BM][BN];  // dy[BM][BN] transposed for coalesced reads
-    __shared__ float w_tile_bwd[BN][BK];  // W[BN][BK] — loaded normally
+    __shared__ float dy_tile[BM][BN];
+    __shared__ float w_tile_bwd[BN][BK];
 
     int m_base = blockIdx.y * BM;
     int k_base = blockIdx.x * BK;
@@ -213,8 +188,8 @@ __global__ void backward_dx_ternary_kernel(
         if (m < M && k < K) {
             #pragma unroll
             for (int n = 0; n < BN; n++) {
-                float dy_val = dy_tile[threadIdx.y][n];  // dy[m][n_base + n]
-                float w_raw = w_tile_bwd[n][threadIdx.x];  // W[n_base + n][k]
+                float dy_val = dy_tile[threadIdx.y][n];
+                float w_raw = w_tile_bwd[n][threadIdx.x];
                 float w_scaled = w_raw / gamma;
                 // dx[m][k] += dy[m][n] * Q(W)[n][k]  — add/sub only
                 sum += (w_scaled > 0.5f) ? dy_val : 0.0f;
@@ -231,21 +206,6 @@ __global__ void backward_dx_ternary_kernel(
         dx[m * (size_t)K + k] = sum;
     }
 }
-
-// ── Training-mode fused kernel (forward + quant refresh) ───────────
-// Merges ternary forward with periodic gamma/ternary refresh
-// to avoid two separate kernel launches
-
-/**
- * fused_bitlinear_train_kernel
- *
- * Computes: y = x @ Q(W)^T
- *   If stale: also recomputes gamma and stores w_q as int8 {-1, 0, 1}
- *   (reducing subsequent eval-mode launches to 1/4 the memory traffic)
- *
- * This is the kernel the training loop should use instead of
- * F.linear(x, w_ste) — it does the exact same STE math.
- */
 
 // ── Host API ───────────────────────────────────────────────────────
 
@@ -299,17 +259,572 @@ void backward_dx_ternary(
 
 }  // extern "C"
 
-// ── Standalone benchmark ───────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+//  TEST SUITE & BENCHMARK
+// ═══════════════════════════════════════════════════════════════════
+//
+// Compile & run:
+//   nvcc -O3 -arch=sm_75 -o test_ternary ternary_matmul.cu -lcudart
+//   ./test_ternary               # benchmark only (default)
+//   ./test_ternary --test        # run all tests
+//   ./test_ternary --all         # tests + benchmark
+//
+// ═══════════════════════════════════════════════════════════════════
 
 #ifndef BUILD_AS_SHARED
-
-#include <chrono>
 
 double bandwidth_gb_s(size_t bytes, double seconds) {
     return (double)bytes / (1e9 * seconds);
 }
 
-int main() {
+// ── CPU reference: ternary matmul using standard math ─────────────
+// For validation: Q(W)[n][k] = clamp(round(W[n][k] / gamma), -1, 1)
+// y[m][n] = Σ_k x[m][k] * Q(W)[n][k]
+
+static float cpu_ternary_quantize(float w_val, float gamma) {
+    float scaled = w_val / gamma;
+    if (scaled > 0.5f) return 1.0f;
+    if (scaled < -0.5f) return -1.0f;
+    return 0.0f;
+}
+
+static float cpu_forward_ref(const float* x, const float* w,
+                              float gamma, int m, int n, int K) {
+    float sum = 0.0f;
+    for (int k = 0; k < K; k++) {
+        float w_q = cpu_ternary_quantize(w[n * (size_t)K + k], gamma);
+        sum += x[m * (size_t)K + k] * w_q;
+    }
+    return sum;
+}
+
+static float cpu_backward_ref(const float* dy, const float* w,
+                               float gamma, int m, int k, int M, int N, int K) {
+    float sum = 0.0f;
+    for (int n = 0; n < N; n++) {
+        float w_q = cpu_ternary_quantize(w[n * (size_t)K + k], gamma);
+        sum += dy[m * (size_t)N + n] * w_q;
+    }
+    return sum;
+}
+
+// ── Test tracking ──────────────────────────────────────────────────
+
+static int g_tests_passed = 0;
+static int g_tests_failed = 0;
+
+#define TEST_ASSERT(cond, fmt, ...)                                           \
+  do {                                                                        \
+    if (!(cond)) {                                                            \
+      printf("  ❌ FAIL: " fmt " [%s:%d]\n", ##__VA_ARGS__, __FILE__, __LINE__); \
+      g_tests_failed++;                                                       \
+      return;                                                                 \
+    }                                                                         \
+  } while (0)
+
+#define TEST_SECTION(name)                                                    \
+  printf("\n  ── %s ──\n", name);                                             \
+  g_tests_passed = g_tests_failed = 0;
+
+#define TEST_REPORT()                                                         \
+  do {                                                                        \
+    printf("  ✅ %d passed, %d failed\n", g_tests_passed, g_tests_failed);     \
+    g_tests_passed = g_tests_failed = 0;                                      \
+  } while (0)
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// Allocate GPU buffer, upload data, then run both forward and backward,
+// downloading results for CPU comparison.
+
+static int validate_forward_gpu(
+    cudaStream_t stream,
+    const float* h_x, const float* h_w, float gamma,
+    int M, int N, int K, const float* h_y_gpu,
+    float rel_tol)
+{
+    int errors = 0;
+    for (int m = 0; m < M && errors < 5; m++) {
+        for (int n = 0; n < N && errors < 5; n++) {
+            float expected = cpu_forward_ref(h_x, h_w, gamma, m, n, K);
+            float actual = h_y_gpu[m * (size_t)N + n];
+            float abs_diff = fabsf(actual - expected);
+            float max_val = fmaxf(1.0f, fabsf(expected));
+            if (abs_diff > rel_tol * max_val && abs_diff > 1e-6f) {
+                printf("    Mismatch FWD [%d,%d]: GPU=%.6f CPU=%.6f diff=%.6f\n",
+                       m, n, actual, expected, abs_diff);
+                errors++;
+            }
+        }
+    }
+    return errors;
+}
+
+static int validate_backward_gpu(
+    cudaStream_t stream,
+    const float* h_dy, const float* h_w, float gamma,
+    int M, int N, int K, const float* h_dx_gpu,
+    float rel_tol)
+{
+    int errors = 0;
+    for (int m = 0; m < M && errors < 5; m++) {
+        for (int k = 0; k < K && errors < 5; k++) {
+            float expected = cpu_backward_ref(h_dy, h_w, gamma, m, k, M, N, K);
+            float actual = h_dx_gpu[m * (size_t)K + k];
+            float abs_diff = fabsf(actual - expected);
+            float max_val = fmaxf(1.0f, fabsf(expected));
+            if (abs_diff > rel_tol * max_val && abs_diff > 1e-6f) {
+                printf("    Mismatch BWD [%d,%d]: GPU=%.6f CPU=%.6f diff=%.6f\n",
+                       m, k, actual, expected, abs_diff);
+                errors++;
+            }
+        }
+    }
+    return errors;
+}
+
+// ── Test: tiny matrices ────────────────────────────────────────────
+
+static void test_tiny_matrices(cudaStream_t stream) {
+    TEST_SECTION("Tiny matrices (2..16 dims)");
+
+    struct { int M, N, K; const char* desc; } shapes[] = {
+        {1, 1, 1, "1×1×1"},
+        {2, 2, 2, "2×2×2"},
+        {4, 4, 4, "4×4×4"},
+        {8, 8, 8, "8×8×8"},
+        {3, 5, 7, "3×5×7 (all prime)"},
+        {16, 8, 4, "16×8×4 (M>N>K)"},
+        {4, 16, 8, "4×16×8 (N>K>M)"},
+    };
+
+    for (int s = 0; s < (int)(sizeof(shapes)/sizeof(shapes[0])); s++) {
+        int M = shapes[s].M, N = shapes[s].N, K = shapes[s].K;
+        float* h_x = (float*)malloc(M * K * sizeof(float));
+        float* h_w = (float*)malloc(N * K * sizeof(float));
+        float* h_dy = (float*)malloc(M * N * sizeof(float));
+
+        float gamma = 0.0f;
+        for (int i = 0; i < M * K; i++) h_x[i] = (float)((i * 3) % 10);
+        for (int i = 0; i < N * K; i++) {
+            h_w[i] = (float)((i * 7 - 15) % 10);
+            gamma += fabsf(h_w[i]);
+        }
+        gamma = gamma / (N * K) + 1e-5f;
+        for (int i = 0; i < M * N; i++) h_dy[i] = (float)((i * 5) % 10);
+
+        float *d_x, *d_w, *d_y, *d_dy, *d_dx;
+        CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_dy, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_dx, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_dy, h_dy, M * N * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+        forward_ternary_matmul(d_x, d_w, d_y, gamma, M, N, K, stream);
+        backward_dx_ternary(d_dy, d_w, d_dx, gamma, M, N, K, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        float* h_y = (float*)malloc(M * N * sizeof(float));
+        float* h_dx = (float*)malloc(M * K * sizeof(float));
+        CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_dx, d_dx, M * K * sizeof(float), cudaMemcpyDeviceToHost));
+
+        int fwd_errs = validate_forward_gpu(stream, h_x, h_w, gamma, M, N, K, h_y, 1e-4f);
+        int bwd_errs = validate_backward_gpu(stream, h_dy, h_w, gamma, M, N, K, h_dx, 1e-4f);
+        TEST_ASSERT(fwd_errs == 0 && bwd_errs == 0,
+                    "%s: %d forward errors, %d backward errors",
+                    shapes[s].desc, fwd_errs, bwd_errs);
+
+        free(h_x); free(h_w); free(h_dy); free(h_y); free(h_dx);
+        CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w));
+        CUDA_CHECK(cudaFree(d_y)); CUDA_CHECK(cudaFree(d_dy)); CUDA_CHECK(cudaFree(d_dx));
+        g_tests_passed++;
+    }
+    TEST_REPORT();
+}
+
+// ── Test: square model-like matrices ───────────────────────────────
+
+static void test_square_matrices(cudaStream_t stream) {
+    TEST_SECTION("Square / model-like matrices");
+
+    struct { int M, N, K; const char* desc; } shapes[] = {
+        {256, 256, 256, "256×256×256 (tiny head)"},
+        {512, 640, 640, "512×640×640 (projection)"},
+        {1024, 128, 128, "1024×128×128 (head_dim)"},
+        {2560, 2560, 2560, "2560×2560×2560 (model width)"},
+    };
+
+    for (int s = 0; s < (int)(sizeof(shapes)/sizeof(shapes[0])); s++) {
+        int M = shapes[s].M, N = shapes[s].N, K = shapes[s].K;
+        float* h_x = (float*)malloc(M * K * sizeof(float));
+        float* h_w = (float*)malloc(N * K * sizeof(float));
+        float* h_dy = (float*)malloc(M * N * sizeof(float));
+
+        float gamma = 0.0f;
+        unsigned seed = 42 + s;
+        for (int i = 0; i < M * K; i++) {
+            seed = seed * 1103515245 + 12345;
+            h_x[i] = (float)(seed % 1000) / 100.0f - 5.0f;
+        }
+        for (int i = 0; i < N * K; i++) {
+            seed = seed * 1103515245 + 67890;
+            h_w[i] = (float)(seed % 2000) / 1000.0f - 1.0f;  // ~33% zeros after tern
+            gamma += fabsf(h_w[i]);
+        }
+        gamma = gamma / (N * K) + 1e-5f;
+        for (int i = 0; i < M * N; i++) {
+            seed = seed * 1103515245 + 99999;
+            h_dy[i] = (float)(seed % 1000) / 100.0f - 5.0f;
+        }
+
+        float *d_x, *d_w, *d_y, *d_dy, *d_dx;
+        CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_dy, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_dx, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_dy, h_dy, M * N * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+        forward_ternary_matmul(d_x, d_w, d_y, gamma, M, N, K, stream);
+        backward_dx_ternary(d_dy, d_w, d_dx, gamma, M, N, K, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        float* h_y = (float*)malloc(M * N * sizeof(float));
+        float* h_dx = (float*)malloc(M * K * sizeof(float));
+        CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(h_dx, d_dx, M * K * sizeof(float), cudaMemcpyDeviceToHost));
+
+        int fwd_errs = validate_forward_gpu(stream, h_x, h_w, gamma, M, N, K, h_y, 1e-4f);
+        int bwd_errs = validate_backward_gpu(stream, h_dy, h_w, gamma, M, N, K, h_dx, 1e-4f);
+
+        printf("  %s: fwd=%d, bwd=%d\n", shapes[s].desc, fwd_errs, bwd_errs);
+        TEST_ASSERT(fwd_errs == 0 && bwd_errs == 0,
+                    "%s: %d fwd errs, %d bwd errs", shapes[s].desc, fwd_errs, bwd_errs);
+
+        free(h_x); free(h_w); free(h_dy); free(h_y); free(h_dx);
+        CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w));
+        CUDA_CHECK(cudaFree(d_y)); CUDA_CHECK(cudaFree(d_dy)); CUDA_CHECK(cudaFree(d_dx));
+        g_tests_passed++;
+    }
+    TEST_REPORT();
+}
+
+// ── Test: rectangular (tall & wide) ────────────────────────────────
+
+static void test_rectangular(cudaStream_t stream) {
+    TEST_SECTION("Rectangular — tall / wide");
+
+    struct { int M, N, K; const char* desc; } shapes[] = {
+        {512, 64, 256, "tall: M>>N (512×64×256)"},
+        {64, 512, 256, "wide: N>>M (64×512×256)"},
+        {128, 256, 1024, "mid: K>>N (128×256×1024)"},
+        {1024, 256, 64, "mid: M>>K (1024×256×64)"},
+        {1, 2560, 2560, "single token: 1×2560×2560"},
+        {4096, 2560, 2560, "full QKV: 4096×2560×2560"},
+    };
+
+    for (int s = 0; s < (int)(sizeof(shapes)/sizeof(shapes[0])); s++) {
+        int M = shapes[s].M, N = shapes[s].N, K = shapes[s].K;
+        float* h_x = (float*)malloc(M * K * sizeof(float));
+        float* h_w = (float*)malloc(N * K * sizeof(float));
+
+        float gamma = 0.0f;
+        unsigned seed = 123 + s;
+        for (int i = 0; i < M * K; i++) {
+            seed = seed * 1103515245 + 12345;
+            h_x[i] = (float)(seed % 10000) / 100.0f - 50.0f;
+        }
+        for (int i = 0; i < N * K; i++) {
+            seed = seed * 1103515245 + 67890;
+            h_w[i] = (float)(seed % 2000) / 1000.0f - 1.0f;
+            gamma += fabsf(h_w[i]);
+        }
+        gamma = gamma / (N * K) + 1e-5f;
+
+        float *d_x, *d_w, *d_y;
+        CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+        forward_ternary_matmul(d_x, d_w, d_y, gamma, M, N, K, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        float* h_y = (float*)malloc(M * N * sizeof(float));
+        CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+
+        int fwd_errs = validate_forward_gpu(stream, h_x, h_w, gamma, M, N, K, h_y, 1e-4f);
+        printf("  %s: fwd=%d\n", shapes[s].desc, fwd_errs);
+        TEST_ASSERT(fwd_errs == 0, "%s: %d fwd errs", shapes[s].desc, fwd_errs);
+
+        free(h_x); free(h_w); free(h_y);
+        CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w)); CUDA_CHECK(cudaFree(d_y));
+        g_tests_passed++;
+    }
+    TEST_REPORT();
+}
+
+// ── Test: gamma edge cases ─────────────────────────────────────────
+
+static void test_gamma_edges(cudaStream_t stream) {
+    TEST_SECTION("Gamma edge cases");
+
+    const int M = 32, N = 32, K = 32;
+
+    struct { float gamma_val; const char* desc; } cases[] = {
+        {1.0f, "gamma=1 (default)"},
+        {0.001f, "gamma=0.001 (tiny → almost all ternary)"},
+        {1000.0f, "gamma=1000 (huge → almost all zero)"},
+        {1e-10f, "gamma near zero"},
+    };
+
+    for (int c = 0; c < (int)(sizeof(cases)/sizeof(cases[0])); c++) {
+        float* h_x = (float*)malloc(M * K * sizeof(float));
+        float* h_w = (float*)malloc(N * K * sizeof(float));
+        unsigned seed = 999 + c;
+        for (int i = 0; i < M * K; i++) {
+            seed = seed * 1103515245 + 12345;
+            h_x[i] = (float)(seed % 1000) / 100.0f;
+        }
+        for (int i = 0; i < N * K; i++) {
+            seed = seed * 1103515245 + 67890;
+            h_w[i] = (float)(seed % 2000) / 1000.0f - 1.0f;
+        }
+
+        float *d_x, *d_w, *d_y;
+        CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+        forward_ternary_matmul(d_x, d_w, d_y, cases[c].gamma_val, M, N, K, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        float* h_y = (float*)malloc(M * N * sizeof(float));
+        CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+
+        int fwd_errs = validate_forward_gpu(stream, h_x, h_w, cases[c].gamma_val, M, N, K, h_y, 1e-3f);
+        printf("  %s: fwd_errs=%d\n", cases[c].desc, fwd_errs);
+        TEST_ASSERT(fwd_errs == 0, "%s: %d errs", cases[c].desc, fwd_errs);
+
+        free(h_x); free(h_w); free(h_y);
+        CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w)); CUDA_CHECK(cudaFree(d_y));
+        g_tests_passed++;
+    }
+    TEST_REPORT();
+}
+
+// ── Test: weight extremes (all-zero, all-positive, all-negative) ────
+
+static void test_weight_extremes(cudaStream_t stream) {
+    TEST_SECTION("Weight extremes (all-zero / all-positive / all-negative)");
+
+    struct { float w_val; const char* desc; } cases[] = {
+        {0.0f, "all zero weights → all Q(W)=0"},
+        {5.0f, "all large positive → all Q(W)=+1"},
+        {-5.0f, "all large negative → all Q(W)=-1"},
+        {0.3f, "all small positive → Q(W)=0 (under threshold)"},
+        {-0.3f, "all small negative → Q(W)=0 (under threshold)"},
+    };
+
+    const int M = 16, N = 16, K = 32;
+    const float gamma = 1.0f;
+
+    for (int c = 0; c < (int)(sizeof(cases)/sizeof(cases[0])); c++) {
+        float* h_x = (float*)malloc(M * K * sizeof(float));
+        float* h_w = (float*)malloc(N * K * sizeof(float));
+        for (int i = 0; i < M * K; i++) h_x[i] = (float)((i * 3) % 10);
+        for (int i = 0; i < N * K; i++) h_w[i] = cases[c].w_val;
+
+        float *d_x, *d_w, *d_y;
+        CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+        forward_ternary_matmul(d_x, d_w, d_y, gamma, M, N, K, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        float* h_y = (float*)malloc(M * N * sizeof(float));
+        CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+
+        int fwd_errs = validate_forward_gpu(stream, h_x, h_w, gamma, M, N, K, h_y, 1e-5f);
+        printf("  %s: errs=%d\n", cases[c].desc, fwd_errs);
+        TEST_ASSERT(fwd_errs == 0, "%s: %d errs", cases[c].desc, fwd_errs);
+
+        free(h_x); free(h_w); free(h_y);
+        CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w)); CUDA_CHECK(cudaFree(d_y));
+        g_tests_passed++;
+    }
+    TEST_REPORT();
+}
+
+// ── Test: controllable sparsity levels ─────────────────────────────
+
+static void test_sparsity_levels(cudaStream_t stream) {
+    TEST_SECTION("Controllable sparsity levels (10%..90% zeros)");
+
+    const int M = 32, N = 64, K = 64;
+    const float gamma = 1.0f;
+
+    struct { float scale; const char* desc; } levels[] = {
+        {0.1f, "scale=0.1 → ~90% zeros"},
+        {0.5f, "scale=0.5 → ~50% zeros"},
+        {1.0f, "scale=1.0 → ~30% zeros"},
+        {3.0f, "scale=3.0 → ~10% zeros"},
+    };
+
+    for (int l = 0; l < (int)(sizeof(levels)/sizeof(levels[0])); l++) {
+        float* h_x = (float*)malloc(M * K * sizeof(float));
+        float* h_w = (float*)malloc(N * K * sizeof(float));
+        unsigned seed = 777 + l;
+        for (int i = 0; i < M * K; i++) {
+            seed = seed * 1103515245 + 12345;
+            h_x[i] = (float)(seed % 1000) / 100.0f;
+        }
+        // Count zeros
+        int zero_count = 0;
+        for (int i = 0; i < N * K; i++) {
+            seed = seed * 1103515245 + 67890;
+            h_w[i] = ((float)(seed % 2000) / 1000.0f - 1.0f) * levels[l].scale;
+            if (fabsf(cpu_ternary_quantize(h_w[i], gamma)) < 0.5f) zero_count++;
+        }
+        float sparsity = 100.0f * zero_count / (N * K);
+
+        float *d_x, *d_w, *d_y;
+        CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+        CUDA_CHECK(cudaMemcpyAsync(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+        forward_ternary_matmul(d_x, d_w, d_y, gamma, M, N, K, stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        float* h_y = (float*)malloc(M * N * sizeof(float));
+        CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+
+        int fwd_errs = validate_forward_gpu(stream, h_x, h_w, gamma, M, N, K, h_y, 1e-4f);
+        printf("  %s (~%.0f%% zeros): errs=%d\n", levels[l].desc, sparsity, fwd_errs);
+        TEST_ASSERT(fwd_errs == 0, "%s: %d errs", levels[l].desc, fwd_errs);
+
+        free(h_x); free(h_w); free(h_y);
+        CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w)); CUDA_CHECK(cudaFree(d_y));
+        g_tests_passed++;
+    }
+    TEST_REPORT();
+}
+
+// ── Test: forward-backward symmetry ─────────────────────────────────
+// dx = dy @ Q(W), and if we re-run forward with dx as input,
+// we should get back to something consistent (STE identity approx.)
+
+static void test_fwd_bwd_symmetry(cudaStream_t stream) {
+    TEST_SECTION("Forward-backward consistency");
+
+    const int M = 64, N = 128, K = 128;
+    float* h_x = (float*)malloc(M * K * sizeof(float));
+    float* h_w = (float*)malloc(N * K * sizeof(float));
+    float gamma = 0.0f;
+    unsigned seed = 555;
+    for (int i = 0; i < M * K; i++) {
+        seed = seed * 1103515245 + 12345;
+        h_x[i] = (float)(seed % 1000) / 100.0f;
+    }
+    for (int i = 0; i < N * K; i++) {
+        seed = seed * 1103515245 + 67890;
+        h_w[i] = (float)(seed % 2000) / 1000.0f - 1.0f;
+        gamma += fabsf(h_w[i]);
+    }
+    gamma = gamma / (N * K) + 1e-5f;
+
+    // Forward: y = x @ Q(W)^T
+    float *d_x, *d_w, *d_y, *d_dx;
+    CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_dx, M * K * sizeof(float)));
+    CUDA_CHECK(cudaMemcpyAsync(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+    CUDA_CHECK(cudaMemcpyAsync(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice, stream));
+
+    forward_ternary_matmul(d_x, d_w, d_y, gamma, M, N, K, stream);
+    // Use d_y as "dy" — this simulates dy = dL/dy (straight-through)
+    backward_dx_ternary(d_y, d_w, d_dx, gamma, M, N, K, stream);
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    float* h_y = (float*)malloc(M * N * sizeof(float));
+    float* h_dx = (float*)malloc(M * K * sizeof(float));
+    CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_dx, d_dx, M * K * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Verify: forward runs without error
+    int fwd_errs = validate_forward_gpu(stream, h_x, h_w, gamma, M, N, K, h_y, 1e-4f);
+    // Verify: backward gives correct shape and values
+    int bwd_errs = validate_backward_gpu(stream, h_y, h_w, gamma, M, N, K, h_dx, 1e-4f);
+
+    printf("  FWD → BWD chain: fwd_errs=%d, bwd_errs=%d\n", fwd_errs, bwd_errs);
+    TEST_ASSERT(fwd_errs == 0 && bwd_errs == 0, "symmetry: %d fwd, %d bwd", fwd_errs, bwd_errs);
+
+    free(h_x); free(h_w); free(h_y); free(h_dx);
+    CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w));
+    CUDA_CHECK(cudaFree(d_y)); CUDA_CHECK(cudaFree(d_dx));
+    g_tests_passed++;
+    TEST_REPORT();
+}
+
+// ── Run all tests ──────────────────────────────────────────────────
+
+static int run_all_tests() {
+    printf("╔══════════════════════════════════════════════════╗\n");
+    printf("║  CUDA Ternary Matmul — Comprehensive Test Suite ║\n");
+    printf("╚══════════════════════════════════════════════════╝\n");
+
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
+    int total_passed = 0, total_failed = 0;
+
+#define RUN_TEST(test_fn)                                                     \
+  do {                                                                        \
+    int prev_failed = g_tests_failed;                                         \
+    test_fn(stream);                                                          \
+    int f = g_tests_failed - prev_failed;                                     \
+    if (f == 0) total_passed++; else total_failed++;                          \
+  } while (0)
+
+    RUN_TEST(test_tiny_matrices);
+    RUN_TEST(test_square_matrices);
+    RUN_TEST(test_rectangular);
+    RUN_TEST(test_gamma_edges);
+    RUN_TEST(test_weight_extremes);
+    RUN_TEST(test_sparsity_levels);
+    RUN_TEST(test_fwd_bwd_symmetry);
+
+    CUDA_CHECK(cudaStreamDestroy(stream));
+
+    printf("\n════════════════════════════════════════════════════\n");
+    if (total_failed == 0) {
+        printf("  ✅ ALL TESTS PASSED  (%d test groups)\n", total_passed);
+    } else {
+        printf("  ❌ %d FAILED, %d passed\n", total_failed, total_passed);
+    }
+    printf("════════════════════════════════════════════════════\n\n");
+
+    return total_failed > 0 ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+// ── Standalone benchmark ───────────────────────────────────────────
+
+static int run_benchmark() {
     printf("╔══════════════════════════════════════════════════╗\n");
     printf("║  CUDA Ternary Matmul Benchmark                  ║\n");
     printf("╚══════════════════════════════════════════════════╝\n\n");
@@ -330,7 +845,6 @@ int main() {
     printf("X size: %.2f MB | W size: %.2f MB | Y size: %.2f MB\n\n",
            (double)M * K * 4 / 1e6, (double)N * K * 4 / 1e6, (double)M * N * 4 / 1e6);
 
-    // Allocate
     float *d_x, *d_w, *d_y, *d_dy, *d_dx;
     CUDA_CHECK(cudaMalloc(&d_x, (size_t)M * K * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_w, (size_t)N * K * sizeof(float)));
@@ -338,11 +852,9 @@ int main() {
     CUDA_CHECK(cudaMalloc(&d_dy, (size_t)M * N * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_dx, (size_t)M * K * sizeof(float)));
 
-    // Initialize with realistic data
     float* h_w = (float*)malloc((size_t)N * K * sizeof(float));
     float gamma = 0.0f;
     for (int i = 0; i < N * K; i++) {
-        // Initialize weights with distribution that gives ~20% +1, ~20% -1, ~60% 0
         h_w[i] = ((float)rand() / RAND_MAX - 0.5f) * 3.0f;
         gamma += fabsf(h_w[i]);
     }
@@ -350,7 +862,6 @@ int main() {
     printf("Gamma: %.6f (avg |W|)\n\n", gamma);
 
     CUDA_CHECK(cudaMemcpy(d_w, h_w, (size_t)N * K * sizeof(float), cudaMemcpyHostToDevice));
-    // x and dy use random data
     float* h_tmp = (float*)malloc((size_t)M * K * sizeof(float));
     for (int i = 0; i < M * K; i++) h_tmp[i] = (float)rand() / RAND_MAX;
     CUDA_CHECK(cudaMemcpy(d_x, h_tmp, (size_t)M * K * sizeof(float), cudaMemcpyHostToDevice));
@@ -376,7 +887,6 @@ int main() {
     auto t1 = std::chrono::high_resolution_clock::now();
     double fwd_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
 
-    // Memory traffic: read X (M*K*4) + read W (N*K*4) + write Y (M*N*4)
     size_t fwd_bytes = (size_t)M * K * 4 + (size_t)N * K * 4 + (size_t)M * N * 4;
     double fwd_bw = bandwidth_gb_s(fwd_bytes, fwd_ms / 1000.0);
 
@@ -396,7 +906,6 @@ int main() {
     t1 = std::chrono::high_resolution_clock::now();
     double bwd_ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
 
-    // Memory traffic: read dy (M*N*4) + read W (N*K*4) + write dx (M*K*4)
     size_t bwd_bytes = (size_t)M * N * 4 + (size_t)N * K * 4 + (size_t)M * K * 4;
     double bwd_bw = bandwidth_gb_s(bwd_bytes, bwd_ms / 1000.0);
 
@@ -404,16 +913,12 @@ int main() {
     printf("  %8.2f ms  (%7.1f GB/s)  dx[%d,%d] = dy[%d,%d] @ Q(W)[%d,%d]\n\n",
            bwd_ms, bwd_bw, M, K, M, N, N, K);
 
-    // ── Reference: PyTorch would do F.linear(x, ste_weights) ──
-    // The ternary version reads 4× less weight data (no separate quant write)
-    // and only does adds/subs in the inner loop
     printf("Comparison vs F.linear(x, w_ste):\n");
     printf("  Forward: %.2f ms ternary vs ~X ms dense (expect 2-4× faster)\n", fwd_ms);
     printf("  Backward: %.2f ms ternary vs ~X ms dense (expect 2-4× faster)\n", bwd_ms);
     printf("\n");
 
     // ── Simple correctness validation ──
-    // Compute y = x @ Q(W)^T on CPU with the ternary rule
     float* h_x = (float*)malloc((size_t)M * K * sizeof(float));
     float* h_y_gpu = (float*)malloc((size_t)M * N * sizeof(float));
     CUDA_CHECK(cudaMemcpy(h_x, d_x, (size_t)M * K * sizeof(float), cudaMemcpyDeviceToHost));
@@ -442,19 +947,45 @@ int main() {
     else
         printf("❌ %d errors found in forward\n", errors);
 
-    // ── Cleanup ──
-    free(h_w);
-    free(h_x);
-    free(h_y_gpu);
+    free(h_w); free(h_x); free(h_y_gpu);
     CUDA_CHECK(cudaStreamDestroy(stream));
-    CUDA_CHECK(cudaFree(d_x));
-    CUDA_CHECK(cudaFree(d_w));
-    CUDA_CHECK(cudaFree(d_y));
-    CUDA_CHECK(cudaFree(d_dy));
-    CUDA_CHECK(cudaFree(d_dx));
+    CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w));
+    CUDA_CHECK(cudaFree(d_y)); CUDA_CHECK(cudaFree(d_dy)); CUDA_CHECK(cudaFree(d_dx));
 
     printf("\n✅ Program completed successfully\n");
     return errors ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+// ── Main entry point ───────────────────────────────────────────────
+
+int main(int argc, char** argv) {
+    bool run_tests_flag = false;
+    bool run_bench_flag = true;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--test") == 0) {
+            run_tests_flag = true;
+            run_bench_flag = false;
+        } else if (strcmp(argv[i], "--all") == 0) {
+            run_tests_flag = true;
+            run_bench_flag = true;
+        } else if (strcmp(argv[i], "--bench") == 0) {
+            run_tests_flag = false;
+            run_bench_flag = true;
+        }
+    }
+
+    if (run_tests_flag) {
+        int test_result = run_all_tests();
+        if (test_result != EXIT_SUCCESS) return test_result;
+    }
+
+    if (run_bench_flag) {
+        int bench_result = run_benchmark();
+        if (bench_result != EXIT_SUCCESS) return bench_result;
+    }
+
+    return EXIT_SUCCESS;
 }
 
 #endif  // BUILD_AS_SHARED

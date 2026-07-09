@@ -40,9 +40,9 @@ def _cpu_ref(x, weight, gamma, bias=None):
 
 
 def _cpu_ref_dx(dy, weight, gamma):
-    """Reference backward: dy @ Q(W)."""
+    """Reference backward: dx = dy @ Q(W)."""
     w_q = torch.clamp(torch.round(weight / gamma), -1.0, 1.0)
-    return F.linear(dy, w_q)
+    return dy @ w_q  # NOT F.linear (which would do dy @ w_q^T)
 
 
 def _random_weights(N, K, gamma=None, device="cpu"):
@@ -248,7 +248,7 @@ def benchmark(model_shapes=False, warmup=5, iters=30):
 
         for _ in range(warmup):
             _ = backward_dx_ternary(dy, weight, gamma)
-            _ = F.linear(dy, w_q)
+            _ = dy @ w_q
             torch.cuda.synchronize()
 
         # Ternary backward
@@ -259,10 +259,10 @@ def benchmark(model_shapes=False, warmup=5, iters=30):
         t1 = time.perf_counter()
         ternary_ms = (t1 - t0) / iters * 1000
 
-        # Dense backward
+        # Dense backward: dx = dy @ w_q (NOT F.linear which does dy @ w_q^T)
         t0 = time.perf_counter()
         for _ in range(iters):
-            dx_ref = F.linear(dy, w_q)
+            dx_ref = dy @ w_q
         torch.cuda.synchronize()
         t1 = time.perf_counter()
         dense_ms = (t1 - t0) / iters * 1000

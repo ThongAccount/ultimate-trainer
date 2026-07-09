@@ -183,9 +183,9 @@ def backward_dx_ternary(
         dx: (M, K) float32 input gradients
     """
     if not dy.is_cuda or not _load_extension():
-        # CPU fallback
+        # CPU fallback: dx = dy @ w_q (NOT F.linear which does dy @ w_q^T)
         w_q = torch.clamp(torch.round(weight / gamma), -1.0, 1.0)
-        return F.linear(dy, w_q)
+        return dy @ w_q
 
     # Flatten batch
     *batch_dims, N = dy.shape

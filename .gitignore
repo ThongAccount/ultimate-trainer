@@ -47,3 +47,6 @@ data/*.json
 *.log
 ruff_cache/
 .ruff_cache/
+
+# ── AI agent context (regenerated per-session) ────────────────────
+CONTEXT.md
