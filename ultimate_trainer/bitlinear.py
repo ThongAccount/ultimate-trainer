@@ -138,6 +138,9 @@ class BitLinear(nn.Module):
             return F.linear(x, w_ste, self.bias)
 
         # Eval: use cached ternary buffer (fast, single memory read)
+        # Cast input to match buffer dtype (handles fp32 embedding → bf16 model)
+        if x.dtype != self._w_ternary.dtype:
+            x = x.to(self._w_ternary.dtype)
         return F.linear(x, self._w_ternary, self.bias)
 
     def extra_repr(self):

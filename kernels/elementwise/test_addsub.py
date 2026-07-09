@@ -3,13 +3,13 @@ test_addsub.py — Test and benchmark the CUDA add/sub kernels.
 
 Usage:
     # Unit test (requires CUDA)
-    uv run python kernels/test_addsub.py
+    uv run python kernels/elementwise/test_addsub.py
 
     # Benchmark on GPU
-    uv run python kernels/test_addsub.py --bench
+    uv run python kernels/elementwise/test_addsub.py --bench
 
     # CPU-only correctness (no CUDA needed, uses PyTorch fallback)
-    uv run python kernels/test_addsub.py --cpu
+    uv run python kernels/elementwise/test_addsub.py --cpu
 """
 
 import sys
@@ -20,7 +20,8 @@ import argparse
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to path (going up 3 levels: elementwise/ → kernels/ → project root)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 def _vec_add_sub_cpu(a, b):
@@ -37,7 +38,7 @@ def test_correctness():
     # Try loading CUDA extension
     use_cuda = device.type == "cuda"
     if use_cuda:
-        from kernels.addsub import vec_add, vec_sub, vec_add_sub
+        from kernels.elementwise.addsub import vec_add, vec_sub, vec_add_sub
         print(f"  Using CUDA kernels on {torch.cuda.get_device_name(0)}")
     else:
         print("  Using PyTorch fallback (CPU)")
@@ -145,7 +146,7 @@ def benchmark(batch_size: int = 4, seq_len: int = 4096, hidden_dim: int = 2560,
     print(f"  {'─' * 52}")
 
     if use_cuda:
-        from kernels.addsub import vec_add, vec_sub, vec_add_sub
+        from kernels.elementwise.addsub import vec_add, vec_sub, vec_add_sub
 
         bench_fn(lambda a, b: torch.add(a, b), "PyTorch a + b", reads=2, writes=1)
         bench_fn(lambda a, b: torch.sub(a, b), "PyTorch a - b", reads=2, writes=1)
