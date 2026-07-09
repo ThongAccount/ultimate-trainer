@@ -338,6 +338,11 @@ def bench_ultimate(seq_len=128, batch=2, steps=20):
         win_size=32,
     )
     model = UltimateModel(mc)
+    # Enable activation warmup ramp
+    from ultimate_trainer.bitlinear import BitLinear
+    for m in model.modules():
+        if isinstance(m, BitLinear):
+            m._quant_step = 0
     ids = torch.randint(0, 4096, (batch, seq_len))
     flops = estimate_flops_per_step(
         n_layers=mc.num_layers,
@@ -391,6 +396,11 @@ def bench_ultimate_fp(seq_len=128, batch=2, steps=20):
         win_size=32,
     )
     model = UltimateModel(mc)
+    # Enable activation warmup ramp
+    from ultimate_trainer.bitlinear import BitLinear
+    for m in model.modules():
+        if isinstance(m, BitLinear):
+            m._quant_step = 0
     ids = torch.randint(0, 4096, (batch, seq_len))
     flops = estimate_flops_per_step(
         n_layers=mc.num_layers,

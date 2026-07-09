@@ -44,7 +44,7 @@ def test_selection_output_shape():
         assert out.shape == (B, H, T, D), (
             f"out shape mismatch for {(B, H, T, D, l_prime, topk)}"
         )
-        assert idx.shape == (B, H, T, topk_actual), (
+        assert idx.shape == (B, H, topk_actual), (
             f"idx shape mismatch for {(B, H, T, D, l_prime, topk)}"
         )
 
@@ -79,16 +79,28 @@ def test_selection_matches_manual_topk_gather():
     sb = SelectionBranch(block_size=l_prime, topk=topk)
     out, idx = sb(q, k, v, p_cmp, n_cmp)
 
-    # Reproduce the gather and attention manually.
-    k_blocks = k.reshape(B, H, n_sel, l_prime, D)
-    v_blocks = v.reshape(B, H, n_sel, l_prime, D)
-    b_idx = torch.arange(B).view(B, 1, 1, 1)
-    h_idx = torch.arange(H).view(1, H, 1, 1)
-    k_sel = k_blocks[b_idx, h_idx, idx].reshape(B, H, T, topk * l_prime, D)
-    v_sel = v_blocks[b_idx, h_idx, idx].reshape(B, H, T, topk * l_prime, D)
-    scores = torch.einsum("bhtd,bhtld->bhtl", q, k_sel) / math.sqrt(D)
+    # Reproduce the gather and attention manually using the same aggregated
+    # indices (B, H, K) and the same gather+reshape+SDPA logic as the branch.
+    k_blocks = k[:, :, :n_sel * l_prime, :].reshape(B, H, n_sel, l_prime, D)
+    v_blocks = v[:, :, :n_sel * l_prime, :].reshape(B, H, n_sel, l_prime, D)
+
+    bi = idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, l_prime, D)
+    k_sel = torch.gather(k_blocks, dim=2, index=bi).reshape(B, H, topk * l_prime, D)
+    v_sel = torch.gather(v_blocks, dim=2, index=bi).reshape(B, H, topk * l_prime, D)
+
+    # Reproduce the causal mask exactly as SelectionBranch does.
+    offsets = torch.arange(l_prime, device=q.device)
+    orig_k_pos = (idx * l_prime).unsqueeze(-1) + offsets  # (B, H, K, lp)
+    orig_k_pos = orig_k_pos.reshape(B, H, topk * l_prime)  # (B, H, K*lp)
+
+    q_pos = torch.arange(T, device=q.device).view(1, 1, T, 1)
+    valid = orig_k_pos.unsqueeze(2) <= q_pos  # (B, H, T, K*lp)
+    mask = torch.where(valid, 0.0, float("-inf"))
+
+    scores = torch.einsum("bhtd,bhkd->bhtk", q, k_sel) / math.sqrt(D)
+    scores = scores + mask
     attn = F.softmax(scores, dim=-1)
-    expected = torch.einsum("bhtl,bhtld->bhtd", attn, v_sel)
+    expected = torch.einsum("bhtk,bhkd->bhtd", attn, v_sel)
     assert torch.allclose(out, expected, atol=1e-5)
 
 
@@ -105,7 +117,7 @@ def test_selection_interpolates_compression_scores():
     sb = SelectionBranch(block_size=l_prime, topk=topk)
     out, idx = sb(q, k, v, p_cmp, n_cmp)
     assert out.shape == (B, H, T, D)
-    assert idx.shape == (B, H, T, topk)
+    assert idx.shape == (B, H, topk)
     assert (idx >= 0).all() and (idx < n_sel).all()
 
 

@@ -87,6 +87,12 @@ class UltimateTrainer:
             f"bitlinear={self.mc.use_bitlinear}"
         )
         self.model.train()
+        # Enable activation quantization warmup ramp (default _quant_step=5000
+        # skips warmup; reset to 0 so the linear ramp activates).
+        from ultimate_trainer.bitlinear import BitLinear
+        for module in self.model.modules():
+            if isinstance(module, BitLinear):
+                module._quant_step = 0
         for step in range(self.tc.max_steps):
             loss = self.step()
             if step % self.tc.log_interval == 0:

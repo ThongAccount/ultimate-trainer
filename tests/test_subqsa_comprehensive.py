@@ -250,8 +250,8 @@ class TestSelectionBranch:
         _, top_idx = branch(q, k, v, p_cmp, 0)
 
         topk_actual = min(topk, n_sel)
-        assert top_idx.shape == (batch, num_heads, T, topk_actual), (
-            f"Expected ({batch}, {num_heads}, {T}, {topk_actual}), got {top_idx.shape}"
+        assert top_idx.shape == (batch, num_heads, topk_actual), (
+            f"Expected ({batch}, {num_heads}, {topk_actual}), got {top_idx.shape}"
         )
         assert (top_idx >= 0).all(), "Found negative index"
         assert (top_idx < n_sel).all(), f"Found index >= {n_sel}"

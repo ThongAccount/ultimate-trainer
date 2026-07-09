@@ -74,10 +74,11 @@ class CompressionBranch(nn.Module):
 class SelectionBranch(nn.Module):
     """Content-aware top-k block selection from compression scores.
 
-    Fuses selection + sliding window into a single SDPA call.
-    When ``extra_blocks`` is provided, those key/value blocks are
-    concatenated to the selected blocks and attended to together with
-    a per-query mask (``extra_mask``).
+    Aggregates compression attention scores across query positions and selects
+    the same top-k blocks for all queries.  This produces standard 4D key/value
+    tensors ``(B, H, K, D)`` that are eligible for FlashAttention / memory-
+    efficient SDPA kernels, unlike the previous per-query formulation which
+    materialized 6D ``(B, H, T, topk, lp, D)`` tensors.
     """
 
     def __init__(self, block_size=64, topk=16):
@@ -85,77 +86,72 @@ class SelectionBranch(nn.Module):
         self.l_prime = block_size
         self.n = topk
 
-    def forward(self, q, k, v, p_cmp, n_cmp, extra_blocks=None, extra_mask=None):
+    def forward(self, q, k, v, p_cmp, n_cmp):
         B, H, T, D = q.shape
         lp, n = self.l_prime, self.n
         n_sel = max(1, T // lp)
-        if p_cmp.shape[-1] != n_sel:
-            n_c = p_cmp.shape[-1]
+
+        # ── Aggregate compression scores across query positions ──
+        # p_cmp: (B, H, T, n_cmp) → (B, H, n_cmp)
+        p_agg = p_cmp.mean(dim=2)
+
+        # Resample to selection grid if needed
+        if p_agg.shape[-1] != n_sel:
+            n_c = p_agg.shape[-1]
             if n_c > n_sel:
                 stride = n_c // n_sel
-                p_cmp = (
-                    p_cmp[..., : stride * n_sel]
-                    .reshape(B, H, T, n_sel, stride)
+                p_agg = (
+                    p_agg[..., : stride * n_sel]
+                    .reshape(B, H, n_sel, stride)
                     .sum(dim=-1)
                 )
             else:
                 repeats = n_sel - n_c
-                p_cmp = torch.cat(
-                    [p_cmp, p_cmp[..., -1:].expand(-1, -1, -1, repeats)], dim=-1
+                p_agg = torch.cat(
+                    [p_agg, p_agg[..., -1:].expand(-1, -1, repeats)], dim=-1
                 )
-            p_cmp = p_cmp / p_cmp.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        topk_actual = min(n, n_sel)
-        _, top_idx = p_cmp.topk(topk_actual, dim=-1)  # (B, H, T, topk_actual)
+            p_agg = p_agg / p_agg.sum(dim=-1, keepdim=True).clamp(min=1e-8)
 
-        # Gather full l_prime-token blocks from the first n_sel * l_prime positions.
+        topk_actual = min(n, n_sel)
+        _, top_idx = p_agg.topk(topk_actual, dim=-1)  # (B, H, topk_actual)
+
+        # Gather full l_prime-token blocks — same blocks for all queries.
         k_sliced = k[:, :, : n_sel * lp, :]
         v_sliced = v[:, :, : n_sel * lp, :]
         k_blocks = k_sliced.reshape(B, H, n_sel, lp, D)
         v_blocks = v_sliced.reshape(B, H, n_sel, lp, D)
 
-        b_idx = torch.arange(B, device=q.device).view(B, 1, 1, 1)
-        h_idx = torch.arange(H, device=q.device).view(1, H, 1, 1)
-        k_sel = k_blocks[b_idx, h_idx, top_idx]  # (B, H, T, topk_actual, lp, D)
-        v_sel = v_blocks[b_idx, h_idx, top_idx]
+        # Gather: top_idx (B, H, topk_actual) → expand for (lp, D)
+        bi = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, lp, D)
+        k_sel = torch.gather(k_blocks, dim=2, index=bi)  # (B, H, topk_actual, lp, D)
+        v_sel = torch.gather(v_blocks, dim=2, index=bi)
+        k_sel = k_sel.reshape(B, H, topk_actual * lp, D)  # standard 4D
+        v_sel = v_sel.reshape(B, H, topk_actual * lp, D)
 
-        # Concatenate selected blocks along the key/value length dimension.
-        k_sel = k_sel.reshape(B, H, T, topk_actual * lp, D)
-        v_sel = v_sel.reshape(B, H, T, topk_actual * lp, D)
-
-        n_sel_tokens = k_sel.shape[-2]
-
-        # Optionally fuse extra blocks (e.g. sliding window) into the same SDPA call.
-        if extra_blocks is not None:
-            extra_k, extra_v = extra_blocks
-            n_extra = extra_k.shape[-2]
-            k_sel = torch.cat([k_sel, extra_k], dim=-2)  # (B, H, T, n_sel_tk + n_extra, D)
-            v_sel = torch.cat([v_sel, extra_v], dim=-2)
-        else:
-            n_extra = 0
-
-        L = k_sel.shape[-2]  # total key length
-        q_flat = q.reshape(B * H * T, 1, D)
-        k_flat = k_sel.reshape(B * H * T, L, D)
-        v_flat = v_sel.reshape(B * H * T, L, D)
-
-        # Build fused mask if extra blocks have a causal constraint (e.g. window).
-        if extra_blocks is not None and extra_mask is not None:
-            # Selection blocks: all attend (0 mask)
-            sel_mask_flat = torch.zeros(
-                B * H * T, 1, n_sel_tokens, device=q.device, dtype=q.dtype
-            )
-            # Extra blocks: per-position mask (T, n_extra) expanded to flattened queries
-            extra_mask_flat = (
-                extra_mask.view(1, 1, T, n_extra)
-                .expand(B, H, -1, -1)
-                .reshape(B * H * T, 1, n_extra)
-            )
-            attn_mask = torch.cat([sel_mask_flat, extra_mask_flat], dim=-1)
-        else:
-            attn_mask = None
-
-        out = F.scaled_dot_product_attention(q_flat, k_flat, v_flat, attn_mask=attn_mask)
-        return out.reshape(B, H, T, D).to(q.dtype), top_idx
+        # ── Causal Masking for Selected Blocks ──
+        # Reconstruct the original sequence positions of the selected key tokens
+        # top_idx: (B, H, K). Each block has lp tokens.
+        # Original block start positions: top_idx * lp
+        orig_block_starts = top_idx * lp  # (B, H, K)
+        # Offsets within block: 0, 1, ..., lp-1
+        offsets = torch.arange(lp, device=q.device)  # (lp,)
+        # Original token positions: (B, H, K, lp) -> flatten to (B, H, K*lp)
+        orig_k_pos = (orig_block_starts.unsqueeze(-1) + offsets).reshape(B, H, topk_actual * lp)
+        
+        # Queries can only attend to keys whose original position is <= query position
+        q_pos = torch.arange(T, device=q.device).view(1, 1, T, 1)  # (1, 1, T, 1)
+        orig_k_pos_exp = orig_k_pos.unsqueeze(2)  # (B, H, 1, K*lp)
+        
+        valid = orig_k_pos_exp <= q_pos  # (B, H, T, K*lp)
+        attn_mask = torch.where(
+            valid,
+            torch.zeros((), device=q.device, dtype=q.dtype),
+            torch.full((), float("-inf"), device=q.device, dtype=q.dtype),
+        )
+        
+        # Standard batched SDPA: (B, H, T, D) × (B, H, K, D) with causal mask
+        out = F.scaled_dot_product_attention(q, k_sel, v_sel, attn_mask=attn_mask)
+        return out.to(q.dtype), top_idx
 
 
 def sliding_window_attention(q, k, v, win_size, cache=None):
@@ -361,34 +357,25 @@ class SubQSAAttention(nn.Module):
         k_h = repeat_kv(k, n_reps) if n_reps > 1 else k
         v_h = repeat_kv(v, n_reps) if n_reps > 1 else v
 
-        # Fused selection + sliding window in a single SDPA call.
-        w = min(self.win_size, T)
-        k_win = k_h[..., -w:, :]            # (B, H, w, D)
-        v_win = v_h[..., -w:, :]
-        # Expand window to per-query: (B, H, T, w, D)
-        k_win_exp = k_win.unsqueeze(2).expand(-1, -1, T, -1, -1)
-        v_win_exp = v_win.unsqueeze(2).expand(-1, -1, T, -1, -1)
+        # ── Selection branch: per-query top-k blocks (standard 4D SDPA) ──
+        o_slc, _ = self.selection(q, k_h, v_h, p_cmp, n_cmp)
 
-        # Build window causal mask: query t attends keys [max(0, t-w+1), ..., t]
-        t_idx = torch.arange(T, device=x.device).unsqueeze(1)   # (T, 1)
-        j_idx = torch.arange(w, device=x.device).unsqueeze(0)   # (1, w)
-        valid = (T - w + j_idx) <= t_idx                         # (T, w)
-        win_mask = torch.where(valid, 0.0, float("-inf")).to(dtype=q.dtype)  # (T, w)
+        # ── Sliding window branch: standard 4D causal SDPA ──
+        # Uses the existing sliding_window_attention helper which builds a
+        # (T, w) additive causal mask — no per-query 5D expansion needed.
+        # This keeps tensors in (B, H, T, D) / (B, H, w, D) shapes that
+        # are eligible for FlashAttention / memory-efficient SDPA kernels.
+        o_win = sliding_window_attention(q, k_h, v_h, self.win_size)
 
-        # Single fused SDPA: selected blocks + window blocks
-        o_slc_win, _ = self.selection(
-            q, k_h, v_h, p_cmp, n_cmp,
-            extra_blocks=(k_win_exp, v_win_exp),
-            extra_mask=win_mask,
-        )
-
+        # ── 3-way gating (independent gradients per branch) ──
         g = self.gate_mlp(x).view(B, T, 3, self.num_heads).permute(0, 3, 1, 2)
         g = g.float().sigmoid()
         g = g / (g.sum(dim=-1, keepdim=True) + 1e-8)
 
         o = (
             g[..., 0:1] * o_cmp.float()
-            + (g[..., 1:2] + g[..., 2:3]) * o_slc_win.float()
+            + g[..., 1:2] * o_slc.float()
+            + g[..., 2:3] * o_win.float()
         ).to(dtype=x.dtype)
 
         # ── 2B4T: subln before output projection ──
