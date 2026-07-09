@@ -72,14 +72,20 @@ class CompressionBranch(nn.Module):
 
 
 class SelectionBranch(nn.Module):
-    """Content-aware top-k block selection from compression scores."""
+    """Content-aware top-k block selection from compression scores.
+
+    Fuses selection + sliding window into a single SDPA call.
+    When ``extra_blocks`` is provided, those key/value blocks are
+    concatenated to the selected blocks and attended to together with
+    a per-query mask (``extra_mask``).
+    """
 
     def __init__(self, block_size=64, topk=16):
         super().__init__()
         self.l_prime = block_size
         self.n = topk
 
-    def forward(self, q, k, v, p_cmp, n_cmp):
+    def forward(self, q, k, v, p_cmp, n_cmp, extra_blocks=None, extra_mask=None):
         B, H, T, D = q.shape
         lp, n = self.l_prime, self.n
         n_sel = max(1, T // lp)
@@ -116,11 +122,39 @@ class SelectionBranch(nn.Module):
         k_sel = k_sel.reshape(B, H, T, topk_actual * lp, D)
         v_sel = v_sel.reshape(B, H, T, topk_actual * lp, D)
 
-        L = k_sel.shape[-2]  # topk_actual * lp
+        n_sel_tokens = k_sel.shape[-2]
+
+        # Optionally fuse extra blocks (e.g. sliding window) into the same SDPA call.
+        if extra_blocks is not None:
+            extra_k, extra_v = extra_blocks
+            n_extra = extra_k.shape[-2]
+            k_sel = torch.cat([k_sel, extra_k], dim=-2)  # (B, H, T, n_sel_tk + n_extra, D)
+            v_sel = torch.cat([v_sel, extra_v], dim=-2)
+        else:
+            n_extra = 0
+
+        L = k_sel.shape[-2]  # total key length
         q_flat = q.reshape(B * H * T, 1, D)
         k_flat = k_sel.reshape(B * H * T, L, D)
         v_flat = v_sel.reshape(B * H * T, L, D)
-        out = F.scaled_dot_product_attention(q_flat, k_flat, v_flat)
+
+        # Build fused mask if extra blocks have a causal constraint (e.g. window).
+        if extra_blocks is not None and extra_mask is not None:
+            # Selection blocks: all attend (0 mask)
+            sel_mask_flat = torch.zeros(
+                B * H * T, 1, n_sel_tokens, device=q.device, dtype=q.dtype
+            )
+            # Extra blocks: per-position mask (T, n_extra) expanded to flattened queries
+            extra_mask_flat = (
+                extra_mask.view(1, 1, T, n_extra)
+                .expand(B, H, -1, -1)
+                .reshape(B * H * T, 1, n_extra)
+            )
+            attn_mask = torch.cat([sel_mask_flat, extra_mask_flat], dim=-1)
+        else:
+            attn_mask = None
+
+        out = F.scaled_dot_product_attention(q_flat, k_flat, v_flat, attn_mask=attn_mask)
         return out.reshape(B, H, T, D).to(q.dtype), top_idx
 
 
@@ -203,6 +237,11 @@ class SubQSAAttention(nn.Module):
         self.v_proj = proj_cls(hidden_dim, num_kv_heads * head_dim, bias=False)
         self.o_proj = proj_cls(num_heads * head_dim, hidden_dim, bias=False)
 
+        # FP routing projection for better compression branch scores.
+        # Attends at KV-head resolution, always FP (not BitLinear) so routing
+        # decisions get rich gradient signals independent of ternary quantization.
+        self.routing_k_proj = nn.Linear(hidden_dim, num_kv_heads * head_dim, bias=False)
+
         # 2B4T: subln before output projection (applied to gated 3-branch output)
         self.out_norm = RMSNorm(num_heads * head_dim)
 
@@ -212,7 +251,6 @@ class SubQSAAttention(nn.Module):
         self.compression = CompressionBranch(head_dim, cmp_block, cmp_stride)
         self.selection = SelectionBranch(slc_block, slc_topk)
         self.win_size = win_size
-        self._sw_mask_cache = {}
 
         # Per-head gating MLP (tiny — stays FP16)
         self.gate_mlp = nn.Sequential(
@@ -220,6 +258,18 @@ class SubQSAAttention(nn.Module):
             nn.SiLU(),
             nn.Linear(64, 3 * num_heads, bias=False),
         )
+        # Initialize gate biases so window branch dominates early (~0.90),
+        # compression and selection start low (~0.05 each). This gives the
+        # model a safe fallback while the routing branches learn.
+        with torch.no_grad():
+            last_layer = self.gate_mlp[-1]
+            # last_layer.weight is (3*num_heads, 64) — keep near-zero init
+            nn.init.zeros_(last_layer.weight)
+            # Add bias per head per branch: cmp(−2.5), slc(−2.5), win(+2.2)
+            last_layer.bias = nn.Parameter(torch.zeros(3 * num_heads))
+            last_layer.bias.data[0::3] = -2.5  # compression  ≈ sigmoid(−2.5) ≈ 0.076
+            last_layer.bias.data[1::3] = -2.5  # selection    ≈ sigmoid(−2.5) ≈ 0.076
+            last_layer.bias.data[2::3] = 2.2   # sliding wind ≈ sigmoid(2.2) ≈ 0.90
 
     def forward(self, x, position_ids, attention_mask=None):
         B, T, _ = x.shape
@@ -233,10 +283,19 @@ class SubQSAAttention(nn.Module):
         q = self.rope(q, position_ids)
         k = self.rope(k, position_ids)
 
+        # ── FP routing projection for better compression scores ──
+        # Compute compressed keys from FP-projected K so the compression
+        # attention scores are not degraded by ternary quantization.
+        k_routing = self.routing_k_proj(x).view(
+            B, T, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        k_routing = self.rope(k_routing, position_ids)
+
         # ── Compression branch ──
         # Compress at num_kv_heads resolution (GQA-aware); expand compressed KV
         # only when attending with query heads.
-        k_cmp, v_cmp = self.compression(k, v)
+        # k_cmp uses FP routing K for better scores; v_cmp uses ternary V.
+        k_cmp, v_cmp = self.compression(k_routing, v)
 
         def repeat_kv(t, n_rep):
             B_, H_, T_, D_ = t.shape
@@ -266,17 +325,23 @@ class SubQSAAttention(nn.Module):
                 B, self.num_heads, T, n_cmp
             )  # (B, num_heads, T, n_cmp)
 
-            # GQA-aware SDPA output per group (no redundant softmax)
-            o_cmp_parts = []
-            for gi in range(n_reps):
-                q_g = q[:, gi::n_reps, :, :]
-                o_g = F.scaled_dot_product_attention(
-                    q_g, k_cmp, v_cmp, dropout_p=self.dropout if self.training else 0.0
-                )
-                o_cmp_parts.append(o_g)
-            # Interleave groups back to original head order
-            o_cmp = torch.stack(o_cmp_parts, dim=2).reshape(
-                B, self.num_heads, T, self.head_dim
+            # GQA-aware SDPA: expand compressed KV once and use a single call.
+            # k_cmp/v_cmp: (B, num_kv_heads, n_cmp, D) → (B, num_heads, n_cmp, D)
+            k_cmp_exp = (
+                k_cmp[:, :, None]
+                .expand(-1, -1, n_reps, -1, -1)
+                .reshape(B, self.num_heads, n_cmp, self.head_dim)
+            )
+            v_cmp_exp = (
+                v_cmp[:, :, None]
+                .expand(-1, -1, n_reps, -1, -1)
+                .reshape(B, self.num_heads, n_cmp, self.head_dim)
+            )
+            o_cmp = F.scaled_dot_product_attention(
+                q,
+                k_cmp_exp,
+                v_cmp_exp,
+                dropout_p=self.dropout if self.training else 0.0,
             )
         elif k_cmp.shape[2] > 0:
             # No GQA or n_reps==1 — full attention at query-head resolution
@@ -295,9 +360,26 @@ class SubQSAAttention(nn.Module):
         # Expand full KV to num_heads for selection and sliding-window branches.
         k_h = repeat_kv(k, n_reps) if n_reps > 1 else k
         v_h = repeat_kv(v, n_reps) if n_reps > 1 else v
-        o_slc, _ = self.selection(q, k_h, v_h, p_cmp, n_cmp)
-        o_win = sliding_window_attention(
-            q, k_h, v_h, self.win_size, self._sw_mask_cache
+
+        # Fused selection + sliding window in a single SDPA call.
+        w = min(self.win_size, T)
+        k_win = k_h[..., -w:, :]            # (B, H, w, D)
+        v_win = v_h[..., -w:, :]
+        # Expand window to per-query: (B, H, T, w, D)
+        k_win_exp = k_win.unsqueeze(2).expand(-1, -1, T, -1, -1)
+        v_win_exp = v_win.unsqueeze(2).expand(-1, -1, T, -1, -1)
+
+        # Build window causal mask: query t attends keys [max(0, t-w+1), ..., t]
+        t_idx = torch.arange(T, device=x.device).unsqueeze(1)   # (T, 1)
+        j_idx = torch.arange(w, device=x.device).unsqueeze(0)   # (1, w)
+        valid = (T - w + j_idx) <= t_idx                         # (T, w)
+        win_mask = torch.where(valid, 0.0, float("-inf")).to(dtype=q.dtype)  # (T, w)
+
+        # Single fused SDPA: selected blocks + window blocks
+        o_slc_win, _ = self.selection(
+            q, k_h, v_h, p_cmp, n_cmp,
+            extra_blocks=(k_win_exp, v_win_exp),
+            extra_mask=win_mask,
         )
 
         g = self.gate_mlp(x).view(B, T, 3, self.num_heads).permute(0, 3, 1, 2)
@@ -306,8 +388,7 @@ class SubQSAAttention(nn.Module):
 
         o = (
             g[..., 0:1] * o_cmp.float()
-            + g[..., 1:2] * o_slc.float()
-            + g[..., 2:3] * o_win.float()
+            + (g[..., 1:2] + g[..., 2:3]) * o_slc_win.float()
         ).to(dtype=x.dtype)
 
         # ── 2B4T: subln before output projection ──

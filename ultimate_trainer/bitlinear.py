@@ -62,7 +62,8 @@ class BitLinear(nn.Module):
         self.quantize_activations = quantize_activations
         self.activation_bits = activation_bits
         self.quant_update_freq = quant_update_freq
-        self._quant_step = 0
+        self._quant_step = 5000  # start past warmup (alpha=1.0); set to 0 before training loop to enable ramp
+        self.activation_warmup_steps = 5000
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         self.register_buffer("_gamma", torch.ones(1))
         self.register_buffer("_w_ternary", torch.empty(out_features, in_features), persistent=False)
@@ -81,13 +82,18 @@ class BitLinear(nn.Module):
         self._w_ternary.copy_(self.weight.detach())
 
     def _refresh_ternary_weights(self):
-        """Recompute cached gamma and ternary weights from current self.weight."""
+        """Recompute cached gamma and ternary weights from current self.weight.
+
+        Uses .copy_() / .fill_() so registered buffers remain tracked
+        (avoids the RuntimeError from reassigning self._w_ternary = ...).
+        """
         gamma = compute_gamma(self.weight)
         if gamma.ndim == 0:
             gamma = gamma.reshape(1)
-        self._gamma = gamma
+        self._gamma.copy_(gamma)
         w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
-        self._w_ternary = self.weight + (w_q - self.weight).detach()
+        w_ste = self.weight + (w_q - self.weight).detach()
+        self._w_ternary.copy_(w_ste)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata,
                               strict, missing_keys, unexpected_keys,
@@ -112,15 +118,26 @@ class BitLinear(nn.Module):
 
     def forward(self, x):
         if self.quantize_activations and self.training:
-            x = absmax_quantize_activation(x, bits=self.activation_bits)
+            # Gradual quantization warmup: linearly ramp from 0% to 100%
+            # over activation_warmup_steps (default 5000).
+            alpha = min(1.0, (self._quant_step + 1) / max(1, self.activation_warmup_steps))
+            if alpha > 0:
+                x_q = absmax_quantize_activation(x, bits=self.activation_bits)
+                x = x + (x_q - x).detach() * alpha
+
         if self.training:
             self._quant_step += 1
             stale = self._quant_step % self.quant_update_freq == 1
             if stale:
+                # Sync cached ternary weights for eval readiness
                 self._refresh_ternary_weights()
+            # Fresh STE: forward uses ternary {-1,0,+1}, backward identity through self.weight.
+            # This preserves the autograd graph — unlike the cached buffer (eval only).
+            w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
+            w_ste = self.weight + (w_q - self.weight).detach()
+            return F.linear(x, w_ste, self.bias)
 
-        if not self.training and self.quantize_activations and x.is_cuda and _HAS_FUSED_KERNEL:
-            return fused_bitlinear_forward(x, self.weight, self._gamma, self.bias)
+        # Eval: use cached ternary buffer (fast, single memory read)
         return F.linear(x, self._w_ternary, self.bias)
 
     def extra_repr(self):
