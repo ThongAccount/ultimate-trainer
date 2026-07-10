@@ -956,6 +956,48 @@ static int run_benchmark() {
     return errors ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 
+// ── Quick smoke test (finishes in < 5 seconds) ─────────────────────
+
+static int run_benchmark_quick(cudaStream_t stream) {
+  const int M = 128, N = 128, K = 128;
+  float *d_x, *d_w, *d_y;
+  CUDA_CHECK(cudaMalloc(&d_x, M * K * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&d_w, N * K * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&d_y, M * N * sizeof(float)));
+
+  float* h_x = (float*)malloc(M * K * sizeof(float));
+  float* h_w = (float*)malloc(N * K * sizeof(float));
+  float gamma = 0.0f;
+  for (int i = 0; i < M * K; i++) h_x[i] = (float)((i * 3) % 10);
+  for (int i = 0; i < N * K; i++) { h_w[i] = (float)((i * 7) % 10); gamma += fabsf(h_w[i]); }
+  gamma = gamma / (N * K) + 1e-5f;
+
+  CUDA_CHECK(cudaMemcpy(d_x, h_x, M * K * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_w, h_w, N * K * sizeof(float), cudaMemcpyHostToDevice));
+
+  forward_ternary_matmul(d_x, d_w, d_y, gamma, M, N, K, stream);
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+
+  float* h_y = (float*)malloc(M * N * sizeof(float));
+  CUDA_CHECK(cudaMemcpy(h_y, d_y, M * N * sizeof(float), cudaMemcpyDeviceToHost));
+
+  int errors = 0;
+  for (int m = 0; m < M && errors < 5; m++)
+    for (int n = 0; n < N && errors < 5; n++) {
+      float expected = cpu_forward_ref(h_x, h_w, gamma, m, n, K);
+      if (fabsf(h_y[m * N + n] - expected) > 1e-4f) errors++;
+    }
+
+  free(h_x); free(h_w); free(h_y);
+  CUDA_CHECK(cudaFree(d_x)); CUDA_CHECK(cudaFree(d_w)); CUDA_CHECK(cudaFree(d_y));
+
+  if (errors == 0)
+    printf("Kernel ternary_matmul.cu --quick: OK (128x128 verified)\n");
+  else
+    printf("Kernel ternary_matmul.cu --quick: %d ERRORS\n", errors);
+  return errors;
+}
+
 // ── Main entry point ───────────────────────────────────────────────
 
 int main(int argc, char** argv) {
