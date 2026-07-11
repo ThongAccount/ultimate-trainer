@@ -836,10 +836,14 @@ static int run_benchmark() {
     printf("Device       : %s\n", prop.name);
     printf("Compute Cap  : %d.%d\n\n", prop.major, prop.minor);
 
-    // Shapes matching the 2B model: QKV projection (2560×2560)
+    #ifdef QUICK_TEST
+    const int M = 128, N = 128, K = 128;
+    #else
+    // Shapes matching the 2B model: QKV projection
     const int M = 4096;  // batch * seq_len
     const int N = 2560;  // out_features
     const int K = 2560;  // in_features
+    #endif
 
     printf("Shapes: M=%d (tokens), N=%d (out), K=%d (in)\n", M, N, K);
     printf("X size: %.2f MB | W size: %.2f MB | Y size: %.2f MB\n\n",

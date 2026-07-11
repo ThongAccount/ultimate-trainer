@@ -618,10 +618,16 @@ static int run_benchmark() {
   printf("Compute Cap  : %d.%d\n", prop.major, prop.minor);
   printf("HBM size     : %.1f GB\n\n", prop.totalGlobalMem / 1e9);
 
+  #ifdef QUICK_TEST
+  const size_t N = 1UL << 20;          // 1M elements (fast smoke-test)
+  const int warmup = 1;
+  const int iters = 3;
+  #else
   const size_t N = 1UL << 28;          // ~268M elements = 1 GB per vector
-  const size_t bytes_per_vec = N * sizeof(float);
   const int warmup = 10;
   const int iters = 30;
+  #endif
+  const size_t bytes_per_vec = N * sizeof(float);
 
   printf("Vector size  : %zu elements (%.2f GB each)\n", N,
          bytes_per_vec / 1e9);
