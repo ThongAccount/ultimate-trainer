@@ -91,7 +91,7 @@ def test_gate_dominance():
     rms_ref = o_ref.pow(2).mean(-1, keepdim=True).sqrt()
     o_ref = o_ref / (rms_ref + 1e-5) * ins["out_norm_weight"]
     w_q = torch.clamp(torch.round(ins["o_proj_weight"] / ins["gamma"]), -1, 1) * ins["gamma"]
-    y_ref = F.linear(o_ref, w_q)
+    y_ref = F.linear(o_ref.float(), w_q).to(dtype=o_ref.dtype)
 
     diff = (y - y_ref).abs().max().item()
     assert diff < 0.5, f"Gate-dominance test: max diff={diff:.4f} (expected < 0.5)"
@@ -113,7 +113,10 @@ def test_gradient():
     """Backward pass works and gradients flow to all parameters."""
     B, T, H, D_head, D_out = 2, 3, 2, 8, 16
     ins = _make_inputs(B, T, H, D_head, D_out, seed=789)
-    gamma = ins.pop("gamma")
+    # Use large gamma so o_proj_weight / gamma stays inside [-1,1] (avoids
+    # torch.clamp zeroing gradients in the ternary quantisation step).
+    gamma = 5.0
+    ins.pop("gamma")
 
     # Make all inputs require grad
     ins["x"].requires_grad_(True)
