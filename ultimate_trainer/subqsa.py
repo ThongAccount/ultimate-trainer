@@ -273,6 +273,13 @@ class SubQSAAttention(nn.Module):
     def forward(self, x, position_ids, attention_mask=None):
         B, T, _ = x.shape
 
+        # Cast x to the model's working dtype so plain nn.Linear modules
+        # (routing_k_proj, gate_mlp) match their weights.  During training
+        # autocast handles this; without autocast (e.g. checkpoint
+        # verification) the explicit cast prevents float != BFloat16 errors
+        # when embed is float32 but weights are bfloat16.
+        x = x.to(self.routing_k_proj.weight.dtype)
+
         # Project with BitLinear (ternary weights, INT8 activations)
         q = self.q_proj(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
