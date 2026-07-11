@@ -80,6 +80,7 @@ def main():
         intermediate_dim=512,
         num_layers=2,
         num_attention_heads=4,
+        head_dim=64,  # match hidden_dim / num_heads so Q/K/V shapes align with dense
         max_seq_len=128,
     )
     cfg.subqsa = SubQSAConfig(
@@ -89,12 +90,39 @@ def main():
     dense = DenseAttentionModel(cfg).to(device)
     subqsa = SubQSAModel(cfg).to(device)
 
-    # Copy embeddings + layernorms as rough init
+    # ── Copy ALL compatible weights so cosine measures sparse-attention
+    #    quality, not random init differences ──
     with torch.no_grad():
-        dense.embed_tokens.weight.copy_(subqsa.embed.weight)
+        # Embeddings
+        subqsa.embed.weight.copy_(dense.embed_tokens.weight)
+
         for db, sb in zip(dense.layers, subqsa.layers):
-            db.norm1.weight.copy_(sb.norm1.weight)
-            db.norm2.weight.copy_(sb.norm2.weight)
+            # LayerNorms
+            sb.norm1.weight.copy_(db.norm1.weight)
+            sb.norm2.weight.copy_(db.norm2.weight)
+
+            # Attention Q/K/V: MultiheadAttention.in_proj_weight is (3*D, D)
+            # stacked as [Q; K; V].  SubQSA has separate nn.Linear per projection
+            # with the same shape (num_heads*head_dim, hidden_dim) = (D, D).
+            D = cfg.hidden_dim
+            in_proj = db.attn.in_proj_weight  # (3*D, D)
+            sb.attn.q_proj.weight.copy_(in_proj[:D])
+            sb.attn.k_proj.weight.copy_(in_proj[D:2*D])
+            sb.attn.v_proj.weight.copy_(in_proj[2*D:])
+
+            # Attention output projection
+            sb.attn.o_proj.weight.copy_(db.attn.out_proj.weight)
+
+            # MLP: both use nn.Linear with same shapes
+            # sb.mlp is nn.Sequential(nn.Linear(D, inter), GELU, nn.Linear(inter, D))
+            # db.mlp is the same nn.Sequential layout
+            sb.mlp[0].weight.copy_(db.mlp[0].weight)
+            sb.mlp[2].weight.copy_(db.mlp[2].weight)
+
+        # LM head
+        subqsa.lm_head.weight.copy_(dense.lm_head.weight)
+
+        print(f"  Copied weights: embed, {cfg.num_layers}×[norm, QKV, out_proj, MLP], lm_head")
 
     seq_len = 64
     batch = 2
@@ -120,22 +148,31 @@ def main():
     print(f"Mean absolute diff: {diff:.4f}")
     print()
 
-    # Training step comparison
+    # Training step comparison with real LM loss (auto-shift labels)
     opt_d = torch.optim.AdamW(dense.parameters(), lr=1e-3)
     opt_s = torch.optim.AdamW(subqsa.parameters(), lr=1e-3)
-    loss_fn = nn.CrossEntropyLoss()
-    labels = torch.randint(0, 4096, (batch, seq_len), device=device)
 
     d_losses, s_losses = [], []
     for i in range(20):
         opt_d.zero_grad()
         opt_s.zero_grad()
-        ld = loss_fn(dense(input_ids).view(-1, 4096), labels.view(-1))
-        ls = loss_fn(subqsa(input_ids).view(-1, 4096), labels.view(-1))
+
+        logits_d = dense(input_ids)
+        ld = F.cross_entropy(
+            logits_d[:, :-1].reshape(-1, cfg.vocab_size),
+            input_ids[:, 1:].reshape(-1),
+        )
         ld.backward()
-        ls.backward()
         opt_d.step()
+
+        logits_s = subqsa(input_ids)
+        ls = F.cross_entropy(
+            logits_s[:, :-1].reshape(-1, cfg.vocab_size),
+            input_ids[:, 1:].reshape(-1),
+        )
+        ls.backward()
         opt_s.step()
+
         d_losses.append(ld.item())
         s_losses.append(ls.item())
 

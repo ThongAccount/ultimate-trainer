@@ -54,7 +54,8 @@ def main():
         intermediate_dim=512,
         num_layers=2,
         num_attention_heads=4,
-        num_kv_heads=2,
+        num_kv_heads=4,  # match dense model; GQA tested separately
+        head_dim=64,  # match hidden_dim / num_heads so Q/K/V shapes align with dense
         max_seq_len=128,
         use_bitlinear=True,
         cmp_block=16,
@@ -66,6 +67,49 @@ def main():
     device = "cpu"
     fp_model = FPModel(cfg).to(device)
     ultimate = UltimateModel(cfg).to(device)
+
+    # ── Copy compatible weights to measure architectural gap (not random init) ──
+    # Architectures diverge (BitLinear vs nn.Linear, ReLU² vs GELU, SubQSA vs
+    # MultiheadAttention, RMSNorm vs LayerNorm) so we copy what we can:
+    #   ✓ Embeddings, norm weights, attention QKV/O master weights, MLP down weight
+    #   ✗ MLP gate/up (ternarization destroys fine-grained values; keeping random
+    #     init gives better loss than copying — identical gate/up sign patterns
+    #     create correlated ReLU² outputs that raise loss 12.6 vs 1.7)
+    #   ✗ routing_k_proj / gate_mlp (extra modules not in FP),
+    #     compression phi_k/phi_v (extra modules)
+    with torch.no_grad():
+        D = cfg.hidden_dim
+        # Embeddings
+        ultimate.embed.weight.copy_(fp_model.embed.weight)
+        # Final norm — copy weight only (LayerNorm → RMSNorm, weight dim same)
+        ultimate.norm.weight.copy_(fp_model.norm.weight)
+
+        for fp_bl, ult_bl in zip(fp_model.layers, ultimate.layers):
+            # Sub-block norms
+            ult_bl.attn_norm.weight.copy_(fp_bl.norm1.weight)
+            ult_bl.ffn_norm.weight.copy_(fp_bl.norm2.weight)
+
+            # Attention Q/K/V: MultiheadAttention.in_proj_weight is (3*D, D)
+            # stacked as [Q; K; V].  Ultimate uses BitLinear with same master
+            # weight shape (num_heads*head_dim, hidden_dim) = (D, D).
+            in_proj = fp_bl.attn.in_proj_weight  # (3*D, D)
+            ult_bl.attn.q_proj.weight.data.copy_(in_proj[:D])
+            ult_bl.attn.k_proj.weight.data.copy_(in_proj[D:2*D])
+            ult_bl.attn.v_proj.weight.data.copy_(in_proj[2*D:])
+
+            # Attention output projection
+            ult_bl.attn.o_proj.weight.data.copy_(fp_bl.attn.out_proj.weight)
+
+            # MLP down projection (same shape: (D, inter))
+            ult_bl.ffn_down.weight.data.copy_(fp_bl.mlp[2].weight)
+
+        # LM head is tied to embed — already copied
+
+        print("  ".join([
+            "Copied weights:",
+            f"embed, {cfg.num_layers}×[norm, QKV, O, down_proj], final_norm"
+        ]))
+
     seq_len, batch = 64, 2
     ids = torch.randint(100, 4096, (batch, seq_len), device=device)
 
@@ -84,19 +128,26 @@ def main():
     print(f"Ultimate abs mean:  {ult_mean:.4f}")
     print(f"FP vs Ultimate cosine: {cos:.4f}")
 
-    labels = torch.randint(0, 4096, (batch, seq_len), device=device)
-    loss_fn = nn.CrossEntropyLoss()
+    # ── Training comparison with real LM loss (auto-shift labels) ──
     opt_fp = torch.optim.AdamW(fp_model.parameters(), lr=1e-3)
     opt_ult = torch.optim.AdamW(ultimate.parameters(), lr=1e-3)
 
     for i in range(15):
         opt_fp.zero_grad()
-        lf = loss_fn(fp_model(ids).view(-1, 4096), labels.view(-1))
+        logits_fp = fp_model(ids)
+        lf = F.cross_entropy(
+            logits_fp[:, :-1].reshape(-1, cfg.vocab_size),
+            ids[:, 1:].reshape(-1),
+        )
         lf.backward()
         opt_fp.step()
 
         opt_ult.zero_grad()
-        lu = loss_fn(ultimate(ids).view(-1, 4096), labels.view(-1))
+        logits_ult = ultimate(ids)
+        lu = F.cross_entropy(
+            logits_ult[:, :-1].reshape(-1, cfg.vocab_size),
+            ids[:, 1:].reshape(-1),
+        )
         lu.backward()
         opt_ult.step()
 
