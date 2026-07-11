@@ -73,6 +73,18 @@ class SubQSA(nn.Module):
         # Gate: one scalar per head per position
         self.gate_fc = nn.Linear(hidden_dim, 3 * num_heads, bias=False)
 
+        # Learned compression: MLP-based block pooling (instead of mean-pool)
+        self._cmp_phi_k = nn.Sequential(
+            nn.Linear(head_dim * cmp_block, head_dim * 2, bias=False),
+            nn.SiLU(),
+            nn.Linear(head_dim * 2, head_dim, bias=False),
+        )
+        self._cmp_phi_v = nn.Sequential(
+            nn.Linear(head_dim * cmp_block, head_dim * 2, bias=False),
+            nn.SiLU(),
+            nn.Linear(head_dim * 2, head_dim, bias=False),
+        )
+
     def _compress(self, k, v, B, H, T):
         l, d = self.cmp_block, self.cmp_stride
         n = max(1, (T - l) // d)
@@ -80,22 +92,29 @@ class SubQSA(nn.Module):
             return torch.zeros(
                 B, H, 1, self.head_dim, device=k.device, dtype=k.dtype
             ), torch.zeros(B, H, 1, self.head_dim, device=k.device, dtype=k.dtype)
-        k_b = torch.stack([k[:, :, i * d : i * d + l] for i in range(n)], dim=2).mean(
-            2
-        )  # (B, H, n, D)
-        v_b = torch.stack([v[:, :, i * d : i * d + l] for i in range(n)], dim=2).mean(2)
-        return k_b, v_b
+        # Use learned MLP compressors instead of mean-pool
+        # Stack blocks for MLP processing
+        k_blocks = torch.stack([k[:, :, i * d : i * d + l] for i in range(n)], dim=2)
+        v_blocks = torch.stack([v[:, :, i * d : i * d + l] for i in range(n)], dim=2)
+        # Flatten block tokens for MLP input
+        k_flat = k_blocks.reshape(B, H, n, l * self.head_dim)
+        v_flat = v_blocks.reshape(B, H, n, l * self.head_dim)
+        return self._cmp_phi_k(k_flat), self._cmp_phi_v(v_flat)
 
-    def _score_and_select(self, q, k, v, p_cmp, n_cmp):
-        """Select top-k blocks from full GQA-expanded K/V via p_cmp importance.
+    def _score_and_select(self, q, k, v, raw_scores_agg, n_sel):
+        """Select top-k blocks via raw attention scores (pre-softmax).
+
+        Uses raw scores (not softmax probabilities) so the absolute
+        importance signal is preserved. Max-pool across query positions
+        captures the most important query per block.
 
         Args:
             q: (B, H, T, D) — queries (unused, kept for interface compat).
             k: (B, H, T, D) — full RoPE'd GQA-expanded keys.
             v: (B, H, T, D) — full GQA-expanded values.
-            p_cmp: (B, H, n_sel) — per-compression-block importance aggregated
-                across query positions, already resampled to the selection grid.
-            n_cmp: int — number of compressed blocks (unused, kept for compat).
+            raw_scores_agg: (B, H, n_sel) — per-block raw scores aggregated
+                across query positions, already resampled to selection grid.
+            n_sel: int — number of selection grid blocks.
 
         Returns:
             k_sel: (B, H, k_actual * l_prime, D) — selected key blocks flattened.
@@ -104,13 +123,12 @@ class SubQSA(nn.Module):
         """
         B, H, T, D = k.shape
         l_prime = self.slc_block
-        n_sel = p_cmp.shape[-1]  # already resampled to selection grid in forward()
 
         k_blocks = k[:, :, : n_sel * l_prime].reshape(B, H, n_sel, l_prime, D)
         v_blocks = v[:, :, : n_sel * l_prime].reshape(B, H, n_sel, l_prime, D)
 
         k_actual = min(self.slc_topk, n_sel)
-        _, top_idx = p_cmp.topk(k_actual, dim=-1)
+        _, top_idx = raw_scores_agg.topk(k_actual, dim=-1)
 
         bi = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, l_prime, D)
         k_sel = torch.gather(k_blocks, dim=2, index=bi)
@@ -147,31 +165,33 @@ class SubQSA(nn.Module):
         # Compression branch
         k_cmp, v_cmp = self._compress(k_r, v, B, self.num_heads, T)
 
-        # Compression attention probabilities as selection signal.
-        scores = (q @ k_cmp.transpose(-2, -1)) * (self.head_dim**-0.5)
-        p_cmp = F.softmax(scores, dim=-1)  # (B, H, T, n_cmp)
-        p_cmp_agg = p_cmp.mean(dim=2)  # (B, H, n_cmp) — per-block importance
+        # Compression attention SCORES (pre-softmax) as selection signal.
+        # Using raw scores preserves absolute importance — softmax normalizes
+        # across blocks and loses the relative ranking signal.
+        raw_scores = (q @ k_cmp.transpose(-2, -1)) * (self.head_dim**-0.5)
+        p_cmp = F.softmax(raw_scores, dim=-1)  # for compressed attention output
+        # Aggregate raw scores: max-pool across query positions captures peak importance
+        raw_scores_agg = raw_scores.max(dim=2).values  # (B, H, n_cmp)
 
-        # Resample p_cmp_agg to selection grid if shapes differ.
+        # Resample raw_scores_agg to selection grid if shapes differ.
         n_cmp = k_cmp.shape[2]
         n_sel = max(1, T // self.slc_block)
         if n_cmp != n_sel:
             if n_cmp > n_sel:
                 stride = n_cmp // n_sel
-                p_cmp_agg = (
-                    p_cmp_agg[..., : stride * n_sel]
+                raw_scores_agg = (
+                    raw_scores_agg[..., : stride * n_sel]
                     .reshape(B, self.num_heads, n_sel, stride)
-                    .sum(dim=-1)
+                    .max(dim=-1).values
                 )
             else:
                 repeats = n_sel - n_cmp
-                p_cmp_agg = torch.cat(
-                    [p_cmp_agg, p_cmp_agg[..., -1:].expand(-1, -1, repeats)], dim=-1
+                raw_scores_agg = torch.cat(
+                    [raw_scores_agg, raw_scores_agg[..., -1:].expand(-1, -1, repeats)], dim=-1
                 )
-            p_cmp_agg = p_cmp_agg / (p_cmp_agg.sum(dim=-1, keepdim=True) + 1e-8)
 
-        # Selection branch (top-k from compression attention probs)
-        k_sel, v_sel, _ = self._score_and_select(q, k_r, v, p_cmp_agg, k_cmp.shape[2])
+        # Selection branch (top-k from raw compression scores)
+        k_sel, v_sel, _ = self._score_and_select(q, k_r, v, raw_scores_agg, n_sel)
 
         # All 3 branches use standard SDPA (shapes verified to match)
         # 1) Compression: q (B,H,T,D) x k_cmp (B,H,n,D) -> (B,H,T,n) -> (B,H,T,D)

@@ -86,17 +86,20 @@ class TernaryMatmulFn(torch.autograd.Function):
         x_2d = x.reshape(M, K)
 
         if HAS_CUDA_KERNEL:
-            # CUDA kernel path
+            # CUDA kernel path: computes y_raw = x @ Q(W)^T where Q(W) ∈ {-1,0,+1}
             y = torch.empty(M, N, device=x.device, dtype=torch.float32)
             gamma_scalar = gamma.item() if isinstance(gamma, torch.Tensor) else gamma
             _ternary_lib.forward_ternary_matmul(
                 x_2d.contiguous(), weight.contiguous(), y,
                 gamma_scalar, M, N, K,
             )
+            # Scale by gamma: y = gamma * (x @ Q(W)^T) → ternary weights are {-γ, 0, +γ}
+            y = y * gamma_scalar
         else:
-            # Eager fallback: quant + matmul
+            # Eager fallback: quant + matmul with gamma-scaled ternary weights
             w_q = torch.clamp(torch.round(weight / gamma), -1.0, 1.0)
-            y = F.linear(x_2d, w_q)
+            w_ternary = w_q * gamma  # {-γ, 0, +γ}
+            y = F.linear(x_2d, w_ternary)
 
         if bias is not None:
             y = y + bias
@@ -121,19 +124,21 @@ class TernaryMatmulFn(torch.autograd.Function):
         dy_2d = grad_output.reshape(M, N)
 
         if HAS_CUDA_KERNEL:
-            # CUDA backward kernel: dx = dy @ Q(W)
+            # CUDA backward kernel: dx_raw = dy @ Q(W)  then scale by gamma
+            # Since forward = gamma * (x @ Q(W)^T), backward = gamma * (dy @ Q(W))
             dx = torch.empty(M, K, device=x.device, dtype=torch.float32)
             gamma_scalar = gamma.item() if isinstance(gamma, torch.Tensor) else gamma
             _ternary_lib.backward_dx_ternary(
                 dy_2d.contiguous(), weight.contiguous(), dx,
                 gamma_scalar, M, N, K,
             )
+            dx = dx * gamma_scalar
         else:
             # Eager fallback: STE backward (no gradient through weight quant)
             with torch.no_grad():
                 w_q = torch.clamp(torch.round(weight / gamma), -1.0, 1.0)
-            # dx = dy @ W_q — same add/sub trick
-            dx = F.linear(dy_2d, w_q.t())
+            # dx = dy @ (gamma * W_q) — gamma-scaled ternary
+            dx = F.linear(dy_2d, (w_q * gamma).t())
 
         dx = dx.reshape(*dims, K)
 
@@ -153,6 +158,9 @@ def fused_ternary_linear(x: torch.Tensor, weight: torch.Tensor,
                           gamma: torch.Tensor, bias: torch.Tensor = None) -> torch.Tensor:
     """Drop-in for F.linear with fused ternary quantization.
 
+    Uses gamma-scaled ternary weights {-γ, 0, +γ} so output magnitudes
+    match FP linear outputs.
+
     During training: uses TernaryMatmulFn (autograd-aware).
     During eval: uses CUDA kernel or eager fallback with cached ternary.
     """
@@ -163,4 +171,4 @@ def fused_ternary_linear(x: torch.Tensor, weight: torch.Tensor,
         if HAS_CUDA_KERNEL:
             return TernaryMatmulFn.apply(x, weight, gamma, bias)
         w_q = torch.clamp(torch.round(weight / gamma), -1.0, 1.0)
-        return F.linear(x, w_q, bias)
+        return F.linear(x, w_q * gamma, bias)

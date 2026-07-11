@@ -86,34 +86,37 @@ class SelectionBranch(nn.Module):
         self.l_prime = block_size
         self.n = topk
 
-    def forward(self, q, k, v, p_cmp, n_cmp):
+    def forward(self, q, k, v, raw_scores_cmp, n_cmp):
         B, H, T, D = q.shape
         lp, n = self.l_prime, self.n
         n_sel = max(1, T // lp)
 
-        # ── Aggregate compression scores across query positions ──
-        # p_cmp: (B, H, T, n_cmp) → (B, H, n_cmp)
-        p_agg = p_cmp.mean(dim=2)
+        # ── Aggregate compression SCORES (pre-softmax) across query positions ──
+        # Using raw scores (not softmax probabilities) preserves absolute
+        # importance information — softmax normalizes across blocks and Loses
+        # the relative ranking signal.  Max-pool captures the most important
+        # query position per block.
+        # raw_scores_cmp: (B, H, T, n_cmp) → (B, H, n_cmp)
+        scores_agg = raw_scores_cmp.max(dim=2).values
 
         # Resample to selection grid if needed
-        if p_agg.shape[-1] != n_sel:
-            n_c = p_agg.shape[-1]
+        if scores_agg.shape[-1] != n_sel:
+            n_c = scores_agg.shape[-1]
             if n_c > n_sel:
                 stride = n_c // n_sel
-                p_agg = (
-                    p_agg[..., : stride * n_sel]
+                scores_agg = (
+                    scores_agg[..., : stride * n_sel]
                     .reshape(B, H, n_sel, stride)
-                    .sum(dim=-1)
+                    .max(dim=-1).values
                 )
             else:
                 repeats = n_sel - n_c
-                p_agg = torch.cat(
-                    [p_agg, p_agg[..., -1:].expand(-1, -1, repeats)], dim=-1
+                scores_agg = torch.cat(
+                    [scores_agg, scores_agg[..., -1:].expand(-1, -1, repeats)], dim=-1
                 )
-            p_agg = p_agg / p_agg.sum(dim=-1, keepdim=True).clamp(min=1e-8)
 
         topk_actual = min(n, n_sel)
-        _, top_idx = p_agg.topk(topk_actual, dim=-1)  # (B, H, topk_actual)
+        _, top_idx = scores_agg.topk(topk_actual, dim=-1)  # (B, H, topk_actual)
 
         # Gather full l_prime-token blocks — same blocks for all queries.
         k_sliced = k[:, :, : n_sel * lp, :]
@@ -358,7 +361,17 @@ class SubQSAAttention(nn.Module):
         v_h = repeat_kv(v, n_reps) if n_reps > 1 else v
 
         # ── Selection branch: per-query top-k blocks (standard 4D SDPA) ──
-        o_slc, _ = self.selection(q, k_h, v_h, p_cmp, n_cmp)
+        # Pass raw scores (pre-softmax) so SelectionBranch can use absolute
+        # importance values instead of normalized probabilities.
+        # scores_cmp: (B, H, T, n_cmp) or (B, num_kv_h, n_reps, T, n_cmp)
+        if k_cmp.shape[2] > 0 and n_reps > 1:
+            # Reshape GQA scores to (B, H, T, n_cmp) for SelectionBranch
+            scores_cmp_for_slc = scores_cmp.reshape(B, self.num_heads, T, n_cmp)
+        elif k_cmp.shape[2] > 0:
+            scores_cmp_for_slc = scores_cmp
+        else:
+            scores_cmp_for_slc = torch.zeros(B, self.num_heads, T, 1, device=x.device)
+        o_slc, _ = self.selection(q, k_h, v_h, scores_cmp_for_slc, n_cmp)
 
         # ── Sliding window branch: standard 4D causal SDPA ──
         # Uses the existing sliding_window_attention helper which builds a

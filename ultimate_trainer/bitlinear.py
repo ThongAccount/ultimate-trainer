@@ -84,6 +84,8 @@ class BitLinear(nn.Module):
     def _refresh_ternary_weights(self):
         """Recompute cached gamma and ternary weights from current self.weight.
 
+        Stores the gamma-scaled ternary weights {-γ, 0, +γ} so the
+        eval-mode forward produces outputs at the same scale as FP weights.
         Uses .copy_() / .fill_() so registered buffers remain tracked
         (avoids the RuntimeError from reassigning self._w_ternary = ...).
         """
@@ -92,7 +94,9 @@ class BitLinear(nn.Module):
             gamma = gamma.reshape(1)
         self._gamma.copy_(gamma)
         w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
-        w_ste = self.weight + (w_q - self.weight).detach()
+        # Scale by gamma so ternary {-1,0,+1} becomes {-γ, 0, +γ}
+        w_ternary_scaled = w_q * self._gamma
+        w_ste = self.weight + (w_ternary_scaled - self.weight).detach()
         self._w_ternary.copy_(w_ste)
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata,
@@ -131,10 +135,19 @@ class BitLinear(nn.Module):
             if stale:
                 # Sync cached ternary weights for eval readiness
                 self._refresh_ternary_weights()
-            # Fresh STE: forward uses ternary {-1,0,+1}, backward identity through self.weight.
-            # This preserves the autograd graph — unlike the cached buffer (eval only).
+            # Fresh STE: forward uses gamma-scaled ternary {-γ, 0, +γ},
+            # backward identity through self.weight.  The gamma scaling
+            # maintains the correct output magnitude (BitNet paper Eq. 1-3).
+            try:
+                from kernels.cuda_ternary import TernaryMatmulFn, HAS_CUDA_KERNEL
+                if HAS_CUDA_KERNEL and x.is_cuda and x.dtype == torch.float32:
+                    return TernaryMatmulFn.apply(x, self.weight, self._gamma, self.bias)
+            except ImportError:
+                pass
+            # Fallback: eager PyTorch with gamma-scaled ternary weights
             w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
-            w_ste = self.weight + (w_q - self.weight).detach()
+            w_ternary_scaled = w_q * self._gamma
+            w_ste = self.weight + (w_ternary_scaled - self.weight).detach()
             return F.linear(x, w_ste, self.bias)
 
         # Eval: use cached ternary buffer (fast, single memory read)

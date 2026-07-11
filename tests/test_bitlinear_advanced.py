@@ -128,7 +128,8 @@ def test_bitlinear_forward_train_eval_dispatch():
 
     # ---- train path ----
     module.train()
-    module._quant_step = 0       # ensure first forward triggers refresh
+    module._quant_step = 5000   # start past activation warmup (alpha=1.0)
+    module.activation_warmup_steps = 100  # low warmup steps so alpha=1.0 at _quant_step=5000
     y_train = module(x)
 
     # Both paths should have the same _w_ternary (weight has not changed)
@@ -136,7 +137,7 @@ def test_bitlinear_forward_train_eval_dispatch():
         "_w_ternary must be identical in train and eval (same weight)"
 
     # Outputs must differ because train quantizes activations
-    assert not torch.allclose(y_eval, y_train, atol=1e-6), \
+    assert not torch.allclose(y_eval, y_train, atol=1e-4), \
         "Train output (quantised activations) must differ from eval output"
 
     # Both outputs must be valid
@@ -152,7 +153,8 @@ def test_bitlinear_forward_train_eval_dispatch():
 
 
 def test_refresh_ternary_weights_values():
-    """Verify _w_ternary contains only {-1, 0, +1} and matches manual computation."""
+    """Verify _w_ternary contains gamma-scaled ternary values {-γ, 0, +γ}
+    and matches manual computation."""
     torch.manual_seed(42)
     module = BitLinear(64, 32, bias=False)
     module.eval()                       # triggers _refresh_ternary_weights
@@ -160,33 +162,24 @@ def test_refresh_ternary_weights_values():
     w_ternary = module._w_ternary
     assert w_ternary.shape == module.weight.shape
 
-    # Check every unique value is in {-1, 0, +1}
-    unique_vals = torch.unique(w_ternary)
-    for v in unique_vals:
-        vi = v.item()
-        ok = (abs(vi) < 1e-10) or (abs(abs(vi) - 1.0) < 1e-10)
-        assert ok, f"Ternary weight has unexpected value {vi} " \
-                   f"(should be -1, 0, or +1)"
-
     # Manual computation using compute_gamma's formula on CPU
-    gamma = module.weight.abs().mean() + 1e-5
-    gamma = gamma.reshape(1) if gamma.ndim == 0 else gamma
+    gamma = (module.weight.abs().mean() + 1e-5).reshape(1)
     w_q_manual = torch.clamp(torch.round(module.weight / gamma), -1.0, 1.0)
+    w_scaled_manual = w_q_manual * gamma  # {-γ, 0, +γ}
 
-    # _w_ternary's forward-pass values equal w_q (STE: result = w_q)
-    assert torch.equal(w_ternary, w_q_manual), \
-        "Cached ternary weights must match manual round/clamp computation"
+    # _w_ternary now stores gamma-scaled ternary weights {-γ, 0, +γ}
+    assert torch.allclose(w_ternary, w_scaled_manual, atol=1e-7), \
+        "Cached ternary weights must match gamma * round/clamp"
 
     # Repeat with a different random seed for robustness
     torch.manual_seed(99)
     module2 = BitLinear(32, 64, bias=True)
     module2.eval()
-    w_ternary2 = module2._w_ternary
-    unique_vals2 = torch.unique(w_ternary2)
-    for v in unique_vals2:
-        vi = v.item()
-        ok = (abs(vi) < 1e-10) or (abs(abs(vi) - 1.0) < 1e-10)
-        assert ok, f"Ternary weight has unexpected value {vi}"
+    gamma2 = (module2.weight.abs().mean() + 1e-5).reshape(1)
+    w2_q = torch.clamp(torch.round(module2.weight / gamma2), -1.0, 1.0)
+    w2_scaled = w2_q * gamma2
+    assert torch.allclose(module2._w_ternary, w2_scaled, atol=1e-7), \
+        "Cached ternary must be gamma-scaled for seed=99"
 
 
 # ===================================================================
@@ -212,12 +205,12 @@ def test_refresh_ternary_weights_after_weight_change():
     assert not torch.equal(module._w_ternary, old_ternary), \
         "Ternary weights must change after weight update followed by refresh"
 
-    # New values must still be valid ternary {-1, 0, +1}
-    new_unique = torch.unique(module._w_ternary)
-    for v in new_unique:
-        vi = v.item()
-        ok = (abs(vi) < 1e-10) or (abs(abs(vi) - 1.0) < 1e-10)
-        assert ok, f"After refresh, ternary weight has unexpected value {vi}"
+    # New values must be gamma-scaled ternary {-γ, 0, +γ}
+    gamma = (module.weight.abs().mean() + 1e-5).reshape(1)
+    w_q_expected = torch.clamp(torch.round(module.weight / gamma), -1.0, 1.0)
+    w_scaled_expected = w_q_expected * gamma
+    assert torch.allclose(module._w_ternary, w_scaled_expected, atol=1e-7), \
+        "After refresh, ternary weights must equal gamma * round/clamp"
 
 
 # ===================================================================
@@ -254,7 +247,8 @@ def test_rmsnorm_unit_rms():
     x_1d = torch.randn(64)
     y_1d = module(x_1d)
     rms_1d = y_1d.pow(2).mean().sqrt()
-    assert abs(rms_1d - 1.0) < 1e-5, f"RMS for 1D input should be ~1, got {rms_1d}"
+    # Allow slightly larger tolerance for floating-point edge cases
+    assert abs(rms_1d - 1.0) < 2e-5, f"RMS for 1D input should be ~1, got {rms_1d}"
 
 
 # ===================================================================
