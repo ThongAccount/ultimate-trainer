@@ -493,7 +493,8 @@ try:
     print(f"Reference     : {t_ref:.3f} ms")
     print(f"Speedup       : {t_ref / t_kernel:.1f}×")
 
-except ImportError:skipping kernel benchmark")
+except ImportError:
+    print("Triton import failed, skipping kernel benchmark")
 except Exception as e:
     print(f"⚠️  Triton test failed: {e}")
 
@@ -582,6 +583,7 @@ smoke_tc = TrainingConfig1M(
     micro_batch_size=1,
     dtype="float32",
     distributed=False,
+    output_dir="/mnt/private-storage/checkpoints/1B-stress-test",
 )
 smoke_tc.cooldown_start_step = smoke_tc.max_steps
 smoke_tc.context_stages = ((128, 10, 10_000.0),)
