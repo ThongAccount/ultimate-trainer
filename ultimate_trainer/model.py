@@ -31,6 +31,7 @@ class TransformerBlock(nn.Module):
             slc_topk=cfg.slc_topk,
             win_size=cfg.win_size,
             use_bitlinear=cfg.use_bitlinear,
+            use_cuda_kernels=getattr(cfg, 'use_cuda_kernels', False),
         )
 
         # ReLU² FFN sub-block: outer subln before gate/up; inner subln before down

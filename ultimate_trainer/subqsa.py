@@ -222,6 +222,7 @@ class SubQSAAttention(nn.Module):
         slc_topk=16,
         win_size=512,
         use_bitlinear=True,
+        use_cuda_kernels=False,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -229,6 +230,7 @@ class SubQSAAttention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
         self.dropout = dropout
+        self.use_cuda_kernels = use_cuda_kernels
 
         proj_cls = BitLinear if use_bitlinear else nn.Linear
         self.q_proj = proj_cls(hidden_dim, num_heads * head_dim, bias=False)
@@ -270,6 +272,120 @@ class SubQSAAttention(nn.Module):
             last_layer.bias.data[1::3] = -2.5  # selection    ≈ sigmoid(−2.5) ≈ 0.076
             last_layer.bias.data[2::3] = 2.2   # sliding wind ≈ sigmoid(2.2) ≈ 0.90
 
+    def _forward_cuda(self, x, q, k, v, k_routing, B, T):
+        """CUDA-accelerated sub-paths: compression, selection, and fused combine."""
+        from kernels.compressed_attn.compressed_attn import compressed_attn_forward
+        from kernels.selective_attn.selective_attn import selective_attn_forward
+        from kernels.subqsa_combine.subqsa_combine import subqsa_combine_forward
+        from kernels.block_sparse_ternary.block_sparse_ternary import block_sparse_ternary_matmul
+        _ = block_sparse_ternary_matmul  # imported for external use
+
+        n_reps = self.num_heads // self.num_kv_heads if self.num_kv_heads else 1
+
+        # ── Compression branch (fused CUDA kernel) ──
+        phi_k = (
+            self.compression.phi_k[0].weight,
+            None,
+            self.compression.phi_k[2].weight,
+            None,
+        )
+        phi_v = (
+            self.compression.phi_v[0].weight,
+            None,
+            self.compression.phi_v[2].weight,
+            None,
+        )
+        k_cmp, v_cmp = compressed_attn_forward(
+            k_routing, v, phi_k, phi_v,
+            self.compression.l, self.compression.d,
+        )
+        n_cmp = k_cmp.shape[2]
+
+        # ── Compression attention scores + output ──
+        if n_cmp > 0 and n_reps > 1:
+            q_re = q.reshape(B, self.num_kv_heads, n_reps, T, self.head_dim)
+            scores_cmp = torch.einsum(
+                "bhrtd,bhld->bhrtl", q_re.float(), k_cmp.float()
+            ) / math.sqrt(self.head_dim)
+            p_cmp = F.softmax(scores_cmp, dim=-1).reshape(
+                B, self.num_heads, T, n_cmp
+            )
+            k_cmp_exp = (
+                k_cmp[:, :, None]
+                .expand(-1, -1, n_reps, -1, -1)
+                .reshape(B, self.num_heads, n_cmp, self.head_dim)
+            )
+            v_cmp_exp = (
+                v_cmp[:, :, None]
+                .expand(-1, -1, n_reps, -1, -1)
+                .reshape(B, self.num_heads, n_cmp, self.head_dim)
+            )
+            o_cmp = F.scaled_dot_product_attention(
+                q, k_cmp_exp, v_cmp_exp,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+        elif n_cmp > 0:
+            scores_cmp = torch.einsum(
+                "bhtd,bhld->bhtl", q.float(), k_cmp.float()
+            ) / math.sqrt(self.head_dim)
+            p_cmp = F.softmax(scores_cmp, dim=-1)
+            o_cmp = F.scaled_dot_product_attention(
+                q, k_cmp, v_cmp,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+        else:
+            p_cmp = torch.zeros(B, self.num_heads, T, 1, device=x.device)
+            o_cmp = torch.zeros_like(q)
+
+        # Expand KV to num_heads for selection and sliding-window branches
+        k_h = (
+            k[:, :, None]
+            .expand(-1, -1, n_reps, -1, -1)
+            .reshape(B, self.num_heads, T, self.head_dim)
+            if n_reps > 1
+            else k
+        )
+        v_h = (
+            v[:, :, None]
+            .expand(-1, -1, n_reps, -1, -1)
+            .reshape(B, self.num_heads, T, self.head_dim)
+            if n_reps > 1
+            else v
+        )
+
+        # ── Selection branch (fused CUDA kernel) ──
+        if n_cmp > 0:
+            scores_cmp_for_slc = (
+                scores_cmp.reshape(B, self.num_heads, T, n_cmp)
+                if n_reps > 1
+                else scores_cmp
+            )
+            scores_agg = scores_cmp_for_slc.max(dim=2).values
+        else:
+            scores_agg = torch.zeros(
+                B, self.num_heads, 1, device=x.device
+            )
+        o_slc = selective_attn_forward(
+            q, k_h, v_h, scores_agg,
+            self.selection.n, self.selection.l_prime,
+        )
+
+        # ── Sliding window branch (PyTorch) ──
+        o_win = sliding_window_attention(q, k_h, v_h, self.win_size)
+
+        # ── Fused combine: gate + 3-way blend + subln + O projection ──
+        gamma = getattr(self.o_proj, 'gamma', 1.0)
+        o = subqsa_combine_forward(
+            x,
+            o_cmp, o_slc, o_win,
+            self.gate_mlp[0].weight,
+            self.gate_mlp[2].weight,
+            self.out_norm.weight,
+            self.o_proj.weight,
+            gamma,
+        )
+        return o
+
     def forward(self, x, position_ids, attention_mask=None):
         B, T, _ = x.shape
 
@@ -296,6 +412,10 @@ class SubQSAAttention(nn.Module):
             B, T, self.num_kv_heads, self.head_dim
         ).transpose(1, 2)
         k_routing = self.rope(k_routing, position_ids)
+
+        # Early dispatch to CUDA-accelerated path when kernels are enabled
+        if self.use_cuda_kernels:
+            return self._forward_cuda(x, q, k, v, k_routing, B, T)
 
         # ── Compression branch ──
         # Compress at num_kv_heads resolution (GQA-aware); expand compressed KV

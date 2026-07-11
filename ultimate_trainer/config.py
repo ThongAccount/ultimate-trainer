@@ -41,6 +41,7 @@ class UltimateModelConfig:
 
     # ── Compute / memory ──
     use_checkpoint: bool = False  # activation checkpointing, saves memory at ~15% compute overhead
+    use_cuda_kernels: bool = False
 
     def __post_init__(self):
         assert self.hidden_dim % self.num_attention_heads == 0
