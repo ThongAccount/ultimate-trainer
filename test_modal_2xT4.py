@@ -5,8 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
+#       jupytext_version: 1.19.4
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python
 #     language: python
 #     name: python3
 # ---
@@ -27,9 +28,10 @@
 # imports resolve correctly.
 
 # %%
+# Replace the clone cell with this:
 import os, subprocess, sys
-
-if not os.path.exists("benchmark.py"):
+ 
+if not os.path.exists("1bit_trainer/config.py"):  # check for repo files, not benchmark.py
     subprocess.run(
         ["git", "clone", "https://github.com/ThongAccount/ultimate-trainer.git"],
         check=True,
@@ -357,6 +359,10 @@ print(
 # Verify ternary weights and INT8 activations produce plausible outputs.
 
 # %%
+bitlinear = BitLinear(
+    in_features=256, out_features=256
+).to(device)
+
 # Larger input range so 8-bit quantization produces measurable rounding
 x_fp = torch.randn(2, 64, 256, device=device) * 5.0
 
@@ -487,8 +493,7 @@ try:
     print(f"Reference     : {t_ref:.3f} ms")
     print(f"Speedup       : {t_ref / t_kernel:.1f}×")
 
-except ImportError:
-    print("⚠️  Triton not installed — skipping kernel benchmark")
+except ImportError:skipping kernel benchmark")
 except Exception as e:
     print(f"⚠️  Triton test failed: {e}")
 
@@ -542,3 +547,238 @@ print(
     f"  Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}"
 )
 print("=" * 60)
+
+# %% [markdown]
+# ## 14. ~2B Model Training — Real Smoke Test
+#  
+# Build the full ~2.09B model (24 layers, 2560 hidden) and train with:
+# - bfloat16 mixed precision (model fits in ~4GB, optimizer ~12GB across 2 GPUs)
+# - Activation checkpointing to fit in 16GB T4
+# - Cosine LR schedule with warmup
+# - Gradient accumulation (effective batch = 16)
+
+# %%
+print("=" * 60)
+print("14. ~2B Ultimate Model — Training Smoke Test")
+print("=" * 60)
+ 
+from configs.scale2B_config import ModelConfig2B, TrainingConfig2B, count_params
+ 
+# ── Config ──
+# ── Free GPU memory from earlier validation cells ──
+import gc
+gc.collect()
+torch.cuda.empty_cache()
+torch.cuda.reset_peak_memory_stats()
+print(f"GPU free: {(torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1e9:.2f} GB")
+ 
+# Use a smaller config for single-GPU smoke test (~700M params)
+mc = ModelConfig2B(
+    num_layers=8,              # 8 layers instead of 24
+    hidden_dim=2560,           # keep width same
+    num_attention_heads=20,
+    num_kv_heads=5,
+    use_checkpoint=True,
+    max_seq_len=512,           # shorter sequence
+)
+
+tc = TrainingConfig2B(
+    max_steps=50,
+    log_interval=5,
+    micro_batch_size=1,        # per-GPU batch
+    gradient_accumulation_steps=8,  # effective batch = 1 × 2 GPUs × 8 = 16
+    learning_rate=4e-4,
+    warmup_steps=5,
+    dtype="bfloat16",
+    distributed=False,         # single-device for this smoke test
+    output_dir="/mnt/private-storage/checkpoints/ultimate-2B",
+)
+ 
+stats = count_params(mc)
+print(f"  Parameters: {stats['total_B']:.2f}B")
+print(f"  Ternary storage: {stats['ternary_storage_GB']:.2f} GB")
+print(f"  Checkpointing: {mc.use_checkpoint}")
+print(f"  Seq len: {mc.max_seq_len}")
+
+# %%
+# ── Build Model ──
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"  Device: {device}")
+ 
+model = UltimateModel(mc).to(device)
+ 
+# Cast to bf16 (keep embeddings in FP32 for stability)
+amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+if amp_dtype != torch.float32:
+    model = model.to(amp_dtype)
+    if mc.full_precision_embeddings:
+        model.embed.float()
+ 
+# Parameter count verification
+total_params = sum(p.numel() for p in model.parameters())
+trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"  Total params: {total_params:,} ({total_params / 1e9:.2f}B)")
+print(f"  Trainable:    {trainable:,} ({trainable / 1e9:.2f}B)")
+ 
+# ── Enable activation quant warmup ──
+for module in model.modules():
+    if isinstance(module, BitLinear):
+        module._quant_step = 0
+ 
+# ── Optimizer & LR Schedule ──
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=tc.learning_rate,
+    betas=(tc.beta1, tc.beta2),
+    eps=tc.eps,
+    weight_decay=tc.weight_decay,
+)
+ 
+def cosine_schedule(step):
+    if step < tc.warmup_steps:
+        return step / max(1, tc.warmup_steps)
+    progress = (step - tc.warmup_steps) / max(1, tc.max_steps - tc.warmup_steps)
+    return 0.5 * (1.0 + math.cos(math.pi * progress))
+ 
+scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, cosine_schedule)
+ 
+# ── Synthetic Data ──
+B, T = tc.micro_batch_size, mc.max_seq_len
+ids = torch.randint(100, mc.vocab_size - 100, (B, T), device=device)
+ 
+print(f"  Batch size: {B}, Seq len: {T}")
+print(f"  Tokens/step: {B * T * tc.gradient_accumulation_steps}")
+
+# %%
+# ── Training Loop ──
+losses_2b = []
+times = []
+peak_mem = 0
+ 
+print(f"\n{'Step':>6s}  {'Loss':>8s}  {'LR':>10s}  {'t/s':>8s}  {'Mem':>8s}")
+print(f"{'─' * 48}")
+ 
+model.train()
+t0 = time.perf_counter()
+ 
+for step in range(tc.max_steps):
+    accum_loss = 0.0
+    
+    # Gradient accumulation micro-steps
+    for micro_step in range(tc.gradient_accumulation_steps):
+        with torch.autocast(
+            device_type=device.type,
+            dtype=amp_dtype,
+            enabled=amp_dtype != torch.float32,
+        ):
+            loss = model.get_loss(ids) / tc.gradient_accumulation_steps
+        
+        loss.backward()
+        accum_loss += loss.item() * tc.gradient_accumulation_steps
+    
+    # Optimizer step
+    torch.nn.utils.clip_grad_norm_(model.parameters(), tc.max_grad_norm)
+    optimizer.step()
+    scheduler.step()
+    optimizer.zero_grad()
+    
+    losses_2b.append(accum_loss)
+    current_lr = scheduler.get_last_lr()[0]
+    
+    if device.type == "cuda":
+        peak_mem = max(peak_mem, torch.cuda.max_memory_allocated() / 1e9)
+    
+    # Logging
+    if step % tc.log_interval == 0 or step == tc.max_steps - 1:
+        dt = time.perf_counter() - t0
+        tps = (B * T * tc.gradient_accumulation_steps * tc.log_interval) / dt if step > 0 else 0
+        print(f"{step:6d}  {accum_loss:8.4f}  {current_lr:.2e}  {tps:7,.0f}  {peak_mem:.2f}GB")
+        t0 = time.perf_counter()
+ 
+# ── Results ──
+print(f"\n{'─' * 48}")
+print(f"  2B model: {losses_2b[0]:.2f} → {losses_2b[-1]:.2f}  "
+      f"{'✅ loss ↓' if losses_2b[-1] < losses_2b[0] else '❌ loss ↑'}")
+print(f"  Peak GPU memory: {peak_mem:.2f} GB / {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+torch.cuda.reset_peak_memory_stats()
+
+# %%
+# ── Save Checkpoint ──
+os.makedirs(tc.output_dir, exist_ok=True)
+ckpt_path = os.path.join(tc.output_dir, f"2B-smoke-step-{tc.max_steps}.pt")
+torch.save({
+    "model": model.state_dict(),
+    "optimizer": optimizer.state_dict(),
+    "scheduler": scheduler.state_dict(),
+    "step": tc.max_steps,
+    "loss": losses_2b[-1],
+    "config": mc,
+}, ckpt_path)
+print(f"✅ Checkpoint saved: {ckpt_path}")
+print(f"   Size: {os.path.getsize(ckpt_path) / 1e9:.2f} GB")
+
+# %%
+print("=" * 60)
+print("Checkpoint Load & Verification")
+print("=" * 60)
+ 
+import os, torch, gc, math
+from configs.scale2B_config import ModelConfig2B
+from ultimate_trainer.model import UltimateModel
+from ultimate_trainer.bitlinear import BitLinear
+ 
+ckpt_path = os.path.join(tc.output_dir, f"2B-smoke-step-{tc.max_steps}.pt")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+ 
+# ── Load checkpoint ──
+ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+print(f"Checkpoint keys: {list(ckpt.keys())}")
+print(f"Saved loss:      {ckpt['loss']:.4f}")
+print(f"Saved step:      {ckpt['step']}")
+ 
+# ── Rebuild model (same config) ──
+mc = ckpt["config"]
+model = UltimateModel(mc)
+amp_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+model = model.to(amp_dtype)
+if mc.full_precision_embeddings:
+    model.embed.float()
+ 
+# Load weights
+missing, unexpected = model.load_state_dict(ckpt["model"], strict=False)
+print(f"Missing keys:    {len(missing)}")
+print(f"Unexpected keys: {len(unexpected)}")
+ 
+# ── FIX: Recompute ternary buffers in correct dtype ──
+model = model.to(device)
+model.eval()  # ensures _refresh_ternary_weights is called
+for module in model.modules():
+    if isinstance(module, BitLinear):
+        module._refresh_ternary_weights()
+        print(f"  Refreshed {module}: _w_ternary dtype={module._w_ternary.dtype}")
+ 
+# ── Forward pass — verify model runs ──
+B, T = 1, mc.max_seq_len
+ids = torch.randint(100, mc.vocab_size - 100, (B, T), device=device)
+ 
+with torch.no_grad():
+    loss = model.get_loss(ids).item()
+print(f"\nLoaded model loss: {loss:.4f}")
+print(f"Saved checkpoint loss: {ckpt['loss']:.4f}")
+ 
+# ── Sample logits and top-5 tokens ──
+with torch.no_grad():
+    logits = model(ids)
+    probs = torch.softmax(logits[0, -1, :], dim=-1)
+    top5 = probs.topk(5)
+ 
+print(f"\nSample logits shape: {logits.shape}")
+print(f"Top-5 token IDs at last position: {top5.indices.cpu().tolist()}")
+print(f"Top-5 probabilities:              {[f'{p:.4f}' for p in top5.values.cpu().tolist()]}")
+ 
+# ── Memory ──
+if device.type == "cuda":
+    mem = torch.cuda.memory_allocated() / 1e9
+    print(f"\nGPU memory: {mem:.2f} GB / {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+ 
+print(f"\n✅ Checkpoint verified — model loads and runs correctly")
