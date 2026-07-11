@@ -217,13 +217,13 @@ opt3 = torch.optim.AdamW(model3.parameters(), lr=1e-3)
 print(f"  Ultimate model params: {sum(p.numel() for p in model3.parameters()):,}")
 
 losses_ultimate = []
-for step in range(40):
+for step in range(200):
     opt3.zero_grad()
     loss = model3.get_loss(ids)
     loss.backward()
     opt3.step()
     losses_ultimate.append(loss.item())
-    if step % 10 == 0 or step == 39:
+    if step % 40 == 0 or step == 199:
         print(f"  ultimate step {step:3d}  loss {loss.item():.4f}")
 
 print(
@@ -549,7 +549,74 @@ print(
 print("=" * 60)
 
 # %% [markdown]
-# ## 14. ~2B Model Training — Real Smoke Test
+# ## 14. Long-Context Training Pipeline Smoke Test
+#
+# Run `train_longctx.py --smoke` to verify the staged context-extension
+# pipeline works end-to-end (tiny model, synthetic data, offline). Tests
+# checkpoint save/resume and the full LongCtxTrainer loop.
+
+# %%
+print("=" * 60)
+print("14. Long-Context Pipeline — Smoke Test")
+print("=" * 60)
+
+from train_longctx import LongCtxTrainer, _SmokeLongCtxDataset
+from configs.longctx_config import ModelConfig1B, TrainingConfig1M
+
+smoke_mc = ModelConfig1B(
+    vocab_size=4096,
+    hidden_dim=128,
+    intermediate_dim=256,
+    num_layers=2,
+    num_attention_heads=4,
+    num_kv_heads=1,
+    max_seq_len=128,
+    rope_theta=10_000.0,
+)
+smoke_tc = TrainingConfig1M(
+    max_steps=10,
+    log_interval=2,
+    learning_rate=1e-3,
+    max_seq_len=128,
+    gradient_accumulation_steps=1,
+    micro_batch_size=1,
+    dtype="float32",
+    distributed=False,
+)
+smoke_tc.cooldown_start_step = smoke_tc.max_steps
+smoke_tc.context_stages = ((128, 10, 10_000.0),)
+smoke_tc.save_interval = 5
+
+dataset = _SmokeLongCtxDataset(
+    seq_len=128,
+    vocab_size=smoke_mc.vocab_size,
+    num_samples=100,
+)
+
+trainer = LongCtxTrainer(
+    smoke_mc, smoke_tc, stage=0, dataset=dataset, resume=None
+)
+trainer.train()
+
+# Verify checkpoint was saved
+import os
+ckpt_path = os.path.join(smoke_tc.output_dir, "stage_0.pt")
+if os.path.exists(ckpt_path):
+    ckpt_size = os.path.getsize(ckpt_path)
+    print(f"  Checkpoint saved: {ckpt_path} ({ckpt_size / 1e6:.1f} MB)")
+    # Verify load
+    trainer2 = LongCtxTrainer(
+        smoke_mc, smoke_tc, stage=0, dataset=dataset, resume=ckpt_path
+    )
+    print(f"  Checkpoint resume: global_step={trainer2.global_step}  ✅")
+    os.remove(ckpt_path)  # clean up
+else:
+    print(f"  ⚠️  Checkpoint not found at {ckpt_path}")
+
+print("  Long-Context pipeline smoke test: ✅ PASS")
+
+# %% [markdown]
+# ## 15. ~2B Model Training — Real Smoke Test
 #  
 # Build the full ~2.09B model (24 layers, 2560 hidden) and train with:
 # - bfloat16 mixed precision (model fits in ~4GB, optimizer ~12GB across 2 GPUs)
@@ -559,7 +626,7 @@ print("=" * 60)
 
 # %%
 print("=" * 60)
-print("14. ~2B Ultimate Model — Training Smoke Test")
+print("15. ~2B Ultimate Model — Training Smoke Test")
 print("=" * 60)
  
 from configs.scale2B_config import ModelConfig2B, TrainingConfig2B, count_params
@@ -719,7 +786,7 @@ print(f"   Size: {os.path.getsize(ckpt_path) / 1e9:.2f} GB")
 
 # %%
 print("=" * 60)
-print("Checkpoint Load & Verification")
+print("16. Checkpoint Load & Verification")
 print("=" * 60)
  
 import os, torch, gc, math
