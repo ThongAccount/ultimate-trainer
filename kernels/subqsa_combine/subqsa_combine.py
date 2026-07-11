@@ -1,17 +1,105 @@
-"""SubQSA combine kernel: gate MLP → sigmoid → 3-way blend → RMSNorm → O projection."""
+"""SubQSA combine kernel: gate MLP -> sigmoid -> 3-way blend -> RMSNorm -> O projection.
 
+Provides:
+  subqsa_combine_forward(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
+                          out_norm_weight, o_proj_weight, gamma) -> y
+  _subqsa_combine_eager(...)  -- PyTorch reference fallback
+
+When CUDA is available the custom kernel is used; otherwise falls back to PyTorch.
+"""
+
+import os
 import torch
 import torch.nn.functional as F
-import math
 
 _HAS_SUBQSA_COMBINE = False
 _combine_lib = None
 
+# CUDA kernel path (optional — only loaded on demand)
+_CUDA_SOURCE = os.path.join(os.path.dirname(__file__), "subqsa_combine_kernel.cu")
+
+_CXX_WRAPPER = r"""
+#include <torch/extension.h>
+#include <vector>
+
+extern "C" {
+void launch_subqsa_combine_forward(
+    const half* x, const half* o_cmp, const half* o_slc, const half* o_win,
+    const half* gate_w1, const half* gate_w2,
+    const half* out_norm_weight, const float* o_proj_weight,
+    half* y, float gamma,
+    int B, int T, int H, int D,
+    cudaStream_t stream);
+}
+
+at::Tensor forward_wrapper(
+    const at::Tensor& x,
+    const at::Tensor& o_cmp,
+    const at::Tensor& o_slc,
+    const at::Tensor& o_win,
+    const at::Tensor& gate_w1,
+    const at::Tensor& gate_w2,
+    const at::Tensor& out_norm_weight,
+    const at::Tensor& o_proj_weight,
+    double gamma) {
+
+    auto B = x.size(0);
+    auto T = x.size(1);
+    auto D = x.size(2);
+    auto H = o_cmp.size(1);
+
+    TORCH_CHECK(x.is_cuda(), "x must be CUDA tensor");
+    TORCH_CHECK(o_cmp.is_cuda(), "o_cmp must be CUDA tensor");
+    TORCH_CHECK(x.dtype() == at::kHalf, "x must be half");
+    TORCH_CHECK(o_cmp.dtype() == at::kHalf, "o_cmp must be half");
+    TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
+    TORCH_CHECK(o_cmp.is_contiguous(), "o_cmp must be contiguous");
+
+    auto y = at::empty_like(x);
+
+    auto stream = at::cuda::getCurrentCUDAStream();
+
+    launch_subqsa_combine_forward(
+        reinterpret_cast<const half*>(x.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(o_cmp.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(o_slc.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(o_win.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(gate_w1.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(gate_w2.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(out_norm_weight.data_ptr<at::Half>()),
+        reinterpret_cast<const float*>(o_proj_weight.data_ptr<float>()),
+        reinterpret_cast<half*>(y.data_ptr<at::Half>()),
+        static_cast<float>(gamma),
+        B, T, H, D,
+        stream
+    );
+
+    return y;
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("forward", &forward_wrapper, "SubQSA combine forward (fused)");
+}
+"""
+
+try:
+    from torch.utils.cpp_extension import load_inline
+    _combine_lib = load_inline(
+        name="subqsa_combine_ext",
+        cpp_sources=_CXX_WRAPPER,
+        cuda_sources=[_CUDA_SOURCE],
+        extra_cuda_cflags=["-O3", "--use_fast_math"],
+        verbose=False,
+    )
+    _HAS_SUBQSA_COMBINE = True
+except Exception:
+    _HAS_SUBQSA_COMBINE = False
+
 
 def _subqsa_combine_eager(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
                           out_norm_weight, o_proj_weight, gamma):
-    """PyTorch reference: gate → blend → RMSNorm → O projection."""
-    B, H, T, D = o_cmp.shape
+    """PyTorch reference: gate -> blend -> RMSNorm -> O projection."""
+    B, H, T, D_head = o_cmp.shape
 
     g = F.linear(x, gate_w1)
     g = F.silu(g)
@@ -26,7 +114,7 @@ def _subqsa_combine_eager(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
     o = o / (rms + 1e-5) * out_norm_weight
 
     w_q = torch.clamp(torch.round(o_proj_weight / gamma), -1, 1) * gamma
-    return F.linear(o, w_q)
+    return F.linear(o.float(), w_q).to(dtype=o.dtype)
 
 
 class SubQSACombineFn(torch.autograd.Function):
@@ -36,6 +124,14 @@ class SubQSACombineFn(torch.autograd.Function):
         ctx.save_for_backward(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
                               out_norm_weight, o_proj_weight)
         ctx.gamma = gamma
+
+        if x.is_cuda and _HAS_SUBQSA_COMBINE:
+            return _combine_lib.forward(
+                x.contiguous(), o_cmp.contiguous(), o_slc.contiguous(),
+                o_win.contiguous(), gate_w1.contiguous(), gate_w2.contiguous(),
+                out_norm_weight.contiguous(), o_proj_weight.contiguous(),
+                gamma
+            )
         return _subqsa_combine_eager(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
                                      out_norm_weight, o_proj_weight, gamma)
 
