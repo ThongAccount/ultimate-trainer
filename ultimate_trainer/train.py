@@ -1,6 +1,8 @@
 """Ultimate Trainer training loop."""
 
 import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import sys
 import math
 import logging
@@ -200,16 +202,17 @@ class UltimateTrainer:
                 logger.info(
                     f"Step {step}/{self.tc.max_steps} | loss={loss:.4f} | lr={lr:.2e}"
                 )
-        # ── Final checkpoint save ──────────────────────────────────────
-        import os as _os
-        ckpt_dir = _os.path.join(self.tc.output_dir, f"step_{self.global_step}")
-        _os.makedirs(ckpt_dir, exist_ok=True)
-        torch.save(self.model.state_dict(), _os.path.join(ckpt_dir, "model.pt"))
-        torch.save(self.optimizer.state_dict(), _os.path.join(ckpt_dir, "optim.pt"))
-        logger.info(f"Checkpoint saved to {ckpt_dir}")
         logger.info("Training complete.")
         if self.local_rank >= 0:
             dist.destroy_process_group()
+
+        ckpt_dir = os.path.join(self.tc.output_dir, f"step_{self.global_step}")
+        os.makedirs(ckpt_dir, exist_ok=True)
+        bf16_sd = {k: v.to(torch.bfloat16) if v.is_floating_point() else v
+                   for k, v in self.model.state_dict().items()}
+        torch.save(bf16_sd, os.path.join(ckpt_dir, "model.pt"))
+        torch.save(self.optimizer.state_dict(), os.path.join(ckpt_dir, "optim.pt"))
+        logger.info(f"Checkpoint saved to {ckpt_dir}")
 
 
 if __name__ == "__main__":
@@ -232,6 +235,7 @@ if __name__ == "__main__":
             num_kv_heads=2,
             max_seq_len=128,
             use_bitlinear=True,
+            use_checkpoint=True,
             cmp_block=16,
             cmp_stride=8,
             slc_block=32,
@@ -255,8 +259,8 @@ if __name__ == "__main__":
             )
             sys.exit(1)
 
-        mc = UltimateModelConfig()
-        tc = UltimateTrainingConfig(max_steps=100, log_interval=10, learning_rate=1e-3)
+        mc = UltimateModelConfig(use_checkpoint=True)
+        tc = UltimateTrainingConfig(max_steps=100, log_interval=10, learning_rate=1e-3, dtype="bfloat16")
         dcfg = DataConfig(max_seq_len=mc.max_seq_len, max_samples=5000)
         ds = FineWebDataset(dcfg, tok)
         logger.info(f"FineWeb dataset: {len(ds)} samples (seq_len={mc.max_seq_len})")
