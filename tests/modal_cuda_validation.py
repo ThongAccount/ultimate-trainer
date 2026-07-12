@@ -5,8 +5,9 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
+#       jupytext_version: 1.19.4
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python 3 (ipykernel)
 #     language: python
 #     name: python3
 # ---
@@ -23,8 +24,39 @@
 # ```
 
 # %%
-%pip install nvcc4jupyter -q
-%load_ext nvcc4jupyter
+# !uv pip install nvcc4jupyter ninja
+# %load_ext nvcc4jupyter
+
+# %% [markdown]
+# ## Setup - Clone Repo
+
+# %%
+import os, subprocess, sys
+
+FORCE_REWRITE = True
+
+if FORCE_REWRITE or (not os.path.exists("1bit_trainer/config.py")):  # check for repo files, not benchmark.py
+    subprocess.run(
+        ["git", "clone", "https://github.com/ThongAccount/ultimate-trainer.git"],
+        check=True,
+    )
+    subprocess.run(
+        "mv ultimate-trainer/* . && mv ultimate-trainer/.* . 2>/dev/null || true",
+        shell=True,
+    )
+    subprocess.run(["rmdir", "ultimate-trainer"], check=False)
+    print("✅ Repo cloned and files copied to working directory")
+else:
+    print("✅ Repo files already present — skipping clone")
+
+print("Verifying modules...")
+try:
+    from kernels.block_sparse_ternary.block_sparse_ternary import (
+        block_sparse_ternary_matmul, _block_sparse_ternary_eager, compute_block_mask,
+    )
+    print("Successfully loaded repo's modules!")
+except Exception as e:
+    print(f"Failed to load modules: {e}")
 
 # %% [markdown]
 # ## Imports
@@ -85,7 +117,7 @@ test_compressed_attn_eager()
 # ### 1b. CUDA kernel compilation + forward
 
 # %%
-%%cuda --kernel compressed_attn --name compressed_attn_test
+# %%cuda --kernel compressed_attn --name compressed_attn_test
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -155,7 +187,7 @@ test_selective_attn_eager()
 # ### 2b. CUDA phase 1: top-K selection
 
 # %%
-%%cuda --kernel topk_select --name topk_select_test
+# %%cuda --kernel topk_select --name topk_select_test
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
