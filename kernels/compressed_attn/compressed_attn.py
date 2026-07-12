@@ -6,6 +6,8 @@ from torch.utils.cpp_extension import load_inline
 import os
 
 _CUDA_SOURCE = os.path.join(os.path.dirname(__file__), "compressed_attn_kernel.cu")
+with open(_CUDA_SOURCE) as _f:
+    _CUDA_CODE = _f.read()
 
 _CXX_WRAPPER = r"""
 #include <torch/extension.h>
@@ -56,7 +58,7 @@ at::Tensor forward_wrapper(
     auto k_cmp = at::empty({B, H, n_blocks, D}, k.options().dtype(at::kFloat));
     auto v_cmp = at::empty({B, H, n_blocks, D}, v.options().dtype(at::kFloat));
 
-    auto stream = at::cuda::getCurrentCUDAStream();
+    auto stream = c10::cuda::getCurrentCUDAStream();
 
     launch_fused_compressed_attn_forward(
         reinterpret_cast<const float*>(k.data_ptr<float>()),
@@ -87,7 +89,7 @@ try:
     _compressed_lib = load_inline(
         name="compressed_attn",
         cpp_sources=_CXX_WRAPPER,
-        cuda_sources=[_CUDA_SOURCE],
+        cuda_sources=_CUDA_CODE,
         extra_cuda_cflags=["-O3", "--use_fast_math"],
         verbose=False,
     )

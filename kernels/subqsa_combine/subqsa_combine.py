@@ -17,6 +17,8 @@ _combine_lib = None
 
 # CUDA kernel path (optional — only loaded on demand)
 _CUDA_SOURCE = os.path.join(os.path.dirname(__file__), "subqsa_combine_kernel.cu")
+with open(_CUDA_SOURCE) as _f:
+    _CUDA_CODE = _f.read()
 
 _CXX_WRAPPER = r"""
 #include <torch/extension.h>
@@ -58,7 +60,7 @@ at::Tensor forward_wrapper(
 
     auto y = at::empty_like(x);
 
-    auto stream = at::cuda::getCurrentCUDAStream();
+    auto stream = c10::cuda::getCurrentCUDAStream();
 
     launch_subqsa_combine_forward(
         reinterpret_cast<const float*>(x.data_ptr<float>()),
@@ -88,7 +90,7 @@ try:
     _combine_lib = load_inline(
         name="subqsa_combine_ext",
         cpp_sources=_CXX_WRAPPER,
-        cuda_sources=[_CUDA_SOURCE],
+        cuda_sources=_CUDA_CODE,
         extra_cuda_cflags=["-O3", "--use_fast_math"],
         verbose=False,
     )
