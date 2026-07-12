@@ -208,13 +208,21 @@ __global__ void fused_compressed_attn_backward_kernel(
 // ── Host launch functions ─────────────────────────────────────────────
 
 void launch_fused_compressed_attn_forward(
-    const half* k, const half* v,
-    const half* phi_k_w1, const half* phi_k_w2,
-    const half* phi_v_w1, const half* phi_v_w2,
-    half* k_cmp, half* v_cmp,
+    const float* k_f, const float* v_f,
+    const float* phi_k_w1_f, const float* phi_k_w2_f,
+    const float* phi_v_w1_f, const float* phi_v_w2_f,
+    float* k_cmp_f, float* v_cmp_f,
     int B, int H, int T, int D,
     int block_len, int stride, int n_blocks,
     cudaStream_t stream) {
+    const half* k = reinterpret_cast<const half*>(k_f);
+    const half* v = reinterpret_cast<const half*>(v_f);
+    const half* phi_k_w1 = reinterpret_cast<const half*>(phi_k_w1_f);
+    const half* phi_k_w2 = reinterpret_cast<const half*>(phi_k_w2_f);
+    const half* phi_v_w1 = reinterpret_cast<const half*>(phi_v_w1_f);
+    const half* phi_v_w2 = reinterpret_cast<const half*>(phi_v_w2_f);
+    half* k_cmp = reinterpret_cast<half*>(k_cmp_f);
+    half* v_cmp = reinterpret_cast<half*>(v_cmp_f);
 
     // Shared memory size:
     //   K seg:   block_len * D * sizeof(half)
@@ -237,16 +245,30 @@ void launch_fused_compressed_attn_forward(
 
 
 void launch_fused_compressed_attn_backward(
-    const half* grad_k_cmp, const half* grad_v_cmp,
-    const half* k, const half* v,
-    const half* phi_k_w1, const half* phi_k_w2,
-    const half* phi_v_w1, const half* phi_v_w2,
-    half* grad_k, half* grad_v,
-    half* grad_phi_k_w1, half* grad_phi_k_w2,
-    half* grad_phi_v_w1, half* grad_phi_v_w2,
+    const float* grad_k_cmp_f, const float* grad_v_cmp_f,
+    const float* k_f, const float* v_f,
+    const float* phi_k_w1_f, const float* phi_k_w2_f,
+    const float* phi_v_w1_f, const float* phi_v_w2_f,
+    float* grad_k_f, float* grad_v_f,
+    float* grad_phi_k_w1_f, float* grad_phi_k_w2_f,
+    float* grad_phi_v_w1_f, float* grad_phi_v_w2_f,
     int B, int H, int T, int D,
     int block_len, int stride, int n_blocks,
     cudaStream_t stream) {
+    const half* grad_k_cmp = reinterpret_cast<const half*>(grad_k_cmp_f);
+    const half* grad_v_cmp = reinterpret_cast<const half*>(grad_v_cmp_f);
+    const half* k = reinterpret_cast<const half*>(k_f);
+    const half* v = reinterpret_cast<const half*>(v_f);
+    const half* phi_k_w1 = reinterpret_cast<const half*>(phi_k_w1_f);
+    const half* phi_k_w2 = reinterpret_cast<const half*>(phi_k_w2_f);
+    const half* phi_v_w1 = reinterpret_cast<const half*>(phi_v_w1_f);
+    const half* phi_v_w2 = reinterpret_cast<const half*>(phi_v_w2_f);
+    half* grad_k = reinterpret_cast<half*>(grad_k_f);
+    half* grad_v = reinterpret_cast<half*>(grad_v_f);
+    half* grad_phi_k_w1 = reinterpret_cast<half*>(grad_phi_k_w1_f);
+    half* grad_phi_k_w2 = reinterpret_cast<half*>(grad_phi_k_w2_f);
+    half* grad_phi_v_w1 = reinterpret_cast<half*>(grad_phi_v_w1_f);
+    half* grad_phi_v_w2 = reinterpret_cast<half*>(grad_phi_v_w2_f);
 
     int threads = 256;
     dim3 grid(B, H, n_blocks);

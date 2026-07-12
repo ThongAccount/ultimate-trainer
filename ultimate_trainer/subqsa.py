@@ -182,10 +182,11 @@ def sliding_window_attention(q, k, v, win_size, cache=None):
         t_idx = torch.arange(T, device=q.device).unsqueeze(1)
         j_idx = torch.arange(w, device=q.device).unsqueeze(0)
         valid = (T - w + j_idx) <= t_idx  # (T, w)
+        neg_inf = torch.tensor(torch.finfo(q.dtype).min, device=q.device, dtype=q.dtype)
         attn_mask = torch.where(
             valid,
             torch.zeros((), device=q.device, dtype=q.dtype),
-            torch.full((), -1e9, device=q.device, dtype=q.dtype),
+            neg_inf,
         )
         if cache is not None:
             cache[(T, w)] = (attn_mask, valid)

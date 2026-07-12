@@ -214,11 +214,15 @@ void launch_selective_phase1(
 
 
 void launch_selective_phase2(
-    const half* q, const half* k, const half* v,
-    const long* top_idx, half* attn_out,
+    const float* q_f, const float* k_f, const float* v_f,
+    const long* top_idx, float* attn_out_f,
     int B, int H, int T, int D,
     int block_size, int topk, int n_sel,
     cudaStream_t stream) {
+    const half* q = reinterpret_cast<const half*>(q_f);
+    const half* k = reinterpret_cast<const half*>(k_f);
+    const half* v = reinterpret_cast<const half*>(v_f);
+    half* attn_out = reinterpret_cast<half*>(attn_out_f);
 
     // Use enough threads to cover D (the head dimension) for dot products
     int threads = 256;
