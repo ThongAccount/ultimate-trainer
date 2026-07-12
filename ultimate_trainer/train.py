@@ -68,10 +68,11 @@ class DummyDataset(Dataset):
 
 
 class UltimateTrainer:
-    def __init__(self, mc, tc, dataset=None):
+    def __init__(self, mc, tc, dataset=None, validation_dataset=None):
         self.mc = mc
         self.tc = tc
         self.global_step = 0
+        self.best_val_loss = float("inf")
 
         # ── DDP ──────────────────────────────────────────────────────
         self.local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -115,6 +116,12 @@ class UltimateTrainer:
             dataset = DummyDataset(mc.max_seq_len, vocab_size=mc.vocab_size)
         self.dataset = dataset
         self._build_dataloader()
+
+        # ── Validation Dataset ────────────────────────────────────────
+        self.validation_dataset = validation_dataset
+        self._val_loader = None
+        if validation_dataset is not None:
+            self._build_val_loader()
 
         # ── Staged context extension ─────────────────────────────────
         self.context_stages = list(tc.context_stages) if tc.context_stages else []
@@ -161,6 +168,56 @@ class UltimateTrainer:
         )
         self.it = iter(self.loader)
 
+    def _build_val_loader(self):
+        self._val_loader = DataLoader(
+            self.validation_dataset,
+            batch_size=self.tc.micro_batch_size,
+            shuffle=False,
+            num_workers=0,
+            drop_last=False,
+        )
+
+    @torch.no_grad()
+    def evaluate(self):
+        """Compute validation loss and perplexity over the held-out set."""
+        if self.validation_dataset is None or len(self.validation_dataset) == 0:
+            return None, None
+
+        self.model.eval()
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch in self._val_loader:
+            ids = batch["input_ids"].to(self.device)
+            lbl = batch["labels"].to(self.device)
+            logits = self.model(ids)
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                lbl.view(-1),
+                ignore_index=0,
+            )
+            total_loss += loss.item()
+            num_batches += 1
+
+        avg_loss = total_loss / max(1, num_batches)
+        perplexity = math.exp(avg_loss) if avg_loss < 100 else float("inf")
+
+        self.model.train()
+        return avg_loss, perplexity
+
+    def _save_checkpoint(self, is_best=False):
+        """Save model (as BF16) and optimizer state dicts."""
+        suffix = "best" if is_best else f"step_{self.global_step}"
+        ckpt_dir = os.path.join(self.tc.output_dir, suffix)
+        os.makedirs(ckpt_dir, exist_ok=True)
+        bf16_sd = {
+            k: v.to(torch.bfloat16) if v.is_floating_point() else v
+            for k, v in self.model.state_dict().items()
+        }
+        torch.save(bf16_sd, os.path.join(ckpt_dir, "model.pt"))
+        torch.save(self.optimizer.state_dict(), os.path.join(ckpt_dir, "optim.pt"))
+        logger.info(f"Checkpoint saved to {ckpt_dir}")
+
     def _maybe_extend_context(self):
         """Extend max_seq_len when the current training stage threshold is hit."""
         if self._current_stage >= len(self.context_stages):
@@ -202,17 +259,26 @@ class UltimateTrainer:
                 logger.info(
                     f"Step {step}/{self.tc.max_steps} | loss={loss:.4f} | lr={lr:.2e}"
                 )
+
+            #─ Evaluation ────────────────────────────────────────────
+            if step > 0 and step % self.tc.eval_interval == 0:
+                val_loss, ppl = self.evaluate()
+                if val_loss is not None:
+                    logger.info(
+                        f"Eval step {step}: val_loss={val_loss:.4f} | "
+                        f"ppl={ppl:.2f}"
+                    )
+                    if val_loss < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                        self._save_checkpoint(is_best=True)
+
         logger.info("Training complete.")
+
+        # Final checkpoint save
+        self._save_checkpoint(is_best=False)
+
         if self.local_rank >= 0:
             dist.destroy_process_group()
-
-        ckpt_dir = os.path.join(self.tc.output_dir, f"step_{self.global_step}")
-        os.makedirs(ckpt_dir, exist_ok=True)
-        bf16_sd = {k: v.to(torch.bfloat16) if v.is_floating_point() else v
-                   for k, v in self.model.state_dict().items()}
-        torch.save(bf16_sd, os.path.join(ckpt_dir, "model.pt"))
-        torch.save(self.optimizer.state_dict(), os.path.join(ckpt_dir, "optim.pt"))
-        logger.info(f"Checkpoint saved to {ckpt_dir}")
 
 
 if __name__ == "__main__":
@@ -242,8 +308,10 @@ if __name__ == "__main__":
             slc_topk=4,
             win_size=32,
         )
-        tc = UltimateTrainingConfig(max_steps=20, log_interval=5, learning_rate=1e-3)
-        trainer = UltimateTrainer(mc, tc)
+        tc = UltimateTrainingConfig(max_steps=20, log_interval=5, eval_interval=10, learning_rate=1e-3)
+        train_ds = DummyDataset(mc.max_seq_len, vocab_size=mc.vocab_size, num_samples=500)
+        val_ds = DummyDataset(mc.max_seq_len, vocab_size=mc.vocab_size, num_samples=50)
+        trainer = UltimateTrainer(mc, tc, dataset=train_ds, validation_dataset=val_ds)
     elif args.real_data:
         import sys
 

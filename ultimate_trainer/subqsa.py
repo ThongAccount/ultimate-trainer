@@ -119,17 +119,24 @@ class SelectionBranch(nn.Module):
         _, top_idx = scores_agg.topk(topk_actual, dim=-1)  # (B, H, topk_actual)
 
         # Gather full l_prime-token blocks — same blocks for all queries.
-        k_sliced = k[:, :, : n_sel * lp, :]
-        v_sliced = v[:, :, : n_sel * lp, :]
-        k_blocks = k_sliced.reshape(B, H, n_sel, lp, D)
-        v_blocks = v_sliced.reshape(B, H, n_sel, lp, D)
+        n_kv = k.shape[2]  # actual KV length
+        max_tokens = n_sel * lp
+        if max_tokens > n_kv:
+            # Too few tokens for any full block: fallback to mean pooling
+            k_sel = k.mean(dim=2, keepdim=True).expand(-1, -1, topk_actual * lp, -1)
+            v_sel = v.mean(dim=2, keepdim=True).expand(-1, -1, topk_actual * lp, -1)
+        else:
+            k_sliced = k[:, :, : max_tokens, :]
+            v_sliced = v[:, :, : max_tokens, :]
+            k_blocks = k_sliced.reshape(B, H, n_sel, lp, D)
+            v_blocks = v_sliced.reshape(B, H, n_sel, lp, D)
 
-        # Gather: top_idx (B, H, topk_actual) → expand for (lp, D)
-        bi = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, lp, D)
-        k_sel = torch.gather(k_blocks, dim=2, index=bi)  # (B, H, topk_actual, lp, D)
-        v_sel = torch.gather(v_blocks, dim=2, index=bi)
-        k_sel = k_sel.reshape(B, H, topk_actual * lp, D)  # standard 4D
-        v_sel = v_sel.reshape(B, H, topk_actual * lp, D)
+            # Gather: top_idx (B, H, topk_actual) → expand for (lp, D)
+            bi = top_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, lp, D)
+            k_sel = torch.gather(k_blocks, dim=2, index=bi)  # (B, H, topk_actual, lp, D)
+            v_sel = torch.gather(v_blocks, dim=2, index=bi)
+            k_sel = k_sel.reshape(B, H, topk_actual * lp, D)  # standard 4D
+            v_sel = v_sel.reshape(B, H, topk_actual * lp, D)
 
         # ── Causal Masking for Selected Blocks ──
         # Reconstruct the original sequence positions of the selected key tokens

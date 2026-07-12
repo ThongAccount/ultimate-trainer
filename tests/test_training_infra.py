@@ -702,3 +702,72 @@ class TestTrainingConfig1M:
         """Passing dtype='float16' returns torch.float16."""
         tc = TrainingConfig1M(dtype="float16")
         assert tc.get_torch_dtype() == torch.float16
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  4.  Evaluate  (subqsa_trainer.train.UltimateTrainer.evaluate)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestEvaluate:
+    """UltimateTrainer.evaluate returns sensible values."""
+
+    def test_evaluate_returns_none_without_val_dataset(self):
+        """Without a validation dataset, evaluate returns (None, None)."""
+        from ultimate_trainer.train import UltimateModelConfig, UltimateTrainingConfig, UltimateTrainer, DummyDataset
+        mc = UltimateModelConfig(vocab_size=256, hidden_dim=32, intermediate_dim=64,
+                                 num_layers=1, num_attention_heads=2, num_kv_heads=1,
+                                 max_seq_len=32, use_bitlinear=False, use_subqsa=False)
+        tc = UltimateTrainingConfig(max_steps=5, log_interval=5, eval_interval=5,
+                                    learning_rate=1e-3)
+        trainer = UltimateTrainer(mc, tc)
+        val_loss, ppl = trainer.evaluate()
+        assert val_loss is None
+        assert ppl is None
+
+    def test_evaluate_with_val_dataset_returns_loss_ppl(self):
+        """With a validation dataset, evaluate returns float loss and perplexity."""
+        from ultimate_trainer.train import UltimateModelConfig, UltimateTrainingConfig, UltimateTrainer, DummyDataset
+        mc = UltimateModelConfig(vocab_size=256, hidden_dim=32, intermediate_dim=64,
+                                 num_layers=1, num_attention_heads=2, num_kv_heads=1,
+                                 max_seq_len=32, use_bitlinear=False, use_subqsa=False)
+        tc = UltimateTrainingConfig(max_steps=5, log_interval=5, eval_interval=5,
+                                    learning_rate=1e-3)
+        train_ds = DummyDataset(32, vocab_size=256, num_samples=20)
+        val_ds = DummyDataset(32, vocab_size=256, num_samples=10)
+        trainer = UltimateTrainer(mc, tc, dataset=train_ds, validation_dataset=val_ds)
+        val_loss, ppl = trainer.evaluate()
+        assert isinstance(val_loss, float), f"Expected float, got {type(val_loss)}"
+        assert val_loss > 0, f"Expected positive loss, got {val_loss}"
+        assert ppl > 1, f"Expected ppl > 1, got {ppl}"
+        assert ppl < float("inf"), "Perplexity should be finite"
+
+    def test_evaluate_does_not_update_model_weights(self):
+        """evaluate uses no_grad and does not change model params."""
+        from ultimate_trainer.train import UltimateModelConfig, UltimateTrainingConfig, UltimateTrainer, DummyDataset
+        mc = UltimateModelConfig(vocab_size=256, hidden_dim=32, intermediate_dim=64,
+                                 num_layers=1, num_attention_heads=2, num_kv_heads=1,
+                                 max_seq_len=32, use_bitlinear=False, use_subqsa=False)
+        tc = UltimateTrainingConfig(max_steps=5, log_interval=5, eval_interval=5,
+                                    learning_rate=1e-3)
+        train_ds = DummyDataset(32, vocab_size=256, num_samples=20)
+        val_ds = DummyDataset(32, vocab_size=256, num_samples=10)
+        trainer = UltimateTrainer(mc, tc, dataset=train_ds, validation_dataset=val_ds)
+        w_before = trainer.model.layers[0].attn_norm.weight.clone()
+        trainer.evaluate()
+        w_after = trainer.model.layers[0].attn_norm.weight
+        assert torch.equal(w_before, w_after), "Model weights changed during eval"
+
+    def test_evaluate_model_returns_to_train(self):
+        """After evaluate, model is back in train mode."""
+        from ultimate_trainer.train import UltimateModelConfig, UltimateTrainingConfig, UltimateTrainer, DummyDataset
+        mc = UltimateModelConfig(vocab_size=256, hidden_dim=32, intermediate_dim=64,
+                                 num_layers=1, num_attention_heads=2, num_kv_heads=1,
+                                 max_seq_len=32, use_bitlinear=False, use_subqsa=False)
+        tc = UltimateTrainingConfig(max_steps=5, log_interval=5, eval_interval=5,
+                                    learning_rate=1e-3)
+        train_ds = DummyDataset(32, vocab_size=256, num_samples=20)
+        val_ds = DummyDataset(32, vocab_size=256, num_samples=10)
+        trainer = UltimateTrainer(mc, tc, dataset=train_ds, validation_dataset=val_ds)
+        trainer.model.train()
+        trainer.evaluate()
+        assert trainer.model.training, "Model should be in train mode after eval"
