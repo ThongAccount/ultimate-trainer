@@ -60,7 +60,7 @@ at::Tensor forward_wrapper(
 
     auto y = at::empty_like(x);
 
-    auto stream = c10::cuda::getCurrentCUDAStream();
+    cudaStream_t stream = nullptr;
 
     launch_subqsa_combine_forward(
         reinterpret_cast<const float*>(x.data_ptr<float>()),

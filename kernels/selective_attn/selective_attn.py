@@ -46,7 +46,7 @@ std::vector<at::Tensor> forward_wrapper(
                               scores_agg.options().dtype(at::kLong));
     auto attn_out = at::empty({B, H, T, D}, q.options().dtype(at::kFloat));
 
-    auto stream = c10::cuda::getCurrentCUDAStream();
+    cudaStream_t stream = nullptr;
 
     launch_selective_phase1(
         reinterpret_cast<const float*>(scores_agg.data_ptr<float>()),

@@ -58,7 +58,7 @@ at::Tensor forward_wrapper(
     auto k_cmp = at::empty({B, H, n_blocks, D}, k.options().dtype(at::kFloat));
     auto v_cmp = at::empty({B, H, n_blocks, D}, v.options().dtype(at::kFloat));
 
-    auto stream = c10::cuda::getCurrentCUDAStream();
+    cudaStream_t stream = nullptr;
 
     launch_fused_compressed_attn_forward(
         reinterpret_cast<const float*>(k.data_ptr<float>()),
