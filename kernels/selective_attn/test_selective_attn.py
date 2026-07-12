@@ -64,9 +64,28 @@ def test_deterministic():
         "Same inputs should produce same outputs"
 
 
+def test_gradient():
+    """Verify gradients flow through selective_attn."""
+    B, H, T, D = 1, 1, 16, 8
+    q = torch.randn(B, H, T, D, requires_grad=True)
+    k = torch.randn(B, H, T, D, requires_grad=True)
+    v = torch.randn(B, H, T, D, requires_grad=True)
+    scores_agg = torch.randn(B, H, T // 4, requires_grad=True)
+
+    out = _selective_attn_eager(q, k, v, scores_agg, topk=2, block_size=4)
+    out.sum().backward()
+
+    assert q.grad is not None, "q.grad is None"
+    assert k.grad is not None, "k.grad is None"
+    assert v.grad is not None, "v.grad is None"
+    assert not torch.isnan(q.grad).any(), "NaN in q.grad"
+    print(f"  selective_attn gradient: ✅")
+
+
 if __name__ == "__main__":
     test_small()
     test_causal_mask()
     test_topk_less_than_nsel()
     test_deterministic()
+    test_gradient()
     print("All selective_attn tests passed!")

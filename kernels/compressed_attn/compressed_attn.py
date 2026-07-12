@@ -103,7 +103,10 @@ class CompressedAttnFn(torch.autograd.Function):
     def forward(ctx, k, v, phi_k_w1, phi_k_b1, phi_k_w2, phi_k_b2,
                 phi_v_w1, phi_v_b1, phi_v_w2, phi_v_b2, block_len, stride):
         # Save for backward
-        ctx.save_for_backward(k, v, phi_k_w1, phi_k_w2, phi_v_w1, phi_v_w2)
+        ctx.save_for_backward(k, v, phi_k_w1, phi_k_b1 if phi_k_b1 is not None else torch.zeros(1),
+                              phi_k_w2, phi_k_b2 if phi_k_b2 is not None else torch.zeros(1),
+                              phi_v_w1, phi_v_b1 if phi_v_b1 is not None else torch.zeros(1),
+                              phi_v_w2, phi_v_b2 if phi_v_b2 is not None else torch.zeros(1))
         ctx.block_len = block_len
         ctx.stride = stride
 
@@ -127,9 +130,26 @@ class CompressedAttnFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_k_cmp, grad_v_cmp):
-        k, v, phi_k_w1, phi_k_w2, phi_v_w1, phi_v_w2 = ctx.saved_tensors
-        # CPU fallback for backward (CUDA backward kernel TBD)
-        return (grad_k_cmp, grad_v_cmp, None, None, None, None, None, None, None, None, None, None)
+        k, v, phi_k_w1, phi_k_b1, phi_k_w2, phi_k_b2, phi_v_w1, phi_v_b1, phi_v_w2, phi_v_b2 = ctx.saved_tensors
+        block_len, stride = ctx.block_len, ctx.stride
+        with torch.enable_grad():
+            k_in = k.detach().requires_grad_(True)
+            v_in = v.detach().requires_grad_(True)
+            kw1 = phi_k_w1.detach().requires_grad_(True)
+            kb1 = phi_k_b1.detach().requires_grad_(True) if phi_k_b1 is not None else None
+            kw2 = phi_k_w2.detach().requires_grad_(True)
+            kb2 = phi_k_b2.detach().requires_grad_(True) if phi_k_b2 is not None else None
+            vw1 = phi_v_w1.detach().requires_grad_(True)
+            vb1 = phi_v_b1.detach().requires_grad_(True) if phi_v_b1 is not None else None
+            vw2 = phi_v_w2.detach().requires_grad_(True)
+            vb2 = phi_v_b2.detach().requires_grad_(True) if phi_v_b2 is not None else None
+            k_cmp, v_cmp = _compressed_attn_eager(
+                k_in, v_in, kw1, kb1, kw2, kb2, vw1, vb1, vw2, vb2, block_len, stride)
+            torch.autograd.backward([k_cmp, v_cmp], [grad_k_cmp, grad_v_cmp])
+        grads = [k_in.grad, v_in.grad, kw1.grad, kb1.grad, kw2.grad, kb2.grad]
+        grads += [vw1.grad, vb1.grad, vw2.grad, vb2.grad]
+        grads += [None, None]  # block_len, stride
+        return tuple(grads)
 
 
 def _compressed_attn_eager(k, v, phi_k_w1, phi_k_b1, phi_k_w2, phi_k_b2,

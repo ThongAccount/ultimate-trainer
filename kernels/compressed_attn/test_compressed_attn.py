@@ -68,9 +68,40 @@ def test_compressed_attn_mlp_vs_phi_k_v():
     assert torch.allclose(v_cmp0, v_cmp1, atol=1e-5)
 
 
+def test_compressed_attn_gradient():
+    """Verify gradients flow through the autograd Function."""
+    B, H, T, D = 1, 1, 16, 8
+    k = torch.randn(B, H, T, D, requires_grad=True)
+    v = torch.randn(B, H, T, D, requires_grad=True)
+    in_dim = D * 4
+    w1_k = torch.randn(2*D, in_dim, requires_grad=True)
+    b1_k = torch.zeros(2*D, requires_grad=True)
+    w2_k = torch.randn(D, 2*D, requires_grad=True)
+    b2_k = torch.zeros(D, requires_grad=True)
+    w1_v = torch.randn(2*D, in_dim, requires_grad=True)
+    b1_v = torch.zeros(2*D, requires_grad=True)
+    w2_v = torch.randn(D, 2*D, requires_grad=True)
+    b2_v = torch.zeros(D, requires_grad=True)
+    phi_k = (w1_k, b1_k, w2_k, b2_k)
+    phi_v = (w1_v, b1_v, w2_v, b2_v)
+
+    k_cmp, v_cmp = compressed_attn_forward(k, v, phi_k, phi_v, block_len=4, stride=2)
+    loss = k_cmp.sum() + v_cmp.sum()
+    loss.backward()
+
+    assert k.grad is not None, "k.grad is None"
+    assert not torch.isnan(k.grad).any(), "NaN in k.grad"
+    assert w1_k.grad is not None, "phi_k_w1.grad is None"
+    assert w1_v.grad is not None, "phi_v_w1.grad is None"
+    assert w2_k.grad is not None, "phi_k_w2.grad is None"
+    assert b1_k.grad is not None, "phi_k_b1.grad is None"
+    print(f"  compressed_attn gradient: ✅")
+
+
 if __name__ == "__main__":
     test_compressed_attn_eager_small()
     test_compressed_attn_eager_no_blocks()
     test_compressed_attn_eager_parity_with_unfold()
     test_compressed_attn_mlp_vs_phi_k_v()
+    test_compressed_attn_gradient()
     print("All compressed_attn tests passed!")
