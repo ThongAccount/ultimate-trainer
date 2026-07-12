@@ -72,6 +72,11 @@ class UltimateTrainingConfig:
     output_dir: str = "checkpoints/ultimate_trainer"
     run_name: str = "ultimate-run1"
 
+    # ── Experiment tracking ──
+    use_wandb: bool = True
+    wandb_project: str = "ultimate-ai-model"
+    wandb_entity: str = ""  # defaults to env WANDB_ENTITY or personal
+
     distributed: bool = False
     dtype: str = "float32"
 

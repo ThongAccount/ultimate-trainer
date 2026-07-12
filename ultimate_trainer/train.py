@@ -20,6 +20,14 @@ if _root not in sys.path:
 from ultimate_trainer.config import UltimateModelConfig, UltimateTrainingConfig
 from ultimate_trainer.model import UltimateModel
 
+# ── WandB ───────────────────────────────────────────────────────────────────
+try:
+    import wandb as _wandb
+
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s | %(message)s", datefmt="%H:%M:%S"
 )
@@ -126,6 +134,33 @@ class UltimateTrainer:
         # ── Staged context extension ─────────────────────────────────
         self.context_stages = list(tc.context_stages) if tc.context_stages else []
         self._current_stage = 0
+
+        # ── WandB ───────────────────────────────────────────────────────
+        self._wandb_run = None
+        if tc.use_wandb and _HAS_WANDB and self.local_rank <= 0:
+            wandb_kwargs = dict(
+                project=tc.wandb_project,
+                name=tc.run_name,
+                config={
+                    "model": str(mc),
+                    "training": str(tc),
+                    "hidden_dim": mc.hidden_dim,
+                    "num_layers": mc.num_layers,
+                    "heads": mc.num_attention_heads,
+                    "kv_heads": mc.num_kv_heads,
+                    "max_seq_len": mc.max_seq_len,
+                    "bitlinear": mc.use_bitlinear,
+                    "subqsa": mc.use_subqsa,
+                    "act_bits": mc.activation_bits,
+                    "max_steps": tc.max_steps,
+                    "batch_size": tc.micro_batch_size,
+                    "lr": tc.learning_rate,
+                    "dtype": tc.dtype,
+                },
+            )
+            if tc.wandb_entity:
+                wandb_kwargs["entity"] = tc.wandb_entity
+            self._wandb_run = _wandb.init(**wandb_kwargs)
 
     def step(self):
         try:
@@ -259,6 +294,14 @@ class UltimateTrainer:
                 logger.info(
                     f"Step {step}/{self.tc.max_steps} | loss={loss:.4f} | lr={lr:.2e}"
                 )
+                if self._wandb_run is not None:
+                    self._wandb_run.log(
+                        {
+                            "train/loss": loss,
+                            "train/lr": lr,
+                            "train/step": self.global_step,
+                        }
+                    )
 
             #─ Evaluation ────────────────────────────────────────────
             if step > 0 and step % self.tc.eval_interval == 0:
@@ -268,6 +311,14 @@ class UltimateTrainer:
                         f"Eval step {step}: val_loss={val_loss:.4f} | "
                         f"ppl={ppl:.2f}"
                     )
+                    if self._wandb_run is not None:
+                        self._wandb_run.log(
+                            {
+                                "eval/loss": val_loss,
+                                "eval/perplexity": ppl,
+                                "eval/step": self.global_step,
+                            }
+                        )
                     if val_loss < self.best_val_loss:
                         self.best_val_loss = val_loss
                         self._save_checkpoint(is_best=True)
@@ -276,6 +327,9 @@ class UltimateTrainer:
 
         # Final checkpoint save
         self._save_checkpoint(is_best=False)
+
+        if self._wandb_run is not None:
+            self._wandb_run.finish()
 
         if self.local_rank >= 0:
             dist.destroy_process_group()
