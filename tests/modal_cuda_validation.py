@@ -50,6 +50,10 @@ image = image.add_local_dir(
     os.path.abspath("kernels"), KERNEL_DIR, copy=True
 )
 
+# %%
+%pip install nvcc4jupyter -q
+%load_ext nvcc4jupyter
+
 # %% [markdown]
 # ## Helper: compile + load a CUDA kernel
 
