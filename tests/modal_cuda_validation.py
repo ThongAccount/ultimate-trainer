@@ -7,12 +7,11 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.19.4
 #   kernelspec:
-#     display_name: Python 3 (ipykernel)
-#     language: python
+#     display_name: Python 3
 #     name: python3
 # ---
 
-# %% [markdown]
+# %% [markdown] id="a070f9cc"
 # # CUDA Kernel Validation — BitNet b1.58 × SubQSA
 #
 # Compile and test all 4 fused CUDA C++ kernels interactively.
@@ -23,14 +22,14 @@
 # pip install nvcc4jupyter
 # ```
 
-# %%
+# %% id="3a2ae5b2" outputId="551a7fe4-e8e1-4622-ba8d-70f1b304eaf1" colab={"base_uri": "https://localhost:8080/"}
 # !uv pip install nvcc4jupyter ninja
 # %load_ext nvcc4jupyter
 
-# %% [markdown]
+# %% [markdown] id="d4ece901"
 # ## Setup - Clone Repo
 
-# %%
+# %% id="0e15b6c2" outputId="b4fa0b7a-200e-4ed1-a81c-ea01bc072b77" colab={"base_uri": "https://localhost:8080/"}
 import os, subprocess, sys
 
 FORCE_REWRITE = True
@@ -41,7 +40,7 @@ if FORCE_REWRITE or (not os.path.exists("1bit_trainer/config.py")):  # check for
         check=True,
     )
     subprocess.run(
-        "mv ultimate-trainer/* . && mv ultimate-trainer/.* . 2>/dev/null || true",
+        "mv ultimate-trainer/* . && mv ultimate-trainer/.* . && rm -rf ultimate-trainer 2>/dev/null || true",
         shell=True,
     )
     subprocess.run(["rmdir", "ultimate-trainer"], check=False)
@@ -58,14 +57,16 @@ try:
 except Exception as e:
     print(f"Failed to load modules: {e}")
 
-# %% [markdown]
+# %% [markdown] id="5e906156"
 # ## Imports
 
-# %%
+# %% id="92ff04dc" outputId="0294ea41-d062-439a-ad7b-3339af93e480" colab={"base_uri": "https://localhost:8080/"}
 import torch
 import torch.nn.functional as F
 import sys, os, math
 sys.path.insert(0, os.path.abspath('..'))
+
+print("Continuing module verification...")
 
 from kernels.compressed_attn.compressed_attn import (
     compressed_attn_forward, _compressed_attn_eager,
@@ -80,20 +81,22 @@ from kernels.subqsa_combine.subqsa_combine import (
     subqsa_combine_forward, _subqsa_combine_eager,
 )
 
+print("All modules compiled and loaded!")
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}  |  CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-# %% [markdown]
+# %% [markdown] id="8e3a11c9"
 # ## 1. Compressed Attention Kernel
 #
 # Block MLP compression: strided K/V load → phi_k/phi_v MLP → compressed K_cmp/V_cmp.
 
-# %% [markdown]
+# %% [markdown] id="f0cf6db5"
 # ### 1a. PyTorch reference (CPU)
 
-# %%
+# %% id="b4b7283c" outputId="39d99453-9725-46b9-fd33-dbb80f2ac890" colab={"base_uri": "https://localhost:8080/"}
 def test_compressed_attn_eager():
     B, H, T, D = 2, 2, 32, 32
     k = torch.randn(B, H, T, D)
@@ -113,11 +116,11 @@ def test_compressed_attn_eager():
 
 test_compressed_attn_eager()
 
-# %% [markdown]
+# %% [markdown] id="157b5b34"
 # ### 1b. CUDA kernel compilation + forward
 
-# %%
-# %%cuda --kernel compressed_attn --name compressed_attn_test
+# %% id="5d4183e3" outputId="c4e919de-8a32-47d4-d2d6-a850343e0d7f" colab={"base_uri": "https://localhost:8080/"}
+# %%cuda
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -160,15 +163,15 @@ extern "C" __global__ void compressed_attn_test_kernel(
     }
 }
 
-# %% [markdown]
+# %% [markdown] id="22bbfea9"
 # ## 2. Selective Attention Kernel
 #
 # Top-K selection + causal attention over selected blocks.
 
-# %% [markdown]
+# %% [markdown] id="d57f54e0"
 # ### 2a. PyTorch reference
 
-# %%
+# %% id="1e2376f5" outputId="726f0c70-cbb0-40b4-d867-661cfc5e5091" colab={"base_uri": "https://localhost:8080/"}
 def test_selective_attn_eager():
     B, H, T, D = 1, 2, 16, 8
     q = torch.randn(B, H, T, D)
@@ -183,10 +186,10 @@ def test_selective_attn_eager():
 
 test_selective_attn_eager()
 
-# %% [markdown]
+# %% [markdown] id="57b21eab"
 # ### 2b. CUDA phase 1: top-K selection
 
-# %%
+# %% id="44d24125" outputId="321daded-9927-41a4-bb43-b02e69ff4fec" colab={"base_uri": "https://localhost:8080/"}
 # %%cuda --kernel topk_select --name topk_select_test
 
 #include <cuda_runtime.h>
@@ -220,10 +223,10 @@ extern "C" __global__ void topk_select_kernel(
     if (tid < topk) top_idx[tid] = s_idx[tid];
 }
 
-# %% [markdown]
+# %% [markdown] id="b21e303a"
 # ## 3. Block-Sparse Ternary Matmul
 
-# %%
+# %% id="c17924ec" outputId="e39dd95c-8e76-4bc9-f1fa-6680448c366f" colab={"base_uri": "https://localhost:8080/"}
 def test_block_sparse_ternary():
     M, N, K = 128, 64, 64
     x = torch.randn(M, K)
@@ -249,12 +252,12 @@ def test_block_sparse_ternary():
 
 test_block_sparse_ternary()
 
-# %% [markdown]
+# %% [markdown] id="d16e9ffa"
 # ## 4. SubQSA Combine Kernel
 #
 # Fused gate MLP → sigmoid → 3-way blend → RMSNorm → O projection.
 
-# %%
+# %% id="163b3d3e" outputId="edd0aa35-c01b-42cd-f86d-7d25086f6f0f" colab={"base_uri": "https://localhost:8080/"}
 def test_subqsa_combine():
     B, T, H, D_head, D_out = 1, 2, 1, 8, 16
     D = H * D_head
@@ -275,10 +278,10 @@ def test_subqsa_combine():
 
 test_subqsa_combine()
 
-# %% [markdown]
+# %% [markdown] id="81b69ba3"
 # ## 5. Combined end-to-end forward
 
-# %%
+# %% id="78134ea2" outputId="b4e6462f-e211-4ffb-cf61-53cea3a0b9f9" colab={"base_uri": "https://localhost:8080/", "height": 356}
 from ultimate_trainer.config import UltimateModelConfig
 from ultimate_trainer.model import UltimateModel
 
@@ -303,10 +306,10 @@ print(f"  E2E forward shape: {logits.shape}")
 print(f"  Loss: {loss.item():.4f}")
 print(f"  No NaN: {not torch.isnan(logits).any()}")
 
-# %% [markdown]
+# %% [markdown] id="755c31df"
 # ## Summary
 
-# %%
+# %% id="583b304d"
 print("=" * 50)
 print("ALL TESTS PASSED ✅")
 print("=" * 50)
