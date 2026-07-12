@@ -154,6 +154,7 @@ class UltimateTrainer:
                     "act_bits": mc.activation_bits,
                     "max_steps": tc.max_steps,
                     "batch_size": tc.micro_batch_size,
+                    "grad_accum": tc.gradient_accumulation_steps,
                     "lr": tc.learning_rate,
                     "dtype": tc.dtype,
                 },
@@ -162,7 +163,17 @@ class UltimateTrainer:
                 wandb_kwargs["entity"] = tc.wandb_entity
             self._wandb_run = _wandb.init(**wandb_kwargs)
 
-    def step(self):
+        # ── Gradient accumulation ──────────────────────────────────────
+        self._acc_counter = 0
+
+    def train_step(self):
+        """Forward + backward for one micro-batch.
+
+        Accumulates gradients; optimizer step fires every
+        ``gradient_accumulation_steps`` micro-batches.  Returns the
+        *scaled* loss (before grad accumulation) so caller sees per-step
+        signal regardless of accumulation phase.
+        """
         try:
             batch = next(self.it)
         except StopIteration:
@@ -177,14 +188,24 @@ class UltimateTrainer:
             lbl.view(-1),
             ignore_index=0,
         )
+        # Scale loss for gradient accumulation
+        loss = loss / self.tc.gradient_accumulation_steps
         loss.backward()
+        self._acc_counter += 1
+
+        if self._acc_counter % self.tc.gradient_accumulation_steps == 0:
+            self._optimizer_step()
+
+        self._maybe_extend_context()
+        return loss.item() * self.tc.gradient_accumulation_steps  # unscaled for logging
+
+    def _optimizer_step(self):
+        """Clip gradients, update weights, advance LR scheduler."""
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.tc.max_grad_norm)
         self.optimizer.step()
         self.scheduler.step()
         self.optimizer.zero_grad()
         self.global_step += 1
-        self._maybe_extend_context()
-        return loss.item()
 
     def _build_dataloader(self):
         if self.local_rank >= 0:
@@ -287,28 +308,33 @@ class UltimateTrainer:
         for module in self.model.modules():
             if isinstance(module, BitLinear):
                 module._quant_step = 0
-        for step in range(self.tc.max_steps):
-            loss = self.step()
-            if step % self.tc.log_interval == 0:
+        micro_batches = self.tc.max_steps * self.tc.gradient_accumulation_steps
+        for mb in range(micro_batches):
+            loss = self.train_step()
+            current_opt_step = self.global_step
+
+            # Report every log_interval optimizer steps
+            if current_opt_step > 0 and current_opt_step % self.tc.log_interval == 0:
                 lr = self.optimizer.param_groups[0]["lr"]
                 logger.info(
-                    f"Step {step}/{self.tc.max_steps} | loss={loss:.4f} | lr={lr:.2e}"
+                    f"Opt step {current_opt_step}/{self.tc.max_steps} | "
+                    f"loss={loss:.4f} | lr={lr:.2e}"
                 )
                 if self._wandb_run is not None:
                     self._wandb_run.log(
                         {
                             "train/loss": loss,
                             "train/lr": lr,
-                            "train/step": self.global_step,
+                            "train/step": current_opt_step,
                         }
                     )
 
             #─ Evaluation ────────────────────────────────────────────
-            if step > 0 and step % self.tc.eval_interval == 0:
+            if current_opt_step > 0 and current_opt_step % self.tc.eval_interval == 0:
                 val_loss, ppl = self.evaluate()
                 if val_loss is not None:
                     logger.info(
-                        f"Eval step {step}: val_loss={val_loss:.4f} | "
+                        f"Eval opt step {current_opt_step}: val_loss={val_loss:.4f} | "
                         f"ppl={ppl:.2f}"
                     )
                     if self._wandb_run is not None:
@@ -316,7 +342,7 @@ class UltimateTrainer:
                             {
                                 "eval/loss": val_loss,
                                 "eval/perplexity": ppl,
-                                "eval/step": self.global_step,
+                                "eval/step": current_opt_step,
                             }
                         )
                     if val_loss < self.best_val_loss:
