@@ -13,22 +13,22 @@ _CXX_WRAPPER = r"""
 
 // Forward declarations
 void launch_fused_compressed_attn_forward(
-    const half* k, const half* v,
-    const half* phi_k_w1, const half* phi_k_w2,
-    const half* phi_v_w1, const half* phi_v_w2,
-    half* k_cmp, half* v_cmp,
+    const float* k, const float* v,
+    const float* phi_k_w1, const float* phi_k_w2,
+    const float* phi_v_w1, const float* phi_v_w2,
+    float* k_cmp, float* v_cmp,
     int B, int H, int T, int D,
     int block_len, int stride, int n_blocks,
     cudaStream_t stream);
 
 void launch_fused_compressed_attn_backward(
-    const half* grad_k_cmp, const half* grad_v_cmp,
-    const half* k, const half* v,
-    const half* phi_k_w1, const half* phi_k_w2,
-    const half* phi_v_w1, const half* phi_v_w2,
-    half* grad_k, half* grad_v,
-    half* grad_phi_k_w1, half* grad_phi_k_w2,
-    half* grad_phi_v_w1, half* grad_phi_v_w2,
+    const float* grad_k_cmp, const float* grad_v_cmp,
+    const float* k, const float* v,
+    const float* phi_k_w1, const float* phi_k_w2,
+    const float* phi_v_w1, const float* phi_v_w2,
+    float* grad_k, float* grad_v,
+    float* grad_phi_k_w1, float* grad_phi_k_w2,
+    float* grad_phi_v_w1, float* grad_phi_v_w2,
     int B, int H, int T, int D,
     int block_len, int stride, int n_blocks,
     cudaStream_t stream);
@@ -52,20 +52,20 @@ at::Tensor forward_wrapper(
     // phi_k: w1 @ x + b1, then SiLU, then w2 @ h + b2
     // We fold biases: w1 has bias appended as extra column, x has 1 appended
     // For simplicity in v1, we keep biases separate but add them in the kernel
-    auto k_cmp = at::empty({B, H, n_blocks, D}, k.options().dtype(at::kHalf));
-    auto v_cmp = at::empty({B, H, n_blocks, D}, v.options().dtype(at::kHalf));
+    auto k_cmp = at::empty({B, H, n_blocks, D}, k.options().dtype(at::kFloat));
+    auto v_cmp = at::empty({B, H, n_blocks, D}, v.options().dtype(at::kFloat));
 
     auto stream = at::cuda::getCurrentCUDAStream();
 
     launch_fused_compressed_attn_forward(
-        reinterpret_cast<const half*>(k.data_ptr<at::Half>()),
-        reinterpret_cast<const half*>(v.data_ptr<at::Half>()),
-        reinterpret_cast<const half*>(phi_k_w1.data_ptr<at::Half>()),
-        reinterpret_cast<const half*>(phi_k_w2.data_ptr<at::Half>()),
-        reinterpret_cast<const half*>(phi_v_w1.data_ptr<at::Half>()),
-        reinterpret_cast<const half*>(phi_v_w2.data_ptr<at::Half>()),
-        reinterpret_cast<half*>(k_cmp.data_ptr<at::Half>()),
-        reinterpret_cast<half*>(v_cmp.data_ptr<at::Half>()),
+        reinterpret_cast<const float*>(k.data_ptr<at::kFloat>()),
+        reinterpret_cast<const float*>(v.data_ptr<at::kFloat>()),
+        reinterpret_cast<const float*>(phi_k_w1.data_ptr<at::kFloat>()),
+        reinterpret_cast<const float*>(phi_k_w2.data_ptr<at::kFloat>()),
+        reinterpret_cast<const float*>(phi_v_w1.data_ptr<at::kFloat>()),
+        reinterpret_cast<const float*>(phi_v_w2.data_ptr<at::kFloat>()),
+        reinterpret_cast<float*>(k_cmp.data_ptr<at::kFloat>()),
+        reinterpret_cast<float*>(v_cmp.data_ptr<at::kFloat>()),
         B, H, T, D, block_len, stride, n_blocks,
         stream
     );
@@ -107,11 +107,11 @@ class CompressedAttnFn(torch.autograd.Function):
         if k.is_cuda and _HAS_COMPRESSED_ATTN:
             # CUDA path
             k_cmp_v_cmp = _compressed_lib.forward(
-                k.contiguous(), v.contiguous(),
-                phi_k_w1.contiguous(), phi_k_b1.contiguous() if phi_k_b1 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
-                phi_k_w2.contiguous(), phi_k_b2.contiguous() if phi_k_b2 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
-                phi_v_w1.contiguous(), phi_v_b1.contiguous() if phi_v_b1 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
-                phi_v_w2.contiguous(), phi_v_b2.contiguous() if phi_v_b2 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
+                k.contiguous().float(), v.contiguous().float(),
+                phi_k_w1.contiguous().float(), phi_k_b1.contiguous().float() if phi_k_b1 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
+                phi_k_w2.contiguous().float(), phi_k_b2.contiguous().float() if phi_k_b2 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
+                phi_v_w1.contiguous().float(), phi_v_b1.contiguous().float() if phi_v_b1 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
+                phi_v_w2.contiguous().float(), phi_v_b2.contiguous().float() if phi_v_b2 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
                 block_len, stride
             )
             k_cmp = k_cmp_v_cmp[..., :k_cmp_v_cmp.size(-1)//2]

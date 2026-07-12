@@ -22,8 +22,8 @@ void launch_selective_phase1(
     cudaStream_t stream);
 
 void launch_selective_phase2(
-    const half* q, const half* k, const half* v,
-    const long* top_idx, half* attn_out,
+    const float* q, const float* k, const float* v,
+    const long* top_idx, float* attn_out,
     int B, int H, int T, int D,
     int block_size, int topk, int n_sel,
     cudaStream_t stream);
@@ -41,7 +41,7 @@ std::vector<at::Tensor> forward_wrapper(
 
     auto top_idx = at::empty({B, H, std::min(topk, (int64_t)n_sel)},
                               scores_agg.options().dtype(at::kLong));
-    auto attn_out = at::empty({B, H, T, D}, q.options().dtype(at::kHalf));
+    auto attn_out = at::empty({B, H, T, D}, q.options().dtype(at::kFloat));
 
     auto stream = at::cuda::getCurrentCUDAStream();
 
@@ -51,11 +51,11 @@ std::vector<at::Tensor> forward_wrapper(
         B, H, n_sel, topk, stream);
 
     launch_selective_phase2(
-        reinterpret_cast<const half*>(q.data_ptr<at::Half>()),
-        reinterpret_cast<const half*>(k.data_ptr<at::Half>()),
-        reinterpret_cast<const half*>(v.data_ptr<at::Half>()),
+        reinterpret_cast<const float*>(q.data_ptr<float>()),
+        reinterpret_cast<const float*>(k.data_ptr<float>()),
+        reinterpret_cast<const float*>(v.data_ptr<float>()),
         reinterpret_cast<const long*>(top_idx.data_ptr<long>()),
-        reinterpret_cast<half*>(attn_out.data_ptr<at::Half>()),
+        reinterpret_cast<float*>(attn_out.data_ptr<float>()),
         B, H, T, D, block_size, topk, n_sel, stream);
 
     return {attn_out, top_idx};
@@ -92,7 +92,7 @@ class SelectiveAttnFn(torch.autograd.Function):
 
         if q.is_cuda and _HAS_SELECTIVE_ATTN:
             result, top_idx = _selective_lib.forward(
-                q.contiguous(), k.contiguous(), v.contiguous(),
+                q.contiguous().float(), k.contiguous().float(), v.contiguous().float(),
                 scores_agg.contiguous(), topk, block_size
             )
             ctx.top_idx = top_idx
