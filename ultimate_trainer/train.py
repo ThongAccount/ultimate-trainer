@@ -200,6 +200,13 @@ class UltimateTrainer:
                 logger.info(
                     f"Step {step}/{self.tc.max_steps} | loss={loss:.4f} | lr={lr:.2e}"
                 )
+        # ── Final checkpoint save ──────────────────────────────────────
+        import os as _os
+        ckpt_dir = _os.path.join(self.tc.output_dir, f"step_{self.global_step}")
+        _os.makedirs(ckpt_dir, exist_ok=True)
+        torch.save(self.model.state_dict(), _os.path.join(ckpt_dir, "model.pt"))
+        torch.save(self.optimizer.state_dict(), _os.path.join(ckpt_dir, "optim.pt"))
+        logger.info(f"Checkpoint saved to {ckpt_dir}")
         logger.info("Training complete.")
         if self.local_rank >= 0:
             dist.destroy_process_group()
