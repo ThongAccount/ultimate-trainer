@@ -14,6 +14,7 @@ _CUDA_SOURCE = os.path.join(os.path.dirname(__file__), "selective_attn_kernel.cu
 _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
+#include <cuda_runtime.h>
 
 // Forward declarations from the CUDA source
 void launch_selective_phase1(

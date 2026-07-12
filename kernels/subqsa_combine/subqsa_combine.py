@@ -21,6 +21,7 @@ _CUDA_SOURCE = os.path.join(os.path.dirname(__file__), "subqsa_combine_kernel.cu
 _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
+#include <cuda_runtime.h>
 
 extern "C" {
 void launch_subqsa_combine_forward(

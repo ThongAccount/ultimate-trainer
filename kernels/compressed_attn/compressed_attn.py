@@ -10,6 +10,7 @@ _CUDA_SOURCE = os.path.join(os.path.dirname(__file__), "compressed_attn_kernel.c
 _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
+#include <cuda_runtime.h>
 
 // Forward declarations
 void launch_fused_compressed_attn_forward(
@@ -58,14 +59,14 @@ at::Tensor forward_wrapper(
     auto stream = at::cuda::getCurrentCUDAStream();
 
     launch_fused_compressed_attn_forward(
-        reinterpret_cast<const float*>(k.data_ptr<at::kFloat>()),
-        reinterpret_cast<const float*>(v.data_ptr<at::kFloat>()),
-        reinterpret_cast<const float*>(phi_k_w1.data_ptr<at::kFloat>()),
-        reinterpret_cast<const float*>(phi_k_w2.data_ptr<at::kFloat>()),
-        reinterpret_cast<const float*>(phi_v_w1.data_ptr<at::kFloat>()),
-        reinterpret_cast<const float*>(phi_v_w2.data_ptr<at::kFloat>()),
-        reinterpret_cast<float*>(k_cmp.data_ptr<at::kFloat>()),
-        reinterpret_cast<float*>(v_cmp.data_ptr<at::kFloat>()),
+        reinterpret_cast<const float*>(k.data_ptr<float>()),
+        reinterpret_cast<const float*>(v.data_ptr<float>()),
+        reinterpret_cast<const float*>(phi_k_w1.data_ptr<float>()),
+        reinterpret_cast<const float*>(phi_k_w2.data_ptr<float>()),
+        reinterpret_cast<const float*>(phi_v_w1.data_ptr<float>()),
+        reinterpret_cast<const float*>(phi_v_w2.data_ptr<float>()),
+        reinterpret_cast<float*>(k_cmp.data_ptr<float>()),
+        reinterpret_cast<float*>(v_cmp.data_ptr<float>()),
         B, H, T, D, block_len, stride, n_blocks,
         stream
     );
