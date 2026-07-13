@@ -99,7 +99,7 @@ class UltimateModel(nn.Module):
         for layer in self.layers:
             if self.cfg.use_checkpoint and self.training:
                 x = torch.utils.checkpoint.checkpoint(
-                    layer, x, start_pos, use_reentrant=False
+                    layer, x, start_pos, use_reentrant=True
                 )
             else:
                 x = layer(x, start_pos=start_pos)

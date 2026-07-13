@@ -190,7 +190,13 @@ class UltimateTrainer:
         )
         # Scale loss for gradient accumulation
         loss = loss / self.tc.gradient_accumulation_steps
-        loss.backward()
+        # DDP: only sync gradients on the last micro-batch of each accumulation cycle
+        is_last_acc = (self._acc_counter + 1) % self.tc.gradient_accumulation_steps == 0
+        if self.local_rank >= 0 and not is_last_acc:
+            with self.model.no_sync():
+                loss.backward()
+        else:
+            loss.backward()
         self._acc_counter += 1
 
         if self._acc_counter % self.tc.gradient_accumulation_steps == 0:
@@ -381,7 +387,7 @@ if __name__ == "__main__":
             num_kv_heads=2,
             max_seq_len=128,
             use_bitlinear=True,
-            use_checkpoint=True,
+            use_checkpoint=False,
             cmp_block=16,
             cmp_stride=8,
             slc_block=32,
