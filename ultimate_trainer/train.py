@@ -95,7 +95,8 @@ class UltimateTrainer:
         self.model = UltimateModel(mc).to(self.device)
         if self.local_rank >= 0:
             self.model = nn.parallel.DistributedDataParallel(
-                self.model, device_ids=[self.local_rank]
+                self.model, device_ids=[self.local_rank],
+                find_unused_parameters=True,
             )
 
         # ── Optimizer ────────────────────────────────────────────────
