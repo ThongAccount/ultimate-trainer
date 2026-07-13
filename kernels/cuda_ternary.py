@@ -34,7 +34,7 @@ try:
         name="ternary_matmul_cuda",
         sources=[_CU_SOURCE],
         verbose=False,
-        extra_cuda_cflags=["-O3", "--use_fast_math"],
+        extra_cuda_cflags=["-O3", "--use_fast_math", "-DBUILD_AS_SHARED"],
     )
     HAS_CUDA_KERNEL = True
 except Exception:
