@@ -31,9 +31,10 @@ __global__ void quantize_ternary_fp16_kernel(
     w_out[idx] = w_ternary;
 }
 
-// Host launch wrapper
+// Host launch wrapper — accepts float* from C++, casts to half* for kernel
 extern "C" void launch_quantize_ternary_fp16(
-    const float* w_in, half* w_out, float gamma, int num_elements) {
+    const float* w_in, float* w_out_f32, float gamma, int num_elements) {
+    half* w_out = reinterpret_cast<half*>(w_out_f32);
     int threads = 256;
     int blocks = (num_elements + threads - 1) / threads;
     quantize_ternary_fp16_kernel<<<blocks, threads>>>(w_in, w_out, gamma, num_elements);

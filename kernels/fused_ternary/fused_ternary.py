@@ -32,7 +32,7 @@ try:
         #include <torch/extension.h>
 
         extern "C" void launch_quantize_ternary_fp16(
-            const float*, __half*, float, int);
+            const float*, float*, float, int);
 
         torch::Tensor quantize_ternary_fp16_wrapper(
             torch::Tensor w, double gamma) {
@@ -46,7 +46,7 @@ try:
 
             launch_quantize_ternary_fp16(
                 w.data_ptr<float>(),
-                reinterpret_cast<__half*>(w_out.data_ptr()),
+                reinterpret_cast<float*>(w_out.data_ptr()),
                 static_cast<float>(gamma),
                 num_elements);
 
