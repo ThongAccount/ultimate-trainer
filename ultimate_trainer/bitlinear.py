@@ -24,6 +24,25 @@ try:
 except ImportError:
     _HAS_FUSED_KERNEL = False
 
+# CUDA ternary matmul kernel (load once at module init, not per-call)
+_HAS_CUDA_TERNARY = False
+try:
+    from kernels.cuda_ternary import TernaryMatmulFn, HAS_CUDA_KERNEL as _CUDA_OK
+    _HAS_CUDA_TERNARY = _CUDA_OK and hasattr(TernaryMatmulFn, 'apply')
+except ImportError:
+    pass
+
+# FP16 TensorCore ternary matmul (preferred over FP32 cuda_ternary)
+_HAS_FUSED_TERNARY = False
+_FusedTernaryFn = None
+try:
+    from kernels.fused_ternary.fused_ternary import FusedTernaryFn, _HAS_FUSED_TERNARY as _FT_OK
+    if _FT_OK:
+        _HAS_FUSED_TERNARY = True
+        _FusedTernaryFn = FusedTernaryFn
+except ImportError:
+    pass
+
 
 def absmax_quantize_activation(act, bits=8):
     q_max = float(2 ** (bits - 1) - 1)
@@ -138,12 +157,10 @@ class BitLinear(nn.Module):
             # Fresh STE: forward uses gamma-scaled ternary {-γ, 0, +γ},
             # backward identity through self.weight.  The gamma scaling
             # maintains the correct output magnitude (BitNet paper Eq. 1-3).
-            try:
-                from kernels.cuda_ternary import TernaryMatmulFn, HAS_CUDA_KERNEL
-                if HAS_CUDA_KERNEL and x.is_cuda and x.dtype == torch.float32:
-                    return TernaryMatmulFn.apply(x, self.weight, self._gamma, self.bias)
-            except ImportError:
-                pass
+            if _HAS_FUSED_TERNARY and x.is_cuda:
+                return _FusedTernaryFn.apply(x, self.weight, self._gamma, self.bias)
+            if _HAS_CUDA_TERNARY and x.is_cuda and x.dtype == torch.float32:
+                return TernaryMatmulFn.apply(x, self.weight, self._gamma, self.bias)
             # Fallback: eager PyTorch with gamma-scaled ternary weights
             w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)
             w_ternary_scaled = w_q * self._gamma

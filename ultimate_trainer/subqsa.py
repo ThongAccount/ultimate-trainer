@@ -285,8 +285,9 @@ class SubQSAAttention(nn.Module):
         from kernels.compressed_attn.compressed_attn import compressed_attn_forward
         from kernels.selective_attn.selective_attn import selective_attn_forward
         from kernels.subqsa_combine.subqsa_combine import subqsa_combine_forward
-        from kernels.block_sparse_ternary.block_sparse_ternary import block_sparse_ternary_matmul
-        _ = block_sparse_ternary_matmul  # imported for external use
+        from kernels.block_sparse_ternary.block_sparse_ternary import (
+            block_sparse_ternary_matmul, compute_block_mask,
+        )
 
         n_reps = self.num_heads // self.num_kv_heads if self.num_kv_heads else 1
 
@@ -383,6 +384,24 @@ class SubQSAAttention(nn.Module):
 
         # ── Fused combine: gate + 3-way blend + subln + O projection ──
         gamma = getattr(self.o_proj, 'gamma', 1.0)
+
+        # Compute block mask from selection scores for sparse O projection.
+        # Only active compressed blocks select O-projection tiles.
+        BN = 64
+        D = self.num_heads * self.head_dim
+        num_n_tiles = (D + BN - 1) // BN
+        num_k_tiles = (D + BN - 1) // BN
+        num_ints = max(1, (num_n_tiles * num_k_tiles + 63) // 64)
+        if scores_agg.numel() > 0:
+            _, top_idx = scores_agg.mean(dim=(0, 1), keepdim=True).topk(
+                min(self.selection.n, scores_agg.shape[-1]), dim=-1
+            )
+            block_mask = compute_block_mask(
+                top_idx, scores_agg.shape[-1], BN, num_n_tiles, num_k_tiles
+            )
+        else:
+            block_mask = torch.full((num_ints,), ~0, dtype=torch.int64, device=x.device)
+
         o = subqsa_combine_forward(
             x,
             o_cmp, o_slc, o_win,
@@ -391,6 +410,7 @@ class SubQSAAttention(nn.Module):
             self.out_norm.weight,
             self.o_proj.weight,
             gamma,
+            block_mask=block_mask,
         )
         return o
 

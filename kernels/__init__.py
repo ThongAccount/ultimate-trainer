@@ -2,6 +2,7 @@
 
 from . import elementwise
 from . import ternary
+from . import fused_ternary
 
 try:
     from kernels.compressed_attn.compressed_attn import compressed_attn_forward, _HAS_COMPRESSED_ATTN
@@ -16,7 +17,10 @@ except:
     _HAS_SELECTIVE_ATTN = False
 
 try:
-    from kernels.block_sparse_ternary.block_sparse_ternary import block_sparse_ternary_matmul, compute_block_mask, _HAS_BLOCK_SPARSE
+    from kernels.block_sparse_ternary.block_sparse_ternary import (
+        block_sparse_ternary_matmul, compute_block_mask, _HAS_CUDA as _HAS_BLOCK_SPARSE_CUDA,
+    )
+    _HAS_BLOCK_SPARSE = _HAS_BLOCK_SPARSE_CUDA
 except:
     block_sparse_ternary_matmul = None
     compute_block_mask = None
