@@ -15,30 +15,106 @@ Usage:
 """
 
 import os
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 _HAS_CUDA_KERNEL = False
-_ternary_lib = None  # loaded shared library
+_forward_fn = None
+_backward_fn = None
 
-# ── Compile / load the CUDA kernel ─────────────────────────────────────
+# ── Compile / load the CUDA kernel (using load_inline like other SubQSA kernels) ──
 
-_KERNEL_DIR = os.path.dirname(os.path.abspath(__file__))
-_CU_SOURCE = os.path.join(_KERNEL_DIR, "ternary", "ternary_matmul.cu")
+_CUDA_SOURCE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "ternary", "ternary_matmul.cu"
+)
 
 try:
-    from torch.utils.cpp_extension import load
+    from torch.utils.cpp_extension import load_inline
 
-    _ternary_lib = load(
-        name="ternary_matmul_cuda",
-        sources=[_CU_SOURCE],
+    with open(_CUDA_SOURCE) as f:
+        cuda_source = f.read()
+
+    _lib = load_inline(
+        name="ternary_matmul_cuda_ext",
+        cpp_sources=r"""
+        #include <cuda_runtime.h>
+        #include <vector>
+        #include <torch/extension.h>
+
+        extern "C" {
+            void forward_ternary_matmul(
+                const float* x, const float* w, float* y,
+                float gamma, int M, int N, int K,
+                cudaStream_t stream);
+            void backward_dx_ternary(
+                const float* dy, const float* w, float* dx,
+                float gamma, int M, int N, int K,
+                cudaStream_t stream);
+        }
+
+        torch::Tensor forward_wrapper(
+            torch::Tensor x, torch::Tensor w, double gamma) {
+            TORCH_CHECK(x.is_cuda() && w.is_cuda(), "Inputs must be CUDA tensors");
+            TORCH_CHECK(x.is_contiguous() && w.is_contiguous(), "Inputs must be contiguous");
+            TORCH_CHECK(x.dim() == 2, "x must be 2D (M, K)");
+            TORCH_CHECK(w.dim() == 2, "w must be 2D (N, K)");
+            TORCH_CHECK(x.size(1) == w.size(1), "x and w must have same K dimension");
+            TORCH_CHECK(x.dtype() == torch::kFloat32 && w.dtype() == torch::kFloat32,
+                        "Inputs must be float32");
+
+            int M = x.size(0);
+            int N = w.size(0);
+            int K = x.size(1);
+            auto y = torch::empty({M, N}, x.options());
+
+            forward_ternary_matmul(
+                x.data_ptr<float>(), w.data_ptr<float>(),
+                y.data_ptr<float>(),
+                static_cast<float>(gamma),
+                M, N, K, at::cuda::getCurrentCUDAStream());
+
+            return y;
+        }
+
+        torch::Tensor backward_dx_wrapper(
+            torch::Tensor dy, torch::Tensor w, double gamma) {
+            TORCH_CHECK(dy.is_cuda() && w.is_cuda(), "Inputs must be CUDA tensors");
+            TORCH_CHECK(dy.is_contiguous() && w.is_contiguous(), "Inputs must be contiguous");
+            TORCH_CHECK(dy.dim() == 2, "dy must be 2D (M, N)");
+            TORCH_CHECK(w.dim() == 2, "w must be 2D (N, K)");
+            TORCH_CHECK(dy.size(1) == w.size(0), "dy(N) must match w(N)");
+            TORCH_CHECK(dy.dtype() == torch::kFloat32 && w.dtype() == torch::kFloat32,
+                        "Inputs must be float32");
+
+            int M = dy.size(0);
+            int N = dy.size(1);
+            int K = w.size(1);
+            auto dx = torch::empty({M, K}, dy.options());
+
+            backward_dx_ternary(
+                dy.data_ptr<float>(), w.data_ptr<float>(),
+                dx.data_ptr<float>(),
+                static_cast<float>(gamma),
+                M, N, K, at::cuda::getCurrentCUDAStream());
+
+            return dx;
+        }
+        """,
+        cuda_sources=cuda_source,
+        functions=["forward_wrapper", "backward_dx_wrapper"],
         verbose=False,
-        extra_cuda_cflags=["-O3", "--use_fast_math", "-DBUILD_AS_SHARED"],
+        extra_cuda_cflags=["-DBUILD_AS_SHARED"],
     )
-    HAS_CUDA_KERNEL = True
+
+    _forward_fn = _lib.forward_wrapper
+    _backward_fn = _lib.backward_dx_wrapper
+    _HAS_CUDA_KERNEL = True
 except Exception:
-    HAS_CUDA_KERNEL = False
+    _HAS_CUDA_KERNEL = False
+
+HAS_CUDA_KERNEL = _HAS_CUDA_KERNEL
 
 
 # ── Helper: compute gamma ──────────────────────────────────────────────
@@ -85,14 +161,11 @@ class TernaryMatmulFn(torch.autograd.Function):
         N = weight.shape[0]
         x_2d = x.reshape(M, K)
 
-        if HAS_CUDA_KERNEL:
+        if _HAS_CUDA_KERNEL and x.is_cuda:
             # CUDA kernel path: computes y_raw = x @ Q(W)^T where Q(W) ∈ {-1,0,+1}
             y = torch.empty(M, N, device=x.device, dtype=torch.float32)
             gamma_scalar = gamma.item() if isinstance(gamma, torch.Tensor) else gamma
-            _ternary_lib.forward_ternary_matmul(
-                x_2d.contiguous(), weight.contiguous(), y,
-                gamma_scalar, M, N, K,
-            )
+            y = _forward_fn(x_2d.contiguous(), weight.contiguous(), gamma_scalar)
             # Scale by gamma: y = gamma * (x @ Q(W)^T) → ternary weights are {-γ, 0, +γ}
             y = y * gamma_scalar
         else:
@@ -111,7 +184,7 @@ class TernaryMatmulFn(torch.autograd.Function):
         """
         Computes:
             dx = dy @ Q(W)        (gradient w.r.t. x)
-            dw = None              (STE — no gradient through W quant)
+            dw = dy^T @ x         (STE — no gradient through W quant)
             d_gamma = None
             dbias = dy.sum(dim=...)
         """
@@ -123,16 +196,11 @@ class TernaryMatmulFn(torch.autograd.Function):
         K = weight.shape[1]
         dy_2d = grad_output.reshape(M, N)
 
-        if HAS_CUDA_KERNEL:
+        if _HAS_CUDA_KERNEL and x.is_cuda:
             # CUDA backward kernel: dx_raw = dy @ Q(W)  then scale by gamma
             # Since forward = gamma * (x @ Q(W)^T), backward = gamma * (dy @ Q(W))
-            dx = torch.empty(M, K, device=x.device, dtype=torch.float32)
-            gamma_scalar = gamma.item() if isinstance(gamma, torch.Tensor) else gamma
-            _ternary_lib.backward_dx_ternary(
-                dy_2d.contiguous(), weight.contiguous(), dx,
-                gamma_scalar, M, N, K,
-            )
-            dx = dx * gamma_scalar
+            dx = _backward_fn(dy_2d.contiguous(), weight.contiguous(), gamma.item())
+            dx = dx * gamma.item()
         else:
             # Eager fallback: STE backward (no gradient through weight quant)
             with torch.no_grad():
@@ -167,8 +235,7 @@ def fused_ternary_linear(x: torch.Tensor, weight: torch.Tensor,
     if weight.requires_grad or x.requires_grad:
         return TernaryMatmulFn.apply(x, weight, gamma, bias)
     else:
-        # Eval / inference path
-        if HAS_CUDA_KERNEL:
+        if _HAS_CUDA_KERNEL:
             return TernaryMatmulFn.apply(x, weight, gamma, bias)
         w_q = torch.clamp(torch.round(weight / gamma), -1.0, 1.0)
         return F.linear(x, w_q * gamma, bias)
