@@ -1,0 +1,10 @@
+            backward_dx_ternary(
+                dy.data_ptr<float>(), w.data_ptr<float>(),
+                dx.data_ptr<float>(),
+                static_cast<float>(gamma),
+                M, N, K, nullptr);
+
+            return dx;
+        }
+        """,
+        cuda_sources=cuda_source,

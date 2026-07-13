@@ -73,7 +73,7 @@ try:
                 x.data_ptr<float>(), w.data_ptr<float>(),
                 y.data_ptr<float>(),
                 static_cast<float>(gamma),
-                M, N, K, at::cuda::getCurrentCUDAStream());
+                M, N, K, nullptr);
 
             return y;
         }
@@ -97,7 +97,7 @@ try:
                 dy.data_ptr<float>(), w.data_ptr<float>(),
                 dx.data_ptr<float>(),
                 static_cast<float>(gamma),
-                M, N, K, at::cuda::getCurrentCUDAStream());
+                M, N, K, nullptr);
 
             return dx;
         }
