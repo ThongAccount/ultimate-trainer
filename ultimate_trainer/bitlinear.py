@@ -157,9 +157,12 @@ class BitLinear(nn.Module):
             # Fresh STE: forward uses gamma-scaled ternary {-γ, 0, +γ},
             # backward identity through self.weight.  The gamma scaling
             # maintains the correct output magnitude (BitNet paper Eq. 1-3).
-            if _HAS_FUSED_TERNARY and x.is_cuda:
+            # DDP check: skip custom autograd.Function when under DDP to
+            # avoid 'backward second time' errors from hook conflicts.
+            _in_ddp = x.is_cuda and torch.distributed.is_initialized()
+            if _HAS_FUSED_TERNARY and x.is_cuda and not _in_ddp:
                 return _FusedTernaryFn.apply(x, self.weight, self._gamma, self.bias)
-            if _HAS_CUDA_TERNARY and x.is_cuda and x.dtype == torch.float32:
+            if _HAS_CUDA_TERNARY and x.is_cuda and x.dtype == torch.float32 and not _in_ddp:
                 return TernaryMatmulFn.apply(x, self.weight, self._gamma, self.bias)
             # Fallback: eager PyTorch with gamma-scaled ternary weights
             w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)

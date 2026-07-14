@@ -442,7 +442,9 @@ class SubQSAAttention(nn.Module):
         k_routing = self.rope(k_routing, position_ids)
 
         # Early dispatch to CUDA-accelerated path when kernels are enabled
-        if self.use_cuda_kernels:
+        # Skip under DDP: custom autograd.Functions conflict with DDP hooks.
+        _in_ddp = torch.distributed.is_initialized() if hasattr(torch.distributed, 'is_initialized') else False
+        if self.use_cuda_kernels and not _in_ddp:
             return self._forward_cuda(x, q, k, v, k_routing, B, T)
 
         # ── Compression branch ──
