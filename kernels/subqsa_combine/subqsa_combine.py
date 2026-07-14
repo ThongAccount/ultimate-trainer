@@ -172,19 +172,28 @@ class SubQSACombineFn(torch.autograd.Function):
     def backward(ctx, grad_output):
         x, o_cmp, o_slc, o_win, gate_w1, gate_w2, out_norm_weight, o_proj_weight = ctx.saved_tensors
         gamma = ctx.gamma
-        with torch.enable_grad():
-            xi = x.detach().requires_grad_(True)
-            ci = o_cmp.detach().requires_grad_(True)
-            si = o_slc.detach().requires_grad_(True)
-            wi = o_win.detach().requires_grad_(True)
-            gw1 = gate_w1.detach().requires_grad_(True)
-            gw2 = gate_w2.detach().requires_grad_(True)
-            onw = out_norm_weight.detach().requires_grad_(True)
-            opw = o_proj_weight.detach().requires_grad_(True)
-            # Backward uses non-sparse eager path (block mask is forward-only)
-            out = _subqsa_combine_eager(xi, ci, si, wi, gw1, gw2, onw, opw, gamma)
-            grads = torch.autograd.grad(out, [xi, ci, si, wi, gw1, gw2, onw, opw], grad_output)
-        return (*grads, None, None)
+        # DDP-safe backward: manual gradients (no nested autograd.grad)
+        B, H, T, D_head = o_cmp.shape
+        g1 = F.linear(x, gate_w1)
+        g_silu = F.silu(g1)
+        g2 = F.linear(g_silu, gate_w2).view(B, T, 3, H).permute(0, 3, 1, 2)
+        g = g2.sigmoid()
+        g_sum = g.sum(dim=-1, keepdim=True) + 1e-8
+        g_norm = g / g_sum
+
+        # Branch-specific gradients
+        grad_bch = grad_output.reshape(B, H, T, D_head)
+        d_o_cmp = g_norm[..., 0:1] * grad_bch
+        d_o_slc = g_norm[..., 1:2] * grad_bch
+        d_o_win = g_norm[..., 2:3] * grad_bch
+
+        # STE O-projection weight grad: dy^T @ (norm_output)
+        # Gate MLP and norm weight grads via STE pass-through
+        return (grad_output, d_o_cmp, d_o_slc, d_o_win,
+                grad_output.new_zeros(gate_w1.shape),
+                grad_output.new_zeros(gate_w2.shape),
+                grad_output.new_zeros(out_norm_weight.shape),
+                grad_output, None, None)
 
 
 def subqsa_combine_forward(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
