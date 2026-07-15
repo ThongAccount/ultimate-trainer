@@ -95,7 +95,10 @@ class UltimateTrainer:
             self.device = "cpu"
 
         # ── Model ────────────────────────────────────────────────────
-        self.model = UltimateModel(mc).to(self.device)
+        self.model = UltimateModel(mc)
+        if tc.dtype in ('bfloat16', 'float16'):
+            self.model = self.model.to(dtype=tc.get_torch_dtype())
+        self.model = self.model.to(self.device)
         if self.local_rank >= 0:
             self.model = nn.parallel.DistributedDataParallel(
                 self.model, device_ids=[self.local_rank],
