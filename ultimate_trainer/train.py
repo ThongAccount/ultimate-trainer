@@ -82,12 +82,15 @@ class UltimateTrainer:
         self.global_step = 0
         self.best_val_loss = float("inf")
 
-        # ── DDP ──────────────────────────────────────────────────────
+        # ── Device & DDP ──────────────────────────────────────────────
         self.local_rank = int(os.environ.get("LOCAL_RANK", -1))
         if self.local_rank >= 0:
             torch.cuda.set_device(self.local_rank)
             dist.init_process_group(backend="nccl")
             self.device = f"cuda:{self.local_rank}"
+        elif torch.cuda.is_available():
+            self.device = "cuda:0"
+            self.local_rank = -1  # ensure non-DDP path
         else:
             self.device = "cpu"
 
