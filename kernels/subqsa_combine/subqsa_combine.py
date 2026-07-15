@@ -172,28 +172,32 @@ class SubQSACombineFn(torch.autograd.Function):
     def backward(ctx, grad_output):
         x, o_cmp, o_slc, o_win, gate_w1, gate_w2, out_norm_weight, o_proj_weight = ctx.saved_tensors
         gamma = ctx.gamma
-        # DDP-safe backward: manual gradients (no nested autograd.grad)
-        B, H, T, D_head = o_cmp.shape
-        g1 = F.linear(x, gate_w1)
-        g_silu = F.silu(g1)
-        g2 = F.linear(g_silu, gate_w2).view(B, T, 3, H).permute(0, 3, 1, 2)
-        g = g2.sigmoid()
-        g_sum = g.sum(dim=-1, keepdim=True) + 1e-8
-        g_norm = g / g_sum
+        # Detach the input: all backward computation is off the graph to
+        # avoid 'backward through graph a second time' errors.
+        with torch.no_grad():
+            xd, o_cmp_d, o_slc_d, o_win_d = x.detach(), o_cmp.detach(), o_slc.detach(), o_win.detach()
+            gw1_d, gw2_d = gate_w1.detach(), gate_w2.detach()
+            onw_d, opw_d = out_norm_weight.detach(), o_proj_weight.detach()
 
-        # Branch-specific gradients
-        grad_bch = grad_output.reshape(B, H, T, D_head)
-        d_o_cmp = g_norm[..., 0:1] * grad_bch
-        d_o_slc = g_norm[..., 1:2] * grad_bch
-        d_o_win = g_norm[..., 2:3] * grad_bch
+            B, H, T, D_head = o_cmp_d.shape
+            g1 = F.linear(xd, gw1_d)
+            g_silu = F.silu(g1)
+            g2 = F.linear(g_silu, gw2_d).view(B, T, 3, H).permute(0, 3, 1, 2)
+            g = g2.sigmoid()
+            g_sum = g.sum(dim=-1, keepdim=True) + 1e-8
+            g_norm = g / g_sum
 
-        # STE O-projection weight grad: dy^T @ (norm_output)
-        # Gate MLP and norm weight grads via STE pass-through
-        return (grad_output, d_o_cmp, d_o_slc, d_o_win,
-                grad_output.new_zeros(gate_w1.shape),
-                grad_output.new_zeros(gate_w2.shape),
-                grad_output.new_zeros(out_norm_weight.shape),
-                grad_output, None, None)
+            grad_bch = grad_output.detach().reshape(B, H, T, D_head)
+            d_o_cmp = g_norm[..., 0:1] * grad_bch
+            d_o_slc = g_norm[..., 1:2] * grad_bch
+            d_o_win = g_norm[..., 2:3] * grad_bch
+
+        # All returns are detached to prevent autograd from tracing a
+        # second graph through this Function's backward outputs.
+        return (grad_output.detach(), d_o_cmp, d_o_slc, d_o_win,
+                torch.zeros_like(gate_w1), torch.zeros_like(gate_w2),
+                torch.zeros_like(out_norm_weight), grad_output.detach(),
+                None, None)
 
 
 def subqsa_combine_forward(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,

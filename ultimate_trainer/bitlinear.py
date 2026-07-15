@@ -32,14 +32,14 @@ try:
 except ImportError:
     pass
 
-# FP16 TensorCore ternary matmul (preferred over FP32 cuda_ternary)
+# FP16 TensorCore ternary matmul (no custom autograd.Function — uses STE detach trick)
 _HAS_FUSED_TERNARY = False
-_FusedTernaryFn = None
+_fused_ternary_forward = None
 try:
-    from kernels.fused_ternary.fused_ternary import FusedTernaryFn, _HAS_FUSED_TERNARY as _FT_OK
+    from kernels.fused_ternary.fused_ternary import fused_ternary_forward, _HAS_FUSED_TERNARY as _FT_OK
     if _FT_OK:
         _HAS_FUSED_TERNARY = True
-        _FusedTernaryFn = FusedTernaryFn
+        _fused_ternary_forward = fused_ternary_forward
 except ImportError:
     pass
 
@@ -157,12 +157,9 @@ class BitLinear(nn.Module):
             # Fresh STE: forward uses gamma-scaled ternary {-γ, 0, +γ},
             # backward identity through self.weight.  The gamma scaling
             # maintains the correct output magnitude (BitNet paper Eq. 1-3).
-            # DDP check: skip custom autograd.Function when under DDP to
-            # avoid 'backward second time' errors from hook conflicts.
-            _in_ddp = x.is_cuda and torch.distributed.is_initialized()
-            if _HAS_FUSED_TERNARY and x.is_cuda and not _in_ddp:
-                return _FusedTernaryFn.apply(x, self.weight, self._gamma, self.bias)
-            if _HAS_CUDA_TERNARY and x.is_cuda and x.dtype == torch.float32 and not _in_ddp:
+            if _HAS_FUSED_TERNARY and x.is_cuda and _fused_ternary_forward is not None:
+                return _fused_ternary_forward(x, self.weight, self._gamma, self.bias)
+            if _HAS_CUDA_TERNARY and x.is_cuda and x.dtype == torch.float32 
                 return TernaryMatmulFn.apply(x, self.weight, self._gamma, self.bias)
             # Fallback: eager PyTorch with gamma-scaled ternary weights
             w_q = torch.clamp(torch.round(self.weight / self._gamma), -1.0, 1.0)

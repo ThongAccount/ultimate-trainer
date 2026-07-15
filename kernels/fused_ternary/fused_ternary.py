@@ -70,72 +70,46 @@ def _quantize_ternary_fp16_eager(w, gamma):
     return (w_q * gamma).half()
 
 
-# ── autograd.Function ───────────────────────────────────────────────────
+# ── Plain STE function (no custom autograd.Function) ─────────────────
 
-class FusedTernaryFn(torch.autograd.Function):
-    """FP16 ternary matmul with on-the-fly quantization + STE backward.
+def fused_ternary_forward(x, weight, gamma, bias=None):
+    """FP16 TensorCore ternary matmul with STE.
 
-    Forward:  quantize FP32 weights to FP16 ternary, then matmul in FP16
-    Backward: dx = dy @ W_fp16_ternary  (re-quantized), dw = dy^T @ x (STE)
+    Uses the standard detach trick for STE: forward uses gamma-scaled
+    ternary weights, backward passes gradient through as identity (no
+    quantization gradient). This avoids autograd.Function which conflicts
+    with DDP's gradient hooks.
+
+    Args:
+        x:      (..., K) activations
+        weight: (N, K) FP32 master weights
+        gamma:  scalar, mean(|weight|) + eps
+        bias:   optional (N,) bias
+    Returns:
+        y: (..., N) output (same dtype as input)
     """
+    x_dtype = x.dtype
+    input_device = x.device
+    *dims, K = x.shape
+    M = x.view(-1, K).shape[0]
+    N = weight.shape[0]
 
-    @staticmethod
-    def forward(ctx, x, weight, gamma, bias=None):
-        """
-        Args:
-            x:      (..., K) activations (any dtype — cast internally)
-            weight: (N, K) FP32 master weights
-            gamma:  scalar tensor, mean(|weight|) + eps
-            bias:   optional (N,) bias
-        Returns:
-            y: (..., N) output (in input dtype)
-        """
-        x_dtype = x.dtype
-        input_device = x.device
+    # Quantize weights to FP16 ternary via CUDA kernel or CPU fallback
+    if _HAS_FUSED_TERNARY and x.is_cuda:
+        w_fp16 = _lib.quantize_ternary_fp16_wrapper(
+            weight.contiguous().float(), float(gamma))
+    else:
+        w_fp16 = _quantize_ternary_fp16_eager(weight, gamma).to(input_device)
 
-        # Quantize weights to FP16 ternary
-        if _HAS_FUSED_TERNARY and x.is_cuda:
-            w_fp16 = _lib.quantize_ternary_fp16_wrapper(
-                weight.contiguous().float(), float(gamma))
-        else:
-            w_fp16 = _quantize_ternary_fp16_eager(weight, gamma).to(input_device)
+    # STE: use quantized weights for forward, identity gradient for backward
+    w_ste = weight + (w_fp16.float() - weight).detach()
+    y = torch.matmul(x.reshape(-1, K).half(), w_ste.half().t()).to(x_dtype)
+    if bias is not None:
+        y = y + bias.to(device=input_device, dtype=x_dtype)
+    return y.reshape(*dims, N)
 
-        # Save for backward: x (as FP16), w_fp16, gamma
-        x_fp16 = x.contiguous().to(torch.float16)
-        ctx.save_for_backward(x_fp16, w_fp16, gamma)
-        ctx.bias = bias is not None
-        ctx.x_shape = x.shape
-
-        # FP16 matmul via cuBLAS TensorCore HMMA
-        *dims, K = x.shape
-        x_2d = x_fp16.reshape(-1, K)
-        y = torch.matmul(x_2d, w_fp16.t()).to(x_dtype)
-
-        if bias is not None:
-            y = y + bias.to(device=input_device, dtype=x_dtype)
-
-        return y.reshape(*dims, -1)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        x_fp16, w_fp16, gamma = ctx.saved_tensors
-        has_bias = ctx.bias
-        *dims, N = grad_output.shape
-        K = x_fp16.shape[-1]
-        dy = grad_output.reshape(-1, N)
-        x_2d = x_fp16.reshape(-1, K)
-
-        # dx = dy @ w_fp16  (FP16 TensorCore matmul)
-        dx = torch.matmul(dy.to(torch.float16), w_fp16).to(grad_output.dtype)
-        dx = dx.reshape(*dims, K)
-
-        # dw = dy^T @ x  (STE — identity through ternary quant)
-        dw = torch.mm(dy.t(), x_2d.to(grad_output.dtype))
-
-        d_gamma = None
-        dbias = grad_output.sum(dim=tuple(range(grad_output.ndim - 1))) if has_bias else None
-
-        return dx, dw, d_gamma, dbias
+# Alias for backward compat
+FusedTernaryFn = None
 
 
 # ── Public API ──────────────────────────────────────────────────────────
