@@ -194,9 +194,15 @@ class SubQSACombineFn(torch.autograd.Function):
 
         # All returns are detached to prevent autograd from tracing a
         # second graph through this Function's backward outputs.
+        # O-proj weight grad: dy^T @ (blended_input) — shaped (D_out, D_in)
+        d_opw = torch.mm(
+            grad_output.detach().reshape(-1, grad_output.shape[-1]).t(),
+            x.view(-1, x.shape[-1]).float()
+        ).to(o_proj_weight.dtype) if o_proj_weight.numel() > 0 else torch.zeros_like(o_proj_weight)
+
         return (grad_output.detach(), d_o_cmp, d_o_slc, d_o_win,
                 torch.zeros_like(gate_w1), torch.zeros_like(gate_w2),
-                torch.zeros_like(out_norm_weight), grad_output.detach(),
+                torch.zeros_like(out_norm_weight), d_opw,
                 None, None)
 
 

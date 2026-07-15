@@ -108,25 +108,6 @@ def fused_ternary_forward(x, weight, gamma, bias=None):
         y = y + bias.to(device=input_device, dtype=x_dtype)
     return y.reshape(*dims, N)
 
-# Alias for backward compat
-FusedTernaryFn = None
-
-
-# ── Public API ──────────────────────────────────────────────────────────
-
-def fused_ternary_forward(x, weight, gamma, bias=None):
-    """FP16 TensorCore ternary matmul.
-
-    Args:
-        x:      (..., K) activations
-        weight: (N, K) FP32 master weights
-        gamma:  scalar, mean(|weight|) + eps
-        bias:   optional (N,) bias
-    Returns:
-        y: (..., N) output (same dtype as input)
-    """
-    return FusedTernaryFn.apply(x, weight, gamma, bias)
-
 
 def quantize_ternary_fp16(w, gamma):
     """Quantize FP32 master weights to FP16 ternary {-gamma, 0, +gamma}.
