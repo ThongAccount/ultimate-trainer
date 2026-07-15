@@ -97,7 +97,7 @@ def fused_ternary_forward(x, weight, gamma, bias=None):
     # Quantize weights to FP16 ternary via CUDA kernel or CPU fallback
     if _HAS_FUSED_TERNARY and x.is_cuda:
         w_fp16 = _lib.quantize_ternary_fp16_wrapper(
-            weight.contiguous().float(), float(gamma))
+            weight.contiguous().float(), gamma.item())
     else:
         w_fp16 = _quantize_ternary_fp16_eager(weight, gamma).to(input_device)
 
@@ -115,5 +115,5 @@ def quantize_ternary_fp16(w, gamma):
     Useful for standalone use (e.g., eval cache refresh).
     """
     if _HAS_FUSED_TERNARY and w.is_cuda:
-        return _lib.quantize_ternary_fp16_wrapper(w.contiguous().float(), float(gamma))
+        return _lib.quantize_ternary_fp16_wrapper(w.contiguous().float(), gamma.item())
     return _quantize_ternary_fp16_eager(w, gamma)
