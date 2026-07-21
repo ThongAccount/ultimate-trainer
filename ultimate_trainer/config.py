@@ -4,8 +4,10 @@ Anchored to 2B params for validated scaling.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 import torch
+
+from .training_mode import TrainingMode, ModeConfig
 
 
 # ── 2B4T model sizing ──────────────────────────────────────────────
@@ -80,6 +82,10 @@ class UltimateTrainingConfig:
     distributed: bool = False
     dtype: str = "float32"
 
+    # ── Training paradigm ──────────────────────────────────
+    mode: str = "pretrain"
+    mode_config: Optional[ModeConfig] = None
+
     # Staged context extension: (max_seq_len, steps)
     context_stages: tuple = field(
         default_factory=lambda: ((4096, 200), (8192, 100), (32768, 50))
@@ -91,3 +97,13 @@ class UltimateTrainingConfig:
             "float16": torch.float16,
             "float32": torch.float32,
         }[self.dtype]
+
+    def get_mode(self) -> TrainingMode:
+        """Resolve the training paradigm from the string config."""
+        return TrainingMode(self.mode)
+
+    def get_mode_config(self) -> ModeConfig:
+        """Return the effective mode config (user-supplied or default)."""
+        if self.mode_config is not None:
+            return self.mode_config
+        return ModeConfig(mode=self.get_mode())

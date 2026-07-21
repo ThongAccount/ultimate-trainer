@@ -19,6 +19,13 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 from ultimate_trainer.config import UltimateModelConfig, UltimateTrainingConfig
 from ultimate_trainer.model import UltimateModel
+from ultimate_trainer.ctrl_z import CtrlZCallback, RollbackAction
+from ultimate_trainer.training_mode import (
+    TrainingMode,
+    ModeConfig,
+    compute_loss,
+    get_loss_fn,
+)
 
 # ── WandB ───────────────────────────────────────────────────────────────────
 try:
@@ -170,6 +177,20 @@ class UltimateTrainer:
                 wandb_kwargs["entity"] = tc.wandb_entity
             self._wandb_run = _wandb.init(**wandb_kwargs)
 
+        # ── Training mode ──────────────────────────────────────────────
+        self.mode = tc.get_mode()
+        self.mode_config = tc.get_mode_config()
+        logger.info("Training mode: %s (metric: %s)", self.mode, self.mode.ctrlz_metric)
+
+        # ── Ctrl-Z stabiliser ──────────────────────────────────────────
+        self.ctrlz = CtrlZCallback(self.mode_config.ctrlz)
+        logger.info(
+            "Ctrl-Z: eval_interval=%d, eval_samples=%d, rho_threshold=%.2f",
+            self.mode_config.ctrlz.eval_interval,
+            self.mode_config.ctrlz.eval_samples,
+            self.mode_config.ctrlz.rho_threshold,
+        )
+
         # ── Gradient accumulation ──────────────────────────────────────
         self._acc_counter = 0
 
@@ -178,23 +199,47 @@ class UltimateTrainer:
 
         Accumulates gradients; optimizer step fires every
         ``gradient_accumulation_steps`` micro-batches.  Returns the
-        *scaled* loss (before grad accumulation) so caller sees per-step
-        signal regardless of accumulation phase.
+        *scaled* loss and auxiliary metrics dict.
         """
         try:
             batch = next(self.it)
         except StopIteration:
             self.it = iter(self.loader)
             batch = next(self.it)
-        ids = batch["input_ids"].to(self.device)
-        lbl = batch["labels"].to(self.device)
-        # Go through forward() so DDP hooks sync gradients
-        logits = self.model(ids)
-        loss = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            lbl.view(-1),
-            ignore_index=0,
-        )
+
+        # ── Mode-aware forward + loss ─────────────────────────────────
+        if self.mode.uses_cross_entropy:
+            ids = batch["input_ids"].to(self.device)
+            lbl = batch["labels"].to(self.device)
+            logits = self.model(ids)
+            loss, aux = compute_loss(self.mode, logits, {"labels": lbl}, self.mode_config)
+        elif self.mode == TrainingMode.DPO:
+            chosen_ids = batch["chosen_input_ids"].to(self.device)
+            chosen_lbl = batch["chosen_labels"].to(self.device)
+            rejected_ids = batch["rejected_input_ids"].to(self.device)
+            rejected_lbl = batch["rejected_labels"].to(self.device)
+            chosen_logits = self.model(chosen_ids)
+            rejected_logits = self.model(rejected_ids)
+            loss, aux = compute_loss(
+                self.mode,
+                {"chosen": chosen_logits, "rejected": rejected_logits},
+                {"chosen_labels": chosen_lbl, "rejected_labels": rejected_lbl},
+                self.mode_config,
+            )
+        elif self.mode == TrainingMode.RL:
+            ids = batch["input_ids"].to(self.device)
+            logits = self.model(ids)
+            log_probs = batch["log_probs"].to(self.device)
+            rewards = batch["rewards"].to(self.device)
+            loss, aux = compute_loss(
+                self.mode,
+                logits,
+                {"log_probs": log_probs, "rewards": rewards},
+                self.mode_config,
+            )
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
         # Scale loss for gradient accumulation
         loss = loss / self.tc.gradient_accumulation_steps
         # DDP: only sync gradients on the last micro-batch of each accumulation cycle
@@ -210,7 +255,8 @@ class UltimateTrainer:
             self._optimizer_step()
 
         self._maybe_extend_context()
-        return loss.item() * self.tc.gradient_accumulation_steps  # unscaled for logging
+        # Return unscaled loss + aux metrics for logging
+        return loss.item() * self.tc.gradient_accumulation_steps, aux
 
     def _optimizer_step(self):
         """Clip gradients, update weights, advance LR scheduler."""
@@ -248,31 +294,112 @@ class UltimateTrainer:
 
     @torch.no_grad()
     def evaluate(self):
-        """Compute validation loss and perplexity over the held-out set."""
+        """Compute validation metrics over the held-out set.
+
+        Returns: (primary_metric, perplexity_or_aux_dict)
+          - PRETRAIN/SFT: (val_loss, perplexity)
+          - DPO: (val_dpo_loss, {"accuracy": ...})
+          - RL:  (mean_reward, {})
+        """
         if self.validation_dataset is None or len(self.validation_dataset) == 0:
             return None, None
 
         self.model.eval()
-        total_loss = 0.0
+        total_metric = 0.0
         num_batches = 0
+        aux_metrics = {}
 
-        for batch in self._val_loader:
+        if self.mode.uses_cross_entropy:
+            for batch in self._val_loader:
+                ids = batch["input_ids"].to(self.device)
+                lbl = batch["labels"].to(self.device)
+                logits = self.model(ids)
+                loss, aux = compute_loss(self.mode, logits, {"labels": lbl}, self.mode_config)
+                total_metric += loss.item()
+                num_batches += 1
+
+            avg_loss = total_metric / max(1, num_batches)
+            perplexity = math.exp(avg_loss) if avg_loss < 100 else float("inf")
+            self.model.train()
+            return avg_loss, perplexity
+
+        elif self.mode == TrainingMode.DPO:
+            for batch in self._val_loader:
+                ci = batch["chosen_input_ids"].to(self.device)
+                cl = batch["chosen_labels"].to(self.device)
+                ri = batch["rejected_input_ids"].to(self.device)
+                rl = batch["rejected_labels"].to(self.device)
+                chosen_logits = self.model(ci)
+                rejected_logits = self.model(ri)
+                loss, aux = compute_loss(
+                    self.mode,
+                    {"chosen": chosen_logits, "rejected": rejected_logits},
+                    {"chosen_labels": cl, "rejected_labels": rl},
+                    self.mode_config,
+                )
+                total_metric += loss.item()
+                for k, v in aux.items():
+                    aux_metrics.setdefault(k, 0.0)
+                    aux_metrics[k] += v
+                num_batches += 1
+
+            avg_loss = total_metric / max(1, num_batches)
+            avg_aux = {k: v / max(1, num_batches) for k, v in aux_metrics.items()}
+            self.model.train()
+            return avg_loss, avg_aux
+
+        elif self.mode == TrainingMode.RL:
+            # RL eval = mean reward from judge — judge is external
+            logger.warning("RL mode evaluate() not yet implemented — returning 0.0")
+            self.model.train()
+            return 0.0, {}
+
+        raise ValueError(f"Unknown mode: {self.mode}")
+
+    @torch.no_grad()
+    def evaluate_one_batch(self) -> float:
+        """Evaluate a single batch and return the scalar loss/reward.
+
+        Used by Ctrl-Z to collect *M* samples per evaluation.
+        """
+        if self.validation_dataset is None or len(self.validation_dataset) == 0:
+            return 0.0
+
+        self.model.eval()
+        # Pick a random batch from the val loader
+        batch = next(iter(self._val_loader))
+
+        if self.mode.uses_cross_entropy:
             ids = batch["input_ids"].to(self.device)
             lbl = batch["labels"].to(self.device)
             logits = self.model(ids)
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                lbl.view(-1),
-                ignore_index=0,
+            loss, _ = compute_loss(self.mode, logits, {"labels": lbl}, self.mode_config)
+            self.model.train()
+            return loss.item()
+
+        elif self.mode == TrainingMode.DPO:
+            ci = batch["chosen_input_ids"].to(self.device)
+            cl = batch["chosen_labels"].to(self.device)
+            ri = batch["rejected_input_ids"].to(self.device)
+            rl = batch["rejected_labels"].to(self.device)
+            chosen_logits = self.model(ci)
+            rejected_logits = self.model(ri)
+            loss, _ = compute_loss(
+                self.mode,
+                {"chosen": chosen_logits, "rejected": rejected_logits},
+                {"chosen_labels": cl, "rejected_labels": rl},
+                self.mode_config,
             )
-            total_loss += loss.item()
-            num_batches += 1
+            self.model.train()
+            return loss.item()
 
-        avg_loss = total_loss / max(1, num_batches)
-        perplexity = math.exp(avg_loss) if avg_loss < 100 else float("inf")
+        elif self.mode == TrainingMode.RL:
+            # Return a dummy reward for now
+            logger.warning("RL evaluate_one_batch() not yet implemented — returning 0.0")
+            self.model.train()
+            return 0.0
 
-        self.model.train()
-        return avg_loss, perplexity
+        raise ValueError(f"Unknown mode: {self.mode}")
 
     def _save_checkpoint(self, is_best=False):
         """Save model (as BF16) and optimizer state dicts."""
@@ -323,41 +450,66 @@ class UltimateTrainer:
                 module._quant_step = 0
         micro_batches = self.tc.max_steps * self.tc.gradient_accumulation_steps
         for mb in range(micro_batches):
-            loss = self.train_step()
+            loss, aux = self.train_step()
             current_opt_step = self.global_step
 
             # Report every log_interval optimizer steps
             if current_opt_step > 0 and current_opt_step % self.tc.log_interval == 0:
                 lr = self.optimizer.param_groups[0]["lr"]
+                aux_str = " | ".join(f"{k}={v:.4f}" for k, v in aux.items()) if aux else ""
                 logger.info(
                     f"Opt step {current_opt_step}/{self.tc.max_steps} | "
-                    f"loss={loss:.4f} | lr={lr:.2e}"
+                    f"loss={loss:.4f} | lr={lr:.2e}" + (f" | {aux_str}" if aux_str else "")
                 )
                 if self._wandb_run is not None:
-                    self._wandb_run.log(
-                        {
-                            "train/loss": loss,
-                            "train/lr": lr,
-                            "train/step": current_opt_step,
-                        }
-                    )
+                    log_dict = {
+                        "train/loss": loss,
+                        "train/lr": lr,
+                        "train/step": current_opt_step,
+                    }
+                    for k, v in aux.items():
+                        log_dict[f"train/{k}"] = v
+                    self._wandb_run.log(log_dict)
 
-            #─ Evaluation ────────────────────────────────────────────
+            #─ Evaluation + Ctrl-Z ────────────────────────────────────
             if current_opt_step > 0 and current_opt_step % self.tc.eval_interval == 0:
-                val_loss, ppl = self.evaluate()
+                # Collect M per-batch losses for Ctrl-Z
+                ctrlz_losses = []
+                for _ in range(self.mode_config.ctrlz.eval_samples):
+                    ctrlz_losses.append(self.evaluate_one_batch())
+
+                # Ctrl-Z comparison
+                if ctrlz.should_evaluate(current_opt_step):
+                    result = ctrlz.evaluate(current_opt_step, ctrlz_losses)
+                    if result.action == RollbackAction.ROLLBACK:
+                        logger.warning(
+                            "Ctrl-Z: rolling back to step %d (rho=%.3f, avg_loss=%.4f)",
+                            result.target_entry.step if result.target_entry else -1,
+                            result.min_rho,
+                            result.avg_loss,
+                        )
+                        ctrlz.rollback(self.model, self.optimizer, result.target_entry)
+                    ctrlz.record(current_opt_step, self.model, self.optimizer, ctrlz_losses)
+
+                    if self._wandb_run is not None:
+                        self._wandb_run.log({
+                            "ctrlz/rho": result.min_rho,
+                            "ctrlz/avg_loss": result.avg_loss,
+                            "ctrlz/rollbacks": ctrlz.total_rollbacks,
+                            "ctrlz/step": current_opt_step,
+                        })
+
+                # Standard evaluation (full val set)
+                val_loss, val_aux = self.evaluate()
                 if val_loss is not None:
                     logger.info(
-                        f"Eval opt step {current_opt_step}: val_loss={val_loss:.4f} | "
-                        f"ppl={ppl:.2f}"
+                        f"Eval opt step {current_opt_step}: val_loss={val_loss:.4f}"
                     )
                     if self._wandb_run is not None:
-                        self._wandb_run.log(
-                            {
-                                "eval/loss": val_loss,
-                                "eval/perplexity": ppl,
-                                "eval/step": current_opt_step,
-                            }
-                        )
+                        self._wandb_run.log({
+                            "eval/loss": val_loss,
+                            "eval/step": current_opt_step,
+                        })
                     if val_loss < self.best_val_loss:
                         self.best_val_loss = val_loss
                         self._save_checkpoint(is_best=True)
