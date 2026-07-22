@@ -21,6 +21,8 @@ import torch.nn.functional as F
 
 _HAS_FORWARD_KERNEL = False
 _forward_fn = None
+_HAS_FORWARD_KERNEL_V2 = False
+_forward_fn_v2 = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CUH_PATH = os.path.join(HERE, "packed_ternary.cuh")
@@ -134,6 +136,108 @@ def packed_ternary_forward(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
         raise RuntimeError("Packed ternary forward kernel not available")
 
     return _forward_fn(W.contiguous(), X.contiguous())
+
+
+# ── v2 (optimised) ────────────────────────────────────────────────────────────
+
+_CU_PATH_V2 = os.path.join(HERE, "gemm_forward_v2.cu")
+
+
+def _load_forward_kernel_v2():
+    global _HAS_FORWARD_KERNEL_V2, _forward_fn_v2
+    if _HAS_FORWARD_KERNEL_V2:
+        return
+
+    try:
+        from torch.utils.cpp_extension import load_inline
+
+        with open(CUH_PATH) as f:
+            cuh_source = f.read()
+        with open(_CU_PATH_V2) as f:
+            cu_source = f.read()
+
+        combined = cuh_source + "\n" + cu_source.replace(
+            '#include "packed_ternary.cuh"', ""
+        )
+
+        _lib = load_inline(
+            name="packed_ternary_forward_v2_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+
+            extern "C" {
+                void launch_packed_ternary_forward_v2(
+                    const uint32_t* W,
+                    const void*     X,
+                    void*           Y,
+                    int batch_size,
+                    int in_features,
+                    int out_features,
+                    int stride_words,
+                    cudaStream_t stream);
+            }
+
+            torch::Tensor forward_wrapper_v2(
+                torch::Tensor W,
+                torch::Tensor X)
+            {
+                TORCH_CHECK(W.is_cuda() && X.is_cuda(), "W and X must be CUDA tensors");
+                TORCH_CHECK(W.dim() == 2, "W must be 2D (out_features, stride_words)");
+                TORCH_CHECK(X.dim() == 2, "X must be 2D (batch, in_features)");
+
+                int batch_size   = X.size(0);
+                int in_features  = X.size(1);
+                int out_features = W.size(0);
+                int stride_words = W.size(1);
+
+                auto Y = torch::empty({batch_size, out_features},
+                                      torch::dtype(torch::kFloat16).device(X.device()));
+
+                launch_packed_ternary_forward_v2(
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
+                    X.data_ptr<at::Half>(),
+                    Y.data_ptr<at::Half>(),
+                    batch_size,
+                    in_features,
+                    out_features,
+                    stride_words,
+                    nullptr
+                );
+
+                return Y;
+            }
+
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("forward_v2", &forward_wrapper_v2, "Packed ternary × FP16 forward v2");
+            }
+            """,
+            cuda_sources=[combined],
+            verbose=False,
+            extra_cuda_cflags=["-O2"],
+        )
+
+        _forward_fn_v2 = _lib.forward_v2
+        _HAS_FORWARD_KERNEL_V2 = True
+
+    except Exception as e:
+        print(f"[packed_ternary_forward_v2] Failed to load CUDA kernel: {e}")
+        _HAS_FORWARD_KERNEL_V2 = False
+
+
+def has_forward_kernel_v2() -> bool:
+    if not _HAS_FORWARD_KERNEL_V2:
+        _load_forward_kernel_v2()
+    return _HAS_FORWARD_KERNEL_V2
+
+
+def packed_ternary_forward_v2(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
+    """v2 optimised packed ternary GEMM forward."""
+    if not _HAS_FORWARD_KERNEL_V2:
+        _load_forward_kernel_v2()
+    if not _HAS_FORWARD_KERNEL_V2:
+        raise RuntimeError("Packed ternary forward v2 kernel not available")
+    return _forward_fn_v2(W.contiguous(), X.contiguous())
 
 
 # ── Reference (pure PyTorch, for testing) ───────────────────────────────────

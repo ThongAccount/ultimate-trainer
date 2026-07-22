@@ -22,6 +22,8 @@ from kernels.packed_ternary import pack_tensor
 from kernels.packed_ternary.pack_forward import (
     has_forward_kernel,
     packed_ternary_forward,
+    has_forward_kernel_v2,
+    packed_ternary_forward_v2,
 )
 
 if not torch.cuda.is_available():
@@ -63,8 +65,8 @@ ITERS = 20
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def benchmark_shape(batch: int, in_f: int, out_f: int) -> dict:
-    """Run packed ternary forward and return timing stats."""
+def benchmark_shape(kernel_fn, name: str, batch: int, in_f: int, out_f: int) -> dict:
+    """Run *kernel_fn* on one shape and return timing stats."""
 
     # Prepare data
     torch.manual_seed(0)
@@ -74,7 +76,7 @@ def benchmark_shape(batch: int, in_f: int, out_f: int) -> dict:
 
     # Warmup
     for _ in range(WARMUP):
-        _ = packed_ternary_forward(W_packed, X)
+        _ = kernel_fn(W_packed, X)
     torch.cuda.synchronize()
 
     # Timed runs
@@ -84,7 +86,7 @@ def benchmark_shape(batch: int, in_f: int, out_f: int) -> dict:
     times_ms = []
     for _ in range(ITERS):
         start.record()
-        _ = packed_ternary_forward(W_packed, X)
+        _ = kernel_fn(W_packed, X)
         end.record()
         torch.cuda.synchronize()
         times_ms.append(start.elapsed_time(end))
@@ -114,19 +116,29 @@ def benchmark_shape(batch: int, in_f: int, out_f: int) -> dict:
 #  Run
 # ═══════════════════════════════════════════════════════════════════════════════
 
-print(f"{'batch':>5} {'in_f':>6} {'out_f':>6} {'MACs':>12} {'median(ms)':>11} {'best(ms)':>9} {'GFLOPS':>8}")
-print("─" * 70)
+print(f"{'ver':>3} {'batch':>5} {'in_f':>6} {'out_f':>6} {'MACs':>12} {'median(ms)':>11} {'best(ms)':>9} {'GFLOPS':>8}")
+print("─" * 75)
 
-results = []
-for batch, in_f, out_f in SHAPES:
-    s = benchmark_shape(batch, in_f, out_f)
-    results.append(s)
-    print(
-        f"{s['batch']:>5} {s['in_features']:>6} {s['out_features']:>6} "
-        f"{s['macs']:>12} {s['median_ms']:>9.3f}  {s['best_ms']:>7.3f}  "
-        f"{s['gflops']:>6.1f}"
-    )
+kernels = [("v1", packed_ternary_forward)]
+if HAS_V2:
+    kernels.append(("v2", packed_ternary_forward_v2))
 
-print("─" * 70)
-avg_gflops = sum(r["gflops"] for r in results) / len(results)
-print(f"{'Average GFLOPS:':>52} {avg_gflops:.1f}")
+all_results = []
+for ver, kernel_fn in kernels:
+    for batch, in_f, out_f in SHAPES:
+        s = benchmark_shape(kernel_fn, ver, batch, in_f, out_f)
+        all_results.append(s)
+        print(
+            f"{ver:>3} {s['batch']:>5} {s['in_features']:>6} {s['out_features']:>6} "
+            f"{s['macs']:>12} {s['median_ms']:>9.3f}  {s['best_ms']:>7.3f}  "
+            f"{s['gflops']:>6.1f}"
+        )
+
+print("─" * 75)
+avg_v1 = sum(r["gflops"] for r in all_results if r.get("ver", "v1") == "v1") / max(1, len(SHAPES))
+avg_v2 = sum(r["gflops"] for r in all_results if r.get("ver", "") == "v2") / max(1, len(SHAPES) if HAS_V2 else 1)
+print(f"{'Average GFLOPS v1:':>55} {avg_v1:.1f}")
+if HAS_V2:
+    print(f"{'Average GFLOPS v2:':>55} {avg_v2:.1f}")
+    if avg_v1 > 0:
+        print(f"{'Speedup v2/v1:':>55} {avg_v2/avg_v1:.2f}x")
