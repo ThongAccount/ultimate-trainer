@@ -98,11 +98,22 @@ def benchmark_shape(kernel_fn, name: str, batch: int, in_f: int, out_f: int) -> 
     best = times_ms[0]
     worst = times_ms[-1]
 
-    # Throughput
-    macs = batch * out_f * in_f * 2  # multiply + add per MAC
-    tflops = (macs / 1e12) / (median / 1e3)
+    # FLOPs for ternary: each weight apply is 1 add/sub (no multiply needed).
+    # Standard dense GEMM convention would be 2*M*N*K (multiply+add),
+    # but ternary discards the multiply → M*N*K is the real operation count.
+    flops = batch * out_f * in_f
+    tflops = (flops / 1e12) / (median / 1e3)
 
     return {
+        "ver": name,
+        "batch": batch,
+        "in_features": in_f,
+        "out_features": out_f,
+        "flops": flops,
+        "median_ms": median,
+        "best_ms": best,
+        "worst_ms": worst,
+        "gflops": tflops * 1e3,
         "batch": batch,
         "in_features": in_f,
         "out_features": out_f,
