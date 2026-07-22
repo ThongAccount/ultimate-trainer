@@ -28,6 +28,8 @@ from kernels.packed_ternary.pack_forward import (
     packed_ternary_forward_v3,
     has_v4,
     packed_ternary_forward_v4,
+    has_tc,
+    packed_ternary_forward_tc,
 )
 
 if not torch.cuda.is_available():
@@ -134,6 +136,8 @@ if has_v3():
     kernels.append(("v3", packed_ternary_forward_v3))
 if has_v4():
     kernels.append(("v4", packed_ternary_forward_v4))
+if has_tc():
+    kernels.append(("tc", packed_ternary_forward_tc))
 
 all_results = []
 for ver, kernel_fn in kernels:
