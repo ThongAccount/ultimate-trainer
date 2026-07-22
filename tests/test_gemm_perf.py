@@ -34,6 +34,8 @@ if not has_forward_kernel():
     print("Packed ternary forward kernel not loaded")
     sys.exit(0)
 
+HAS_V2 = has_forward_kernel_v2()
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Benchmark shapes
 # ═══════════════════════════════════════════════════════════════════════════════
