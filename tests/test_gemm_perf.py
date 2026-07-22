@@ -24,6 +24,8 @@ from kernels.packed_ternary.pack_forward import (
     packed_ternary_forward,
     has_forward_kernel_v2,
     packed_ternary_forward_v2,
+    has_v3,
+    packed_ternary_forward_v3,
 )
 
 if not torch.cuda.is_available():
@@ -126,6 +128,8 @@ print("─" * 75)
 kernels = [("v1", packed_ternary_forward)]
 if HAS_V2:
     kernels.append(("v2", packed_ternary_forward_v2))
+if has_v3():
+    kernels.append(("v3", packed_ternary_forward_v3))
 
 all_results = []
 for ver, kernel_fn in kernels:
@@ -139,8 +143,11 @@ for ver, kernel_fn in kernels:
         )
 
 print("─" * 75)
-avg_v1 = sum(r["gflops"] for r in all_results if r["ver"] == "v1") / max(1, len(SHAPES))
-avg_v2 = sum(r["gflops"] for r in all_results if r["ver"] == "v2") / max(1, len(SHAPES) if HAS_V2 else 1)
+versions = {r["ver"] for r in all_results}
+for ver in sorted(versions):
+    ver_results = [r for r in all_results if r["ver"] == ver]
+    avg = sum(r["gflops"] for r in ver_results) / max(1, len(ver_results))
+    print(f"{'Average GFLOPS ' + ver + ':':>55} {avg:.1f}")
 print(f"{'Average GFLOPS v1:':>55} {avg_v1:.1f}")
 if HAS_V2:
     print(f"{'Average GFLOPS v2:':>55} {avg_v2:.1f}")

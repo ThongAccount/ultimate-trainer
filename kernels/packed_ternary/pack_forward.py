@@ -240,6 +240,72 @@ def packed_ternary_forward_v2(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
     return _forward_fn_v2(W.contiguous(), X.contiguous())
 
 
+# ── v3 (occupancy-optimised) ────────────────────────────────────────────────
+
+_CU_PATH_V3 = os.path.join(HERE, "gemm_forward_v3.cu")
+_HAS_V3 = False
+_forward_fn_v3 = None
+
+
+def _load_v3():
+    global _HAS_V3, _forward_fn_v3
+    if _HAS_V3:
+        return
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(_CU_PATH_V3) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+
+        _lib = load_inline(
+            name="packed_ternary_forward_v3_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_forward_v3(
+                    const uint32_t* W, const void* X, void* Y,
+                    int batch_size, int in_features, int out_features,
+                    int stride_words, cudaStream_t stream);
+            }
+            torch::Tensor wrapper_v3(torch::Tensor W, torch::Tensor X) {
+                TORCH_CHECK(W.is_cuda() && X.is_cuda(), "W and X must be CUDA");
+                auto Y = torch::empty({X.size(0), W.size(0)}, torch::dtype(torch::kFloat16).device(X.device()));
+                launch_packed_ternary_forward_v3(
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
+                    X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
+                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                return Y;
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("forward_v3", &wrapper_v3, "Packed ternary forward v3");
+            }
+            """,
+            cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2"],
+        )
+        _forward_fn_v3 = _lib.forward_v3
+        _HAS_V3 = True
+    except Exception as e:
+        print(f"[v3] Failed to load: {e}")
+        _HAS_V3 = False
+
+
+def has_v3():
+    if not _HAS_V3:
+        _load_v3()
+    return _HAS_V3
+
+
+def packed_ternary_forward_v3(W, X):
+    if not _HAS_V3:
+        _load_v3()
+    if not _HAS_V3:
+        raise RuntimeError("v3 kernel not available")
+    return _forward_fn_v3(W.contiguous(), X.contiguous())
+
+
 # ── Reference (pure PyTorch, for testing) ───────────────────────────────────
 
 def ref_linear(W_packed: torch.Tensor, X: torch.Tensor, gamma: float = 1.0) -> torch.Tensor:
