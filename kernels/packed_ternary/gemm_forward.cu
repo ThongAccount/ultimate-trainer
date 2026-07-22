@@ -78,10 +78,8 @@ extern "C" void launch_packed_ternary_forward(
     int out_features,
     int stride_words,
     cudaStream_t stream)
-
-// Cast void* back to half* inside the launch wrapper — the caller uses
-// void* to avoid exposing the CUDA half type to host-side C++.
 {
+    // Cast void* back to half* — caller avoids CUDA half type in host C++.
     const half* X = static_cast<const half*>(X_ptr);
     half*       Y = static_cast<half*>(Y_ptr);
 {
