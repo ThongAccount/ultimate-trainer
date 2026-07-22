@@ -33,7 +33,7 @@ def _pack_and_check(W_fp32: torch.Tensor) -> torch.Tensor:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def test_backward_dx():
-    """dX from our kernel matches F.linear's analytic gradient."""
+    """dX from our kernel matches F.linear with the *same* ternary weights."""
     if not _has_cuda():
         return
 
@@ -42,18 +42,20 @@ def test_backward_dx():
     W_fp32 = torch.randn(N, K)
     X = torch.randn(B, K, dtype=torch.float16, device="cuda", requires_grad=True)
 
-    # Reference: F.linear → backward
-    W_ref = W_fp32.to(torch.float16).cuda()
-    Y_ref = F.linear(X, W_ref)
+    # Pack then unpack so both reference and kernel use identical ternary W.
+    W_packed = _pack_and_check(W_fp32)
+    W_ternary = W_packed.clone()
+    from kernels.packed_ternary import unpack_tensor
+    W_fp16_ref = unpack_tensor(W_ternary.cpu(), N, K).to(torch.float16).cuda()
+
+    Y_ref = F.linear(X, W_fp16_ref)
     dY = torch.randn_like(Y_ref)
     Y_ref.backward(dY)
     dX_ref = X.grad.clone()
 
-    # Our kernel
-    W_packed = _pack_and_check(W_fp32)
     dX_cuda = backward_dx(W_packed, dY, K)
 
-    torch.testing.assert_close(dX_cuda, dX_ref, atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(dX_cuda, dX_ref, atol=1e-3, rtol=1e-3)
     print(f"  ✅ backward_dx: max_diff={(dX_cuda - dX_ref).abs().max().item():.4f}")
 
 
@@ -104,16 +106,17 @@ def test_update_gradient_direction():
     W_packed = _pack_and_check(W_fp32)
     counter = init_counter(N, K)
 
-    # Positive gradient for W[0][0], negative for W[0][1]
+    # Positive gradient for W[0][0], negative for W[0][1].
+    # dW[r][c] = Σ_b dY[b][r] * X[b][c].  Use two output features: r=0 and r=1.
     X = torch.zeros(B, K, dtype=torch.float16, device="cuda")
     dY = torch.zeros(B, N, dtype=torch.float16, device="cuda")
-    X[:, 0] = 1.0;   dY[:, 0] = 1.0    # dW[0][0] > 0
-    X[:, 1] = 1.0;   dY[:, 0] = -1.0   # dW[0][1] < 0
+    X[:, 0] = 1.0;   dY[:, 0] = 1.0    # dW[0][0] = Σ 1*1 = B > 0
+    X[:, 1] = 1.0;   dY[:, 1] = -1.0   # dW[1][1] = Σ (-1)*1 = -B < 0
 
     update(W_packed, counter, X, dY, threshold=128)
 
-    assert counter[0, 0].item() > 0, f"Expected positive counter, got {counter[0,0].item()}"
-    assert counter[0, 1].item() < 0, f"Expected negative counter, got {counter[0,1].item()}"
+    assert counter[0, 0].item() > 0, f"Expected positive counter at [0,0], got {counter[0,0].item()} (dW[0][0] should be +)"
+    assert counter[1, 1].item() < 0, f"Expected negative counter at [1,1], got {counter[1,1].item()} (dW[1][1] should be -)"
     print(f"  ✅ gradient direction: +{counter[0,0].item()}, {counter[0,1].item()}")
 
 
