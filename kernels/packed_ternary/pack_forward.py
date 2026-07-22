@@ -435,7 +435,22 @@ def packed_ternary_forward_tc(W, X):
         _load_tc()
     if not _HAS_TC:
         raise RuntimeError("TC kernel not available")
-    return _forward_fn_tc(W.contiguous(), X.contiguous())
+
+    B, K = X.shape
+    N_out = W.shape[0]
+
+    # WMMA requires tiles multiples of 16. Pad if needed.
+    pad_b = (16 - B % 16) % 16
+    pad_n = (16 - N_out % 16) % 16
+    pad_k = (16 - K % 16) % 16
+
+    if pad_b or pad_n or pad_k:
+        X_pad = torch.nn.functional.pad(X, (0, pad_k, 0, pad_b), "constant", 0) if (pad_b or pad_k) else X
+        W_pad = torch.nn.functional.pad(W, (0, 0, 0, pad_n), "constant", 0) if pad_n else W
+        Y_pad = _forward_fn_tc(W_pad.contiguous(), X_pad.contiguous())
+        return Y_pad[:B, :N_out]
+    else:
+        return _forward_fn_tc(W.contiguous(), X.contiguous())
 
 # ── Reference (pure PyTorch, for testing) ───────────────────────────────────
 
