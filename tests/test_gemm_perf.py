@@ -130,6 +130,8 @@ if HAS_V2:
     kernels.append(("v2", packed_ternary_forward_v2))
 if has_v3():
     kernels.append(("v3", packed_ternary_forward_v3))
+if has_v4():
+    kernels.append(("v4", packed_ternary_forward_v4))
 
 all_results = []
 for ver, kernel_fn in kernels:
