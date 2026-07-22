@@ -26,6 +26,8 @@ from kernels.packed_ternary.pack_forward import (
     packed_ternary_forward_v2,
     has_v3,
     packed_ternary_forward_v3,
+    has_v4,
+    packed_ternary_forward_v4,
 )
 
 if not torch.cuda.is_available():
