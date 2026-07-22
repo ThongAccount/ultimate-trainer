@@ -5,7 +5,7 @@ Each mode selects a different loss function and Ctrl-Z metric:
     PRETRAIN  │  CE (next-token)   │  Ctrl-Z on val_loss
     SFT       │  CE (instruction)  │  Ctrl-Z on val_loss
     DPO       │  preference loss   │  Ctrl-Z on val_dpo_loss
-    RL        │  REINFORCE/PPO     │  Ctrl-Z on mean_reward
+    RL        │  GRPO (tutor)      │  Ctrl-Z on mean_reward
 
 Usage
 -----
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 class TrainingMode(enum.Enum):
     """Training paradigm selector.
 
-    Each mode changes the loss function, the evaluation metric, and the role
-    of the Ctrl-Z stabiliser and LLM-as-a-Judge evaluator.
+    Each mode selects a different loss function, evaluation metric, and
+    Ctrl-Z stabiliser behaviour.
     """
 
     PRETRAIN = "pretrain"
@@ -51,14 +51,12 @@ class TrainingMode(enum.Enum):
     """Direct preference optimisation: pairwise preference loss, Ctrl-Z on DPO loss."""
 
     RL = "rl"
-    """Pure RL: REINFORCE / PPO maximising reward from LLM-as-a-Judge."""
+    """Tutor-driven RL: GRPO with dynamic prompt adaptation.
 
-    TUTOR = "tutor"
-    """LLM-as-a-Tutor: GRPO with dynamic prompt adaptation.
-
-    The Tutor detects non-challenging prompts via pairwise rollout comparison
-    and appends atomic constraints.  Uses GRPO for policy optimization with
-    group-relative advantage (no critic network needed).
+    The Tutor (arXiv:2607.04412) detects non-challenging prompts via pairwise
+    rollout comparison and appends atomic constraints, then GRPO optimises
+    the policy with group-relative advantage (no critic network needed).
+    Ctrl-Z monitors mean reward.
     """
 
     # ── Queries ─────────────────────────────────────────────────────────
@@ -68,15 +66,15 @@ class TrainingMode(enum.Enum):
         """Which direction the Ctrl-Z Mann-Whitney U-test expects.
 
         ``"loss"``   → lower is better (pretrain, SFT, DPO).
-        ``"reward"`` → higher is better (RL, TUTOR).
+        ``"reward"`` → higher is better (RL / Tutor).
         """
-        if self in (TrainingMode.RL, TrainingMode.TUTOR):
+        if self == TrainingMode.RL:
             return "reward"
         return "loss"
 
     @property
     def requires_reward_model(self) -> bool:
-        return self in (TrainingMode.RL, TrainingMode.TUTOR)
+        return self == TrainingMode.RL
 
     @property
     def uses_cross_entropy(self) -> bool:
@@ -124,12 +122,9 @@ class ModeConfig:
     # ── DPO ─────────────────────────────────────────────────────────────
     dpo_beta: float = 0.1
 
-    # ── RL ──────────────────────────────────────────────────────────────
-    rl_algorithm: str = "reinforce"
+    # ── RL (Tutor-driven GRPO) ───────────────────────────────────────────
     rl_clip_eps: float = 0.2
     rl_kl_coeff: float = 0.1
-
-    # ── TUTOR ────────────────────────────────────────────────────────────
     tutor_model: str = "qwen3-8b-thinking"  # LLM used as tutor
     tutor_api_base: str = ""                 # API endpoint for tutor LLM
     tutor_rollouts_per_prompt: int = 8       # G in GRPO
@@ -312,30 +307,6 @@ def grpo_loss(
     return loss, aux
 
 
-def reinforce_loss(
-    log_probs: torch.Tensor,
-    rewards: torch.Tensor,
-) -> torch.Tensor:
-    """REINFORCE gradient estimator.
-
-    .. math::
-
-        L = -\\frac{1}{N}\\sum_{i=1}^N r_i \\cdot \\log \\pi(a_i|s_i)
-
-    Parameters
-    ----------
-    log_probs:
-        Log-probabilities of the sampled actions, shape ``(batch,)``.
-    rewards:
-        Scalar rewards for each action, shape ``(batch,)``.
-
-    Returns
-    -------
-    Scalar loss.
-    """
-    return -(rewards * log_probs).mean()
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Loss dispatch
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -352,8 +323,6 @@ def get_loss_fn(mode: TrainingMode) -> Callable:
     if mode == TrainingMode.DPO:
         return dpo_loss
     if mode == TrainingMode.RL:
-        return reinforce_loss
-    if mode == TrainingMode.TUTOR:
         return grpo_loss
     raise ValueError(f"Unknown training mode: {mode}")
 
@@ -377,7 +346,7 @@ def compute_loss(
 
         - PRETRAIN / SFT: ``{"input_ids", "labels"}``
         - DPO: ``{"chosen_input_ids", "chosen_labels", "rejected_input_ids", "rejected_labels"}``
-        - RL: ``{"log_probs", "rewards"}``
+        - RL: ``{"log_probs", "old_log_probs", "advantages"}``
 
     mode_config:
         Per-mode hyperparameters (e.g. ``dpo_beta``).
@@ -406,14 +375,6 @@ def compute_loss(
         aux.update(dpo_aux)
 
     elif mode == TrainingMode.RL:
-        loss = reinforce_loss(
-            log_probs=batch["log_probs"],
-            rewards=batch["rewards"],
-        )
-        aux["rl_loss"] = loss.item()
-        aux["mean_reward"] = batch["rewards"].mean().item()
-
-    elif mode == TrainingMode.TUTOR:
         loss, grpo_aux = grpo_loss(
             log_probs=batch["log_probs"],
             old_log_probs=batch["old_log_probs"],

@@ -227,14 +227,15 @@ class UltimateTrainer:
                 self.mode_config,
             )
         elif self.mode == TrainingMode.RL:
-            ids = batch["input_ids"].to(self.device)
-            logits = self.model(ids)
-            log_probs = batch["log_probs"].to(self.device)
-            rewards = batch["rewards"].to(self.device)
             loss, aux = compute_loss(
                 self.mode,
-                logits,
-                {"log_probs": log_probs, "rewards": rewards},
+                None,
+                {
+                    "log_probs": batch["log_probs"].to(self.device),
+                    "old_log_probs": batch["old_log_probs"].to(self.device),
+                    "advantages": batch["advantages"].to(self.device),
+                    "rewards": batch.get("rewards", torch.tensor(0.0)).to(self.device),
+                },
                 self.mode_config,
             )
         else:
@@ -347,12 +348,6 @@ class UltimateTrainer:
             avg_aux = {k: v / max(1, num_batches) for k, v in aux_metrics.items()}
             self.model.train()
             return avg_loss, avg_aux
-
-        elif self.mode == TrainingMode.RL:
-            # RL eval = mean reward from judge — judge is external
-            logger.warning("RL mode evaluate() not yet implemented — returning 0.0")
-            self.model.train()
-            return 0.0, {}
 
         raise ValueError(f"Unknown mode: {self.mode}")
 
