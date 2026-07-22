@@ -43,10 +43,10 @@ __global__ void packed_ternary_tc_kernel(
     int tid = threadIdx.x;        // 0..255
 
     // ── Shared memory ─────────────────────────────────────────────────
-    __shared__ half W_smem[kN][kK];     // W tile unpacked (row-major)
-    __shared__ half X_smem[kM][kK];     // X tile (row-major: batch × k)
-    float Y_float_smem[kN][kM];         // output tile (float accumulator)
-    half  Y_smem[kN][kM];
+    __shared__ half   W_smem[kN][kK];     // W tile unpacked (row-major)
+    __shared__ half   X_smem[kM][kK];     // X tile (row-major: batch × k)
+    __shared__ float  Y_float_smem[kN][kM]; // output tile (WMMA must write to SMEM)
+    __shared__ half   Y_smem[kN][kM];
 
     // ── WMMA fragments ───────────────────────────────────────────────
     wmma::fragment<wmma::matrix_a, kM, kN, kK, half, wmma::row_major> a_frag;
@@ -114,8 +114,10 @@ __global__ void packed_ternary_tc_kernel(
 
     // ── Store accumulator to shared, then to global Y ────────────────
     // store_matrix_sync(row_major, stride=kM): c_frag(row, batch) → Y_smem[row][batch]
-    // Store float accumulator → float SMEM, then convert to half
+    // Store float accumulator → float SMEM (requires SMEM on Turing),
+    // then convert to half.  __syncthreads() before any thread reads.
     wmma::store_matrix_sync(&Y_float_smem[0][0], c_frag, kM, wmma::mem_row_major);
+    __syncthreads();
     if (tid < kM * kN) {
         ((half*)Y_smem)[tid] = __float2half(((float*)Y_float_smem)[tid]);
     }

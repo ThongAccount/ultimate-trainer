@@ -4,7 +4,7 @@ pack_forward.py — Packed ternary × FP16 forward GEMM via CUDA.
 Provides:
     packed_ternary_forward(W_packed, X_fp16) → Y_fp16
 
-The weight tensor W_packed is a (out_features, stride_words) int64 tensor
+The weight tensor W_packed is a (out_features, stride_words) int32 tensor
 packed with 16 ternary values per word (see pack_tensor).
 
 Reference (for testing):
