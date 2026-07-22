@@ -19,7 +19,6 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 from ultimate_trainer.config import UltimateModelConfig, UltimateTrainingConfig
 from ultimate_trainer.model import UltimateModel
-from ultimate_trainer.ctrl_z import CtrlZCallback, RollbackAction
 from ultimate_trainer.training_mode import (
     TrainingMode,
     ModeConfig,
@@ -180,16 +179,7 @@ class UltimateTrainer:
         # ── Training mode ──────────────────────────────────────────────
         self.mode = tc.get_mode()
         self.mode_config = tc.get_mode_config()
-        logger.info("Training mode: %s (metric: %s)", self.mode, self.mode.ctrlz_metric)
-
-        # ── Ctrl-Z stabiliser ──────────────────────────────────────────
-        self.ctrlz = CtrlZCallback(self.mode_config.ctrlz)
-        logger.info(
-            "Ctrl-Z: eval_interval=%d, eval_samples=%d, rho_threshold=%.2f",
-            self.mode_config.ctrlz.eval_interval,
-            self.mode_config.ctrlz.eval_samples,
-            self.mode_config.ctrlz.rho_threshold,
-        )
+        logger.info("Training mode: %s", self.mode)
 
         # ── Gradient accumulation ──────────────────────────────────────
         self._acc_counter = 0
@@ -466,35 +456,8 @@ class UltimateTrainer:
                         log_dict[f"train/{k}"] = v
                     self._wandb_run.log(log_dict)
 
-            #─ Evaluation + Ctrl-Z ────────────────────────────────────
+            #─ Evaluation ────────────────────────────────────────────
             if current_opt_step > 0 and current_opt_step % self.tc.eval_interval == 0:
-                # Collect M per-batch losses for Ctrl-Z
-                ctrlz_losses = []
-                for _ in range(self.mode_config.ctrlz.eval_samples):
-                    ctrlz_losses.append(self.evaluate_one_batch())
-
-                # Ctrl-Z comparison
-                if ctrlz.should_evaluate(current_opt_step):
-                    result = ctrlz.evaluate(current_opt_step, ctrlz_losses)
-                    if result.action == RollbackAction.ROLLBACK:
-                        logger.warning(
-                            "Ctrl-Z: rolling back to step %d (rho=%.3f, avg_loss=%.4f)",
-                            result.target_entry.step if result.target_entry else -1,
-                            result.min_rho,
-                            result.avg_loss,
-                        )
-                        ctrlz.rollback(self.model, self.optimizer, result.target_entry)
-                    ctrlz.record(current_opt_step, self.model, self.optimizer, ctrlz_losses)
-
-                    if self._wandb_run is not None:
-                        self._wandb_run.log({
-                            "ctrlz/rho": result.min_rho,
-                            "ctrlz/avg_loss": result.avg_loss,
-                            "ctrlz/rollbacks": ctrlz.total_rollbacks,
-                            "ctrlz/step": current_opt_step,
-                        })
-
-                # Standard evaluation (full val set)
                 val_loss, val_aux = self.evaluate()
                 if val_loss is not None:
                     logger.info(

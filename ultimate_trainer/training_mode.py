@@ -1,30 +1,28 @@
-"""Training mode dispatch for the RL-informed training ecosystem.
+"""Training mode dispatch.
 
-Each mode selects a different loss function and Ctrl-Z metric:
+Each mode selects a different loss function:
 
-    PRETRAIN  │  CE (next-token)   │  Ctrl-Z on val_loss
-    SFT       │  CE (instruction)  │  Ctrl-Z on val_loss
-    DPO       │  preference loss   │  Ctrl-Z on val_dpo_loss
-    RL        │  GRPO (tutor)      │  Ctrl-Z on mean_reward
+    PRETRAIN  │  CE (next-token)
+    SFT       │  CE (instruction)
+    DPO       │  preference loss
+    RL        │  GRPO (tutor)
 
 Usage
 -----
     mode_cfg = ModeConfig(mode=TrainingMode.PRETRAIN)
     trainer = UltimateTrainer(mc, tc, mode_config=mode_cfg)
-    trainer.train()      # dispatches loss / eval / Ctrl-Z per mode
+    trainer.train()
 """
 
 from __future__ import annotations
 
 import enum
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-
-from .ctrl_z import CtrlZConfig
 
 logger = logging.getLogger(__name__)
 
@@ -37,18 +35,17 @@ logger = logging.getLogger(__name__)
 class TrainingMode(enum.Enum):
     """Training paradigm selector.
 
-    Each mode selects a different loss function, evaluation metric, and
-    Ctrl-Z stabiliser behaviour.
+    Each mode selects a different loss function and evaluation metric.
     """
 
     PRETRAIN = "pretrain"
-    """Pre-training: cross-entropy on raw text, Ctrl-Z on val loss."""
+    """Pre-training: cross-entropy on raw text."""
 
     SFT = "sft"
-    """Supervised fine-tuning: cross-entropy on instruction data, Ctrl-Z on val loss."""
+    """Supervised fine-tuning: cross-entropy on instruction data."""
 
     DPO = "dpo"
-    """Direct preference optimisation: pairwise preference loss, Ctrl-Z on DPO loss."""
+    """Direct preference optimisation: pairwise preference loss."""
 
     RL = "rl"
     """Tutor-driven RL: GRPO with dynamic prompt adaptation.
@@ -56,21 +53,9 @@ class TrainingMode(enum.Enum):
     The Tutor (arXiv:2607.04412) detects non-challenging prompts via pairwise
     rollout comparison and appends atomic constraints, then GRPO optimises
     the policy with group-relative advantage (no critic network needed).
-    Ctrl-Z monitors mean reward.
     """
 
     # ── Queries ─────────────────────────────────────────────────────────
-
-    @property
-    def ctrlz_metric(self) -> str:
-        """Which direction the Ctrl-Z Mann-Whitney U-test expects.
-
-        ``"loss"``   → lower is better (pretrain, SFT, DPO).
-        ``"reward"`` → higher is better (RL / Tutor).
-        """
-        if self == TrainingMode.RL:
-            return "reward"
-        return "loss"
 
     @property
     def requires_reward_model(self) -> bool:
@@ -101,23 +86,15 @@ class ModeConfig:
     ----------
     mode:
         Which paradigm to use.
-    ctrlz:
-        Ctrl-Z config overrides for this mode.  The ``metric`` field is
-        set automatically from ``TrainingMode.ctrlz_metric``.
     dpo_beta:
         KL regularisation strength in the DPO loss (only used in DPO mode).
-    rl_algorithm:
-        Which RL algorithm to use — ``"reinforce"`` or ``"ppo"``.
     rl_clip_eps:
-        PPO clipping epsilon (only used in PPO mode).
+        PPO clipping epsilon.
     rl_kl_coeff:
         KL penalty coefficient against the reference model.
     """
 
     mode: TrainingMode = TrainingMode.PRETRAIN
-
-    # ── Ctrl-Z (auto-derived from mode) ─────────────────────────────────
-    ctrlz: CtrlZConfig = field(default_factory=lambda: CtrlZConfig())
 
     # ── DPO ─────────────────────────────────────────────────────────────
     dpo_beta: float = 0.1
@@ -130,10 +107,6 @@ class ModeConfig:
     tutor_rollouts_per_prompt: int = 8       # G in GRPO
     tutor_adapt_interval: int = 1            # epochs between tutor adaptation
     tutor_base_rubric: str = ""              # optional base rubric override
-
-    def __post_init__(self) -> None:
-        # Ensure Ctrl-Z metric matches the selected mode.
-        self.ctrlz.metric = self.mode.ctrlz_metric
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
