@@ -56,8 +56,8 @@ def _load_forward_kernel():
             extern "C" {
                 void launch_packed_ternary_forward(
                     const uint32_t* W,
-                    const half*     X,
-                    half*           Y,
+                    const void*     X,
+                    void*           Y,
                     int batch_size,
                     int in_features,
                     int out_features,
@@ -83,13 +83,13 @@ def _load_forward_kernel():
 
                 launch_packed_ternary_forward(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int64_t>()),
-                    reinterpret_cast<const half*>(X.data_ptr<at::Half>()),
-                    reinterpret_cast<half*>(Y.data_ptr<at::Half>()),
+                    X.data_ptr<at::Half>(),
+                    Y.data_ptr<at::Half>(),
                     batch_size,
                     in_features,
                     out_features,
                     stride_words,
-                    at::cuda::getCurrentCUDAStream()
+                    nullptr  // default stream
                 );
 
                 return Y;

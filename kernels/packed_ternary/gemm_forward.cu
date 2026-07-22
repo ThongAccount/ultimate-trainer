@@ -71,13 +71,19 @@ __global__ void packed_ternary_forward_kernel(
 
 extern "C" void launch_packed_ternary_forward(
     const uint32_t* W,
-    const half*     X,
-    half*           Y,
+    const void*     X_ptr,
+    void*           Y_ptr,
     int batch_size,
     int in_features,
     int out_features,
     int stride_words,
     cudaStream_t stream)
+
+// Cast void* back to half* inside the launch wrapper — the caller uses
+// void* to avoid exposing the CUDA half type to host-side C++.
+{
+    const half* X = static_cast<const half*>(X_ptr);
+    half*       Y = static_cast<half*>(Y_ptr);
 {
     int total = batch_size * out_features;
     int threads = 256;
