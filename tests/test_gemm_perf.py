@@ -112,15 +112,6 @@ def benchmark_shape(kernel_fn, name: str, batch: int, in_f: int, out_f: int) -> 
         "flops": flops,
         "median_ms": median,
         "best_ms": best,
-        "worst_ms": worst,
-        "gflops": tflops * 1e3,
-        "batch": batch,
-        "in_features": in_f,
-        "out_features": out_f,
-        "macs": macs,
-        "median_ms": median,
-        "best_ms": best,
-        "worst_ms": worst,
         "gflops": tflops * 1e3,
     }
 
@@ -129,7 +120,7 @@ def benchmark_shape(kernel_fn, name: str, batch: int, in_f: int, out_f: int) -> 
 #  Run
 # ═══════════════════════════════════════════════════════════════════════════════
 
-print(f"{'ver':>3} {'batch':>5} {'in_f':>6} {'out_f':>6} {'MACs':>12} {'median(ms)':>11} {'best(ms)':>9} {'GFLOPS':>8}")
+print(f"{'ver':>3} {'batch':>5} {'in_f':>6} {'out_f':>6} {'FLOPs':>12} {'median(ms)':>11} {'best(ms)':>9} {'GFLOPS':>8}")
 print("─" * 75)
 
 kernels = [("v1", packed_ternary_forward)]
@@ -143,13 +134,13 @@ for ver, kernel_fn in kernels:
         all_results.append(s)
         print(
             f"{ver:>3} {s['batch']:>5} {s['in_features']:>6} {s['out_features']:>6} "
-            f"{s['macs']:>12} {s['median_ms']:>9.3f}  {s['best_ms']:>7.3f}  "
+            f"{s['flops']:>12} {s['median_ms']:>9.3f}  {s['best_ms']:>7.3f}  "
             f"{s['gflops']:>6.1f}"
         )
 
 print("─" * 75)
-avg_v1 = sum(r["gflops"] for r in all_results if r.get("ver", "v1") == "v1") / max(1, len(SHAPES))
-avg_v2 = sum(r["gflops"] for r in all_results if r.get("ver", "") == "v2") / max(1, len(SHAPES) if HAS_V2 else 1)
+avg_v1 = sum(r["gflops"] for r in all_results if r["ver"] == "v1") / max(1, len(SHAPES))
+avg_v2 = sum(r["gflops"] for r in all_results if r["ver"] == "v2") / max(1, len(SHAPES) if HAS_V2 else 1)
 print(f"{'Average GFLOPS v1:':>55} {avg_v1:.1f}")
 if HAS_V2:
     print(f"{'Average GFLOPS v2:':>55} {avg_v2:.1f}")
