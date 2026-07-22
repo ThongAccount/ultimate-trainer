@@ -244,7 +244,9 @@ def pack_tensor(fp32_tensor: torch.Tensor, gamma: float = 1.0) -> torch.Tensor:
             chunk += [0] * (16 - len(chunk))
             packed[r, w] = pack16_reference(chunk)
 
-    return torch.from_numpy(packed.astype(np.int64))
+    # Must be int32 so the CUDA kernel can read stride_words uint32 entries
+    # per row without pointer-arithmetic mismatch (int64 → uint32 halves data).
+    return torch.from_numpy(packed.astype(np.int32))
 
 
 def unpack_tensor(packed: torch.Tensor, rows: int, cols: int, gamma: float = 1.0) -> torch.Tensor:

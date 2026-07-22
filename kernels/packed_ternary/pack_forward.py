@@ -82,7 +82,7 @@ def _load_forward_kernel():
                                       torch::dtype(torch::kFloat16).device(X.device()));
 
                 launch_packed_ternary_forward(
-                    reinterpret_cast<const uint32_t*>(W.data_ptr<int64_t>()),
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     X.data_ptr<at::Half>(),
                     Y.data_ptr<at::Half>(),
                     batch_size,
