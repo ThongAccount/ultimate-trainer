@@ -53,6 +53,14 @@ class TrainingMode(enum.Enum):
     RL = "rl"
     """Pure RL: REINFORCE / PPO maximising reward from LLM-as-a-Judge."""
 
+    TUTOR = "tutor"
+    """LLM-as-a-Tutor: GRPO with dynamic prompt adaptation.
+
+    The Tutor detects non-challenging prompts via pairwise rollout comparison
+    and appends atomic constraints.  Uses GRPO for policy optimization with
+    group-relative advantage (no critic network needed).
+    """
+
     # ── Queries ─────────────────────────────────────────────────────────
 
     @property
@@ -60,15 +68,15 @@ class TrainingMode(enum.Enum):
         """Which direction the Ctrl-Z Mann-Whitney U-test expects.
 
         ``"loss"``   → lower is better (pretrain, SFT, DPO).
-        ``"reward"`` → higher is better (RL).
+        ``"reward"`` → higher is better (RL, TUTOR).
         """
-        if self == TrainingMode.RL:
+        if self in (TrainingMode.RL, TrainingMode.TUTOR):
             return "reward"
         return "loss"
 
     @property
     def requires_reward_model(self) -> bool:
-        return self == TrainingMode.RL
+        return self in (TrainingMode.RL, TrainingMode.TUTOR)
 
     @property
     def uses_cross_entropy(self) -> bool:
@@ -120,6 +128,13 @@ class ModeConfig:
     rl_algorithm: str = "reinforce"
     rl_clip_eps: float = 0.2
     rl_kl_coeff: float = 0.1
+
+    # ── TUTOR ────────────────────────────────────────────────────────────
+    tutor_model: str = "qwen3-8b-thinking"  # LLM used as tutor
+    tutor_api_base: str = ""                 # API endpoint for tutor LLM
+    tutor_rollouts_per_prompt: int = 8       # G in GRPO
+    tutor_adapt_interval: int = 1            # epochs between tutor adaptation
+    tutor_base_rubric: str = ""              # optional base rubric override
 
     def __post_init__(self) -> None:
         # Ensure Ctrl-Z metric matches the selected mode.
@@ -221,6 +236,82 @@ def dpo_loss(
     return loss, {"dpo_accuracy": accuracy, "dpo_margin": margin, "dpo_logits_diff": logits_diff.mean().item()}
 
 
+def grpo_loss(
+    log_probs: torch.Tensor,           # (G, seq_len) log probs per token
+    old_log_probs: torch.Tensor,       # (G, seq_len) stored from last iteration
+    advantages: torch.Tensor,          # (G,) group-relative advantages
+    clip_eps: float = 0.2,
+    kl_coeff: float = 0.1,
+    ref_log_probs: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """Group Relative Policy Optimisation loss (DeepSeek-R1, arXiv:2607.04412).
+
+    .. math::
+
+        J_{\\text{GRPO}}(\\theta) = \\mathbb{E}\\Big[
+            \\frac{1}{G} \\sum_i \\frac{1}{|y^{(i)}|} \\sum_t
+            \\min\\big(\\rho_t^{(i)}(\\theta) A^{(i)},\\,
+            \\text{clip}(\\rho_t^{(i)}(\\theta), 1-\\varepsilon, 1+\\varepsilon) A^{(i)}\\big)
+            - \\beta \\cdot D_{\\text{KL}}[\\pi_\\theta \\| \\pi_{\\text{ref}}]
+        \\Big]
+
+    where :math:`\\rho_t^{(i)}(\\theta) = \\pi_\\theta(y_t^{(i)}|x) / \\pi_{\\theta_{\\text{old}}}(y_t^{(i)}|x)`.
+
+    Parameters
+    ----------
+    log_probs:
+        Current policy log-probabilities, shape ``(G, seq_len)``.
+    old_log_probs:
+        Log-probabilities from the stored policy, shape ``(G, seq_len)``.
+    advantages:
+        Group-relative advantages, shape ``(G,)``.
+    clip_eps:
+        PPO-style clipping range :math:`\\varepsilon`.
+    kl_coeff:
+        KL penalty coefficient :math:`\\beta`.
+    ref_log_probs:
+        Reference model log-probabilities, shape ``(G, seq_len)``.
+        If None, KL is estimated from ``log_probs - old_log_probs``.
+
+    Returns
+    -------
+    loss:
+        Scalar GRPO loss.
+    aux:
+        ``{"grpo_loss", "approx_kl", "clip_frac", "mean_advantage"}``.
+    """
+    # Importance ratio ρ = π_θ / π_θ_old
+    log_ratio = log_probs - old_log_probs  # (G, seq_len)
+    ratio = torch.exp(log_ratio)            # (G, seq_len)
+
+    # Per-token surrogate losses
+    advantages = advantages.unsqueeze(-1)  # (G, 1) for broadcasting
+    surr1 = ratio * advantages
+    surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantages
+    pg_loss = -torch.min(surr1, surr2).mean()
+
+    # KL penalty
+    if ref_log_probs is not None:
+        # Exact KL: ref_log_probs - log_probs averaged over tokens
+        kl = (ref_log_probs - log_probs).mean()
+    else:
+        # Approximate KL from the stored policy (Schulman et al., 2020)
+        # kl = (exp(log_ratio) - 1) - log_ratio
+        kl = (ratio - 1.0 - log_ratio).mean()
+
+    loss = pg_loss + kl_coeff * kl
+
+    with torch.no_grad():
+        aux = {
+            "grpo_loss": loss.item(),
+            "approx_kl": kl.item(),
+            "clip_frac": ((ratio - 1.0).abs() > clip_eps).float().mean().item(),
+            "mean_advantage": advantages.mean().item(),
+        }
+
+    return loss, aux
+
+
 def reinforce_loss(
     log_probs: torch.Tensor,
     rewards: torch.Tensor,
@@ -262,6 +353,8 @@ def get_loss_fn(mode: TrainingMode) -> Callable:
         return dpo_loss
     if mode == TrainingMode.RL:
         return reinforce_loss
+    if mode == TrainingMode.TUTOR:
+        return grpo_loss
     raise ValueError(f"Unknown training mode: {mode}")
 
 
@@ -319,6 +412,19 @@ def compute_loss(
         )
         aux["rl_loss"] = loss.item()
         aux["mean_reward"] = batch["rewards"].mean().item()
+
+    elif mode == TrainingMode.TUTOR:
+        loss, grpo_aux = grpo_loss(
+            log_probs=batch["log_probs"],
+            old_log_probs=batch["old_log_probs"],
+            advantages=batch["advantages"],
+            clip_eps=mode_config.rl_clip_eps,
+            kl_coeff=mode_config.rl_kl_coeff,
+            ref_log_probs=batch.get("ref_log_probs"),
+        )
+        aux.update(grpo_aux)
+        if "rewards" in batch:
+            aux["mean_reward"] = batch["rewards"].mean().item()
 
     else:
         raise ValueError(f"Unknown training mode: {mode}")
