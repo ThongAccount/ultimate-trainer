@@ -17,7 +17,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include "packed_ternary.cuh"
-#include <nvcuda/wmma.h>
+#include <mma.h>
 
 namespace wmma = nvcuda::wmma;
 
