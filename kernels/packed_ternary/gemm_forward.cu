@@ -82,7 +82,6 @@ extern "C" void launch_packed_ternary_forward(
     // Cast void* back to half* — caller avoids CUDA half type in host C++.
     const half* X = static_cast<const half*>(X_ptr);
     half*       Y = static_cast<half*>(Y_ptr);
-{
     int total = batch_size * out_features;
     int threads = 256;
     int blocks = (total + threads - 1) / threads;
