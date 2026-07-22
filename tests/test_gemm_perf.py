@@ -148,8 +148,4 @@ for ver in sorted(versions):
     ver_results = [r for r in all_results if r["ver"] == ver]
     avg = sum(r["gflops"] for r in ver_results) / max(1, len(ver_results))
     print(f"{'Average GFLOPS ' + ver + ':':>55} {avg:.1f}")
-print(f"{'Average GFLOPS v1:':>55} {avg_v1:.1f}")
-if HAS_V2:
-    print(f"{'Average GFLOPS v2:':>55} {avg_v2:.1f}")
-    if avg_v1 > 0:
-        print(f"{'Speedup v2/v1:':>55} {avg_v2/avg_v1:.2f}x")
+
