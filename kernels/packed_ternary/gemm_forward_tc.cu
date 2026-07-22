@@ -43,12 +43,9 @@ __global__ void packed_ternary_tc_kernel(
     int tid = threadIdx.x;        // 0..255
 
     // ── Shared memory ─────────────────────────────────────────────────
-    // W tile unpacked to FP16 (row-major): 16 rows × 16 cols
-    __shared__ half W_smem[kN][kK];
-
-    // Temporary output tile (row-major: 16 rows × 16 cols)
-    // Temp float SMEM for WMMA store (accumulator is float)
-    float Y_float_smem[kN][kM];
+    __shared__ half W_smem[kN][kK];     // W tile unpacked (row-major)
+    __shared__ half X_smem[kM][kK];     // X tile (row-major: batch × k)
+    float Y_float_smem[kN][kM];         // output tile (float accumulator)
     half  Y_smem[kN][kM];
 
     // ── WMMA fragments ───────────────────────────────────────────────
@@ -85,15 +82,29 @@ __global__ void packed_ternary_tc_kernel(
         W_smem[r][c] = w_val;
         __syncthreads();
 
-        // ── Load WMMA fragments from SMEM / global ───────────────────
-        // A fragment: W tile row-major
-        wmma::load_matrix_sync(a_frag, &W_smem[0][0], kK);
+        // ── Load X tile → X_smem ────────────────────────────────────────
+        // Each of 256 threads loads 1 element from X into X_smem.
+        {
+            int xb = tid / kK;               // batch offset in tile
+            int xk = tid % kK;               // k offset in tile
+            half x_val = __float2half(0.0f);
+            if (xb < kM && xk < tile_k) {
+                int gb = b0 + xb;
+                int gk = k0 + xk;
+                if (gb < batch_size && gk < in_features) {
+                    x_val = X[gb * in_features + gk];
+                }
+            }
+            X_smem[xb][xk] = x_val;
+        }
+        __syncthreads();
 
-        // B fragment: X tile col_major loaded directly from global.
-        // X layout in global: X[batch][in_features] row-major.
-        // We want B(k, b) = X[b][k].  col_major load with stride=in_features
-        // gives: B(k, b) = ptr[b * stride + k] = X[b * in_features + k] = X[b][k].
-        wmma::load_matrix_sync(b_frag, &X[b0 * in_features + k0], in_features);
+        // ── Load WMMA fragments from SMEM ───────────────────────────
+        // A fragment: W tile row_major
+        wmma::load_matrix_sync(a_frag, &W_smem[0][0], kK);
+        // B fragment: X tile col_major.  X_smem stores X[b][k] row-major,
+        // col_major load with stride=kM gives B(k, b) = X_smem[b][k] = X[b][k].
+        wmma::load_matrix_sync(b_frag, &X_smem[0][0], kM);
 
         // ── Tensor-core matmul on 16×16×16 tile ─────────────────────
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
