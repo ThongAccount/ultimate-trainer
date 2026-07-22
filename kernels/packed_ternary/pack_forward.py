@@ -148,8 +148,8 @@ def ref_linear(W_packed: torch.Tensor, X: torch.Tensor, gamma: float = 1.0) -> t
     rows = W_packed.shape[0]
     cols_estimate = W_packed.shape[1] * 16  # upper bound on in_features
 
-    # Dequantise packed weights → FP32 → FP16
+    # Dequantise packed weights → FP32 → FP16 on the same device as X
     W_fp32 = unpack_tensor(W_packed, rows, cols_estimate, gamma=gamma)
-    W_fp16 = W_fp32[:, :X.size(1)].to(torch.float16).contiguous()
+    W_fp16 = W_fp32[:, :X.size(1)].to(device=X.device, dtype=torch.float16).contiguous()
 
     return F.linear(X, W_fp16)
