@@ -1,32 +1,64 @@
-# Ultimate AI Model
+# Ultimate AI Model — Discrete Ternary Training
 
-A reference trainer that merges **native 1-bit (ternary) quantization** ([BitNet b1.58](https://arxiv.org/abs/2402.17764)) with **SubQSA / Native Sparse Attention** ([NSA](https://arxiv.org/abs/2502.11089)).
+Training LLMs using **packed ternary weights only** — no FP32/BF16 master weights, no floating-point optimizer state, no latent full-precision copies.  Weights are always `{-1, 0, +1}`, stored as 16 values per `uint32_t`.
+
+The project is a bottom-up CUDA C++ stack for discrete optimization:
+
+- `PackedTernaryTensor` — 2-bit packed storage (16 ternary values per uint32)
+- `packed_ternary_gemm` — naive → multi-output → half-arithmetic CUDA kernels
+- `DiscreteCounterOptimizer` — int16 counter based, sign-only updates *(planned)*
+
+All matmul is ternary weight × FP16 activation, accumulated in FP16 or FP32.
 
 ---
 
-## ⚠️ READ THIS FIRST — Things That Could Go Wrong
+## Performance (T4, 20-run median)
 
-This project is a **research ablation framework**, not a production library. Please read these before diving in:
+| Version | Approach | GFLOPS avg |
+|---------|----------|------------|
+| v1 | One output/thread, float accum | 15.2 |
+| v2 | 4 outputs/thread, float accum | 19.8 |
+| v3 | 256-thread occupancy boost | 12.2 |
+| **v4** | **Half arithmetic (hadd/hsub)** | **??** |
 
-### 1. Work in Progress — Not Validated at Scale
-The codebase serves as a research reference. Not all training stages have been validated beyond smoke tests (small models, CPU, few steps). Expect bugs, unfinished edges, and breaking changes.
+The limiting factor is memory bandwidth + instruction overhead.  v4 eliminates float conversion in the inner loop.
 
-### 2. Benchmark Results Are Preliminary
-All throughput, FLOPs, and speedup figures were obtained on development machines under variable load. They **still need verification on a dedicated machine** with no background load for realistic numbers. Treat every number as an early indication, not a guarantee.
+---
 
-### 3. Combined Stability (BitLinear + SubQSA) Is Unproven
-No public paper has combined native ternary weights (BitNet b1.58) with NSA-style sparse attention. Two known risks:
-- **Gradient flow through ternary compression MLP** may be noisy — the compression branch MLP φ may need to stay BF16 if ternary produces unstable routing.
-- **Selection under quantized projections** — top-k routing on ternary-projected Q/K may produce volatile selections early in training.
+## Repository Structure
 
-### 4. CPU Is for Smoke Tests Only
-All attention variants run on CPU (pure PyTorch SDPA), but training on CPU is **impractically slow** beyond 2–3 layers and 128 sequence length. Real training needs at least one GPU. The Triton kernels (`kernels/ternary_matmul.py`) are optional GPU accelerators.
+```
+kernels/packed_ternary/
+├── packed_ternary.cuh        — Struct, LUT decode, pack16/unpack16, state machine
+├── gemm_forward.cu           — v1: naive, each thread = one output element
+├── gemm_forward_v2.cu        — v2: 4 outputs/thread, shares X loads
+├── gemm_forward_v3.cu        — v3: 256-thread occupancy (1 output/thread)
+├── gemm_forward_v4.cu        — v4: native half arithmetic (hadd/hsub)
+├── __init__.py               — Python wrappers: pack_tensor, unpack_tensor
+├── pack_forward.py            — load_inline compilation for all variants
+```
 
-### 5. Long-Context Training Requires Serious Hardware
-The staged extension targets **1M context**, but stages beyond 256K require sequence parallelism (Ring Attention or DeepSpeed-Ulysses) and multi-node distributed training. Single-GPU users should stay at 4K–32K context.
+## Key Design Decisions
 
-### 6. The Architecture Is an Ablation Rig
-Each trainer tier (`1bit_trainer/`, `subqsa_trainer/`, `ultimate_trainer/`) is independently runnable for ablation. They share patterns but **not code** — fixes must be applied to each tier separately. This is intentional for isolation but means more maintenance.
+| Decision | Rationale |
+|----------|-----------|
+| 2-bit encoding (00/01/10/11) | Random access O(1), easy flip, 11=INVALID sentinel |
+| No FP32 master weights | Counter-based optimizer only — checkpoint = packed ternary (2-bit) + int16 counter |
+| Weight grads consumed in kernel | Never materialise dW global tensor — sign→counter→flip fused in backward |
+| 16 weights per uint32 | Simple decode, warp-friendly, 1 decode per 16 MACs |
+
+## Quick Start
+
+```bash
+# Phase 1: PackedTernaryTensor (CPU tests)
+uv run python3 tests/test_packed_ternary.py
+
+# Phase 2A: Correctness against F.linear
+uv run python3 tests/test_gemm_forward.py
+
+# Phase 2B: Performance benchmark
+uv run python3 tests/test_gemm_perf.py
+```
 
 ---
 
