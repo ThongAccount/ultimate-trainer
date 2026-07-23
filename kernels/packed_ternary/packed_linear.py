@@ -84,6 +84,11 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         in_features: int,
         threshold: int = 64,
     ) -> torch.Tensor:
+        # Ensure autograd graph hooks this Function even if X has no grad.
+        # Without this, PyTorch prunes the graph and backward() is never
+        # called, so the update() kernel never executes.
+        if torch.is_grad_enabled() and not X.requires_grad:
+            X = X.detach().requires_grad_(True)
         ctx.save_for_backward(X)
         ctx.W_packed = W_packed
         ctx.counter = counter
@@ -175,6 +180,10 @@ class PackedTernaryLinear(nn.Module):
         # Ensure FP16 (our kernels require it)
         if X.dtype != torch.float16:
             X = X.to(torch.float16)
+
+        # Ensure autograd graph hooks PackedTernaryLinearFn even if root X has no grad
+        if torch.is_grad_enabled() and not X.requires_grad:
+            X = X.detach().requires_grad_(True)
 
         Y = PackedTernaryLinearFn.apply(
             X, self.W_packed, self.counter,
