@@ -84,14 +84,18 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         in_features: int,
         threshold: int = 64,
     ) -> torch.Tensor:
-        ctx.save_for_backward(X, W_packed, counter)
+        ctx.save_for_backward(X)
+        ctx.W_packed = W_packed
+        ctx.counter = counter
         ctx.in_features = in_features
         ctx.threshold = threshold
         return _forward_auto(W_packed, X)
 
     @staticmethod
     def backward(ctx, dY: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
-        X, W_packed, counter = ctx.saved_tensors
+        (X,) = ctx.saved_tensors
+        W_packed = ctx.W_packed
+        counter = ctx.counter
 
         # Gradient w.r.t. input (needed upstream)
         dX = backward_dx(W_packed, dY, ctx.in_features)

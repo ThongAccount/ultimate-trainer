@@ -117,26 +117,8 @@ def test_auto_dispatch():
     print(f"  ✅ auto-dispatch: small={Y_small.shape}, large={Y_large.shape}")
 
 
-if __name__ == "__main__":
-    tests = [
-        ("forward shapes", test_forward_shapes),
-        ("forward/backward", test_forward_backward),
-        ("multistep", test_multistep),
-        ("bias", test_bias),
-        ("save/load", test_save_load),
-        ("auto-dispatch", test_auto_dispatch),
-    ]
-    for name, fn in tests:
-        try:
-            fn()
-        except Exception as e:
-            print(f"  ❌ {name}: {e}")
-            import traceback; traceback.print_exc()
-
-    print("\nDone")
-
 def test_direct_update():
-    """Direct call to update() without autograd — verify in-place weight change."""
+    """Direct call to update() and autograd update — verify in-place weight change."""
     if not torch.cuda.is_available():
         return
     from kernels.packed_ternary.pack_update import update, init_counter
@@ -171,9 +153,26 @@ def test_direct_update():
         loss.backward()
 
     changed = not torch.equal(layer.W_packed, old_W2)
-    print(f"  ✅ autograd update: {'W changed' if changed else 'W UNCHANGED!'}, "
-          f"counter max={layer.counter.abs().max().item()}")
+    assert changed, "Autograd update: W UNCHANGED!"
+    print(f"  ✅ autograd update: W changed, counter max={layer.counter.abs().max().item()}")
 
 
 if __name__ == "__main__":
-    ...
+    tests = [
+        ("forward shapes", test_forward_shapes),
+        ("forward/backward", test_forward_backward),
+        ("multistep", test_multistep),
+        ("bias", test_bias),
+        ("save/load", test_save_load),
+        ("auto-dispatch", test_auto_dispatch),
+        ("direct/autograd update", test_direct_update),
+    ]
+    for name, fn in tests:
+        try:
+            fn()
+        except Exception as e:
+            print(f"  ❌ {name}: {e}")
+            import traceback; traceback.print_exc()
+
+    print("\nDone")
+
