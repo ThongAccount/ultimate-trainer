@@ -6,9 +6,28 @@ The project is a bottom-up CUDA C++ stack for discrete optimization:
 
 - `PackedTernaryTensor` — 2-bit packed storage (16 ternary values per uint32)
 - `packed_ternary_gemm` — naive → multi-output → half-arithmetic CUDA kernels
-- `DiscreteCounterOptimizer` — int16 counter based, sign-only updates *(planned)*
+- `DiscreteCounterOptimizer` — int16 counter based, sign-only updates
 
 All matmul is ternary weight × FP16 activation, accumulated in FP16 or FP32.
+
+---
+
+## ⚠️ READ THIS FIRST — Things That Could Go Wrong
+
+### 1. Research Prototype — Not Production Ready
+The counter-based optimizer (`gemm_update.cu`) has been verified on a small test but convergence on real models is unproven. There is no guarantee the discrete optimizer will converge at scale.
+
+### 2. No FP32 Master Weights
+You cannot fall back to standard AdamW if the discrete optimizer diverges — no FP32 weights exist. The only training path is sign→counter→flip. If that doesn't converge, you must reload a checkpoint and retry with different threshold/learning-rate settings.
+
+### 3. WMMA Requires Batch ≥ 16
+The Tensor Core kernel only accelerates when batch ≥ 16. Below that, the scalar `v2` kernel is used (or should be — the fallback isn't automatic yet).
+
+### 4. Benchmark Results on T4 Only
+All GFLOPS figures were measured on a single NVIDIA T4 (sm_75). H100/Blackwell have different WMMA tile shapes and memory bandwidth — numbers will differ significantly.
+
+### 5. Not a Plug-and-Play Library
+This is a CUDA C++ research prototype with Python `load_inline` wrappers. Expect compilation times of 2–5 minutes per build, no pip package, and rough edges in the training loop integration.
 
 ---
 
