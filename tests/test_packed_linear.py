@@ -52,13 +52,12 @@ def test_multistep():
     layer = PackedTernaryLinear(16, 8, threshold=4).cuda()
     old_W = layer.W_packed.clone()
 
-    # Use negative-mean loss: pushes all weights consistently.  bprop dY = -1/64
-    # for a (8,8) output, giving steady gradient direction.
+    # Fix input across steps so gradient direction is consistent (no oscillation).
+    x = torch.randn(8, 16, dtype=torch.float16, device="cuda")
     flips = 0
     for step in range(30):
-        x = torch.randn(8, 16, dtype=torch.float16, device="cuda")
         y = layer(x)
-        loss = -y.mean()  # pushes all outputs up → consistent sign gradient
+        loss = -y.mean()
         loss.backward()
 
         if not torch.equal(layer.W_packed, old_W):
@@ -135,3 +134,46 @@ if __name__ == "__main__":
             import traceback; traceback.print_exc()
 
     print("\nDone")
+
+def test_direct_update():
+    """Direct call to update() without autograd — verify in-place weight change."""
+    if not torch.cuda.is_available():
+        return
+    from kernels.packed_ternary.pack_update import update, init_counter
+    from kernels.packed_ternary import pack_tensor, compute_stride_words
+
+    B, K, N = 4, 16, 8
+    stride = compute_stride_words(K)
+    W = torch.zeros(N, stride, dtype=torch.int32, device="cuda")
+    counter = init_counter(N, K)
+
+    # All-ones X and dY → strong positive gradient for all weights
+    X = torch.ones(B, K, dtype=torch.float16, device="cuda")
+    dY = torch.ones(B, N, dtype=torch.float16, device="cuda")
+
+    old_W = W.clone()
+    for step in range(10):
+        update(W, counter, X, dY, threshold=8)
+
+    assert not torch.equal(W, old_W), "Direct update: no weight change!"
+    print(f"  ✅ direct update: W changed, counter max={counter.abs().max().item()}")
+
+    # Now test via autograd (the real path)
+    layer = PackedTernaryLinear(K, N, threshold=8).cuda()
+    layer.W_packed.data.zero_()  # start from zero
+    layer.counter.zero_()
+    old_W2 = layer.W_packed.clone()
+
+    for step in range(10):
+        x = torch.ones(B, K, dtype=torch.float16, device="cuda")
+        y = layer(x)
+        loss = -y.mean()
+        loss.backward()
+
+    changed = not torch.equal(layer.W_packed, old_W2)
+    print(f"  ✅ autograd update: {'W changed' if changed else 'W UNCHANGED!'}, "
+          f"counter max={layer.counter.abs().max().item()}")
+
+
+if __name__ == "__main__":
+    ...
