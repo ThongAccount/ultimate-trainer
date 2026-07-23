@@ -275,3 +275,7 @@ def count_parameters(packed: torch.Tensor) -> int:
     rows = packed.shape[0]
     stride = packed.shape[1]
     return rows * stride * kWeightsPerWord
+
+
+# ── High-level API ────────────────────────────────────────────────────────────
+from .packed_linear import PackedTernaryLinear, PackedTernaryLinearFn, from_pretrained_linear  # noqa: F401
