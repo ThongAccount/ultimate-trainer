@@ -52,13 +52,13 @@ def test_multistep():
     layer = PackedTernaryLinear(16, 8, threshold=4).cuda()
     old_W = layer.W_packed.clone()
 
-    # Use consistent strong gradients: each step pushes weights in the same direction.
+    # Use negative-mean loss: pushes all weights consistently.  bprop dY = -1/64
+    # for a (8,8) output, giving steady gradient direction.
     flips = 0
     for step in range(30):
         x = torch.randn(8, 16, dtype=torch.float16, device="cuda")
-        target = torch.full((8, 8), float(step % 3 - 1), dtype=torch.float16, device="cuda")
         y = layer(x)
-        loss = (y - target).pow(2).mean()  # strong MSE gradient
+        loss = -y.mean()  # pushes all outputs up → consistent sign gradient
         loss.backward()
 
         if not torch.equal(layer.W_packed, old_W):
