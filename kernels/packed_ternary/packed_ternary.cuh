@@ -118,6 +118,52 @@ __host__ __device__ inline void decrement_weight(uint32_t* row, int col) {
     // -1 stays -1 (saturated)
 }
 
+#ifdef __CUDACC__
+__device__ inline void increment_weight_atomic(uint32_t* row, int col) {
+    int wi = col / kWeightsPerWord;
+    int shift = (col % kWeightsPerWord) * kTernaryBits;
+    uint32_t* address = row + wi;
+    uint32_t old_val = *address;
+    uint32_t assumed;
+    do {
+        assumed = old_val;
+        int8_t w = decode_ternary(assumed >> shift);
+        int8_t new_w = w;
+        if      (w == -1) new_w = 0;
+        else if (w ==  0) new_w = 1;
+        if (new_w == w) break;
+
+        uint32_t code = (new_w == 1) ? kCodeP1 : ((new_w == -1) ? kCodeM1 : kCode0);
+        uint32_t mask = ~(3u << shift);
+        uint32_t updated = (assumed & mask) | (code << shift);
+
+        old_val = atomicCAS(address, assumed, updated);
+    } while (assumed != old_val);
+}
+
+__device__ inline void decrement_weight_atomic(uint32_t* row, int col) {
+    int wi = col / kWeightsPerWord;
+    int shift = (col % kWeightsPerWord) * kTernaryBits;
+    uint32_t* address = row + wi;
+    uint32_t old_val = *address;
+    uint32_t assumed;
+    do {
+        assumed = old_val;
+        int8_t w = decode_ternary(assumed >> shift);
+        int8_t new_w = w;
+        if      (w ==  1) new_w = 0;
+        else if (w ==  0) new_w = -1;
+        if (new_w == w) break;
+
+        uint32_t code = (new_w == 1) ? kCodeP1 : ((new_w == -1) ? kCodeM1 : kCode0);
+        uint32_t mask = ~(3u << shift);
+        uint32_t updated = (assumed & mask) | (code << shift);
+
+        old_val = atomicCAS(address, assumed, updated);
+    } while (assumed != old_val);
+}
+#endif
+
 // ── Pack a whole row from FP32 source ───────────────────────────────────────
 
 __host__ void pack_row(

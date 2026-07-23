@@ -1,18 +1,19 @@
 /**
- * gemm_update.cu — Fused gradient → counter → bit-flip.
+ * gemm_update.cu — Fused gradient → counter → bit-flip (Parallel 2D Grid).
  *
- * This is the core research contribution of the discrete optimisation stack.
+ * Parallelised across 2D grid of (in_features, out_features).
+ * Each thread handles one weight (r, c), accumulating gradient over batch B.
  *
  * For each weight w[r][c]:
  *   1. Compute dW[r][c] = Σ_b dY[b][r] * X[b][c]   (in registers, never stored)
  *   2. sign = (dW > 0) - (dW < 0)
- *   3. counter[idx] += sign
- *   4. If |counter[idx]| > threshold: flip the ternary bit, reset counter
+ *   3. counter[r][c] += sign
+ *   4. If |counter[r][c]| > threshold: flip ternary bit atomically, reset counter
  *
  * No dW tensor is ever materialised in global memory.
  *
- * Grid:  (ceil(out_features / 256), 1)
- * Block: 256 threads, each handling one output row
+ * Grid:  (ceil(in_features / 16), ceil(out_features / 16))
+ * Block: (16, 16) = 256 threads
  */
 
 #include <cuda_runtime.h>
@@ -30,42 +31,38 @@ __global__ void packed_ternary_update_kernel(
     int stride_words,
     int16_t threshold)
 {
-    int r = blockIdx.x * blockDim.x + threadIdx.x;
-    if (r >= out_features) return;
+    int c = blockIdx.x * blockDim.x + threadIdx.x; // input feature column
+    int r = blockIdx.y * blockDim.y + threadIdx.y; // output feature row
+
+    if (r >= out_features || c >= in_features) return;
+
+    // ── Compute dW[r][c] = Σ_b dY[b][r] * X[b][c] ──────────
+    float grad = 0.0f;
+    #pragma unroll 4
+    for (int b = 0; b < batch_size; b++) {
+        grad += __half2float(dY[b * out_features + r]) *
+                __half2float(X[b * in_features + c]);
+    }
+
+    // ── sign → counter → flip ─────────────────────────────
+    int idx = r * in_features + c;
+    int16_t cnt = counter[idx];
+
+    // Gradient descent: positive dW → decrease weight → decrement counter
+    if (grad > 0.0f)       cnt--;
+    else if (grad < 0.0f)  cnt++;
 
     uint32_t* w_row = W + r * stride_words;
-    int16_t*  cnt_row = counter + r * in_features;
 
-    for (int wi = 0; wi < stride_words; wi++) {
-        uint32_t word = w_row[wi];
-        int base = wi * kWeightsPerWord;
-        int limit = min(kWeightsPerWord, in_features - base);
-
-        for (int i = 0; i < limit; i++) {
-            int c = base + i;
-
-            // ── Compute dW[r][c] = Σ_b dY[b][r] * X[b][c] ──────────
-            float grad = 0.0f;
-            for (int b = 0; b < batch_size; b++) {
-                grad += __half2float(dY[b * out_features + r]) *
-                        __half2float(X[b * in_features + c]);
-            }
-
-            // ── sign → counter → flip ─────────────────────────────
-            // Gradient descent: move weight opposite to gradient sign.
-            // Positive dW → we want to decrease weight → decrement.
-            if (grad > 0.0f)       cnt_row[c]--;
-            else if (grad < 0.0f)  cnt_row[c]++;
-
-            if (cnt_row[c] > threshold) {
-                increment_weight(w_row, c);   // counter went + → increase weight
-                cnt_row[c] = 0;
-            } else if (cnt_row[c] < -threshold) {
-                decrement_weight(w_row, c);   // counter went - → decrease weight
-                cnt_row[c] = 0;
-            }
-        }
+    if (cnt > threshold) {
+        increment_weight_atomic(w_row, c);   // counter went + → increase weight
+        cnt = 0;
+    } else if (cnt < -threshold) {
+        decrement_weight_atomic(w_row, c);   // counter went - → decrease weight
+        cnt = 0;
     }
+
+    counter[idx] = cnt;
 }
 
 extern "C" void launch_packed_ternary_update(
@@ -82,9 +79,12 @@ extern "C" void launch_packed_ternary_update(
 {
     const half* X  = static_cast<const half*>(X_ptr);
     const half* dY = static_cast<const half*>(dY_ptr);
-    int threads = 256;
-    int blocks = (out_features + threads - 1) / threads;
-    packed_ternary_update_kernel<<<blocks, threads, 0, stream>>>(
+
+    dim3 block(16, 16);
+    dim3 grid((in_features + block.x - 1) / block.x,
+              (out_features + block.y - 1) / block.y);
+
+    packed_ternary_update_kernel<<<grid, block, 0, stream>>>(
         X, dY, W, counter, batch_size, in_features, out_features,
         stride_words, threshold
     );
