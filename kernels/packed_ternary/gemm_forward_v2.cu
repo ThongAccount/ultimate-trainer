@@ -39,11 +39,11 @@ __global__ void packed_ternary_forward_kernel_v2(
 
     for (int w = 0; w < stride_words; ++w) {
         // Load one packed word per output row — 4 separate rows.
-        // This is coalesced because threads in a warp read adjacent rows.
+        // Guard: r0+{1,2,3} may be past end of out_features.
         uint32_t w0 = W[(r0 + 0) * stride_words + w];
-        uint32_t w1 = W[(r0 + 1) * stride_words + w];
-        uint32_t w2 = W[(r0 + 2) * stride_words + w];
-        uint32_t w3 = W[(r0 + 3) * stride_words + w];
+        uint32_t w1 = (r0 + 1 < out_features) ? W[(r0 + 1) * stride_words + w] : 0;
+        uint32_t w2 = (r0 + 2 < out_features) ? W[(r0 + 2) * stride_words + w] : 0;
+        uint32_t w3 = (r0 + 3 < out_features) ? W[(r0 + 3) * stride_words + w] : 0;
 
         int base_col = w * kWeightsPerWord;
         int limit = min(kWeightsPerWord, in_features - base_col);

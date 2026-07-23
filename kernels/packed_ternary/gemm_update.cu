@@ -52,14 +52,16 @@ __global__ void packed_ternary_update_kernel(
             }
 
             // ── sign → counter → flip ─────────────────────────────
-            if (grad > 0.0f)       cnt_row[c]++;
-            else if (grad < 0.0f)  cnt_row[c]--;
+            // Gradient descent: move weight opposite to gradient sign.
+            // Positive dW → we want to decrease weight → decrement.
+            if (grad > 0.0f)       cnt_row[c]--;
+            else if (grad < 0.0f)  cnt_row[c]++;
 
             if (cnt_row[c] > threshold) {
-                increment_weight(w_row, c);
+                increment_weight(w_row, c);   // counter went + → increase weight
                 cnt_row[c] = 0;
             } else if (cnt_row[c] < -threshold) {
-                decrement_weight(w_row, c);
+                decrement_weight(w_row, c);   // counter went - → decrease weight
                 cnt_row[c] = 0;
             }
         }

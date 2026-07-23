@@ -106,17 +106,18 @@ def test_update_gradient_direction():
     W_packed = _pack_and_check(W_fp32)
     counter = init_counter(N, K)
 
-    # Positive gradient for W[0][0], negative for W[0][1].
-    # dW[r][c] = Σ_b dY[b][r] * X[b][c].  Use two output features: r=0 and r=1.
+    # dW[r][c] = Σ_b dY[b][r] * X[b][c].
+    # Gradient descent: positive dW → decrease weight → counter decrements.
+    # Use two output features: r=0 and r=1.
     X = torch.zeros(B, K, dtype=torch.float16, device="cuda")
     dY = torch.zeros(B, N, dtype=torch.float16, device="cuda")
-    X[:, 0] = 1.0;   dY[:, 0] = 1.0    # dW[0][0] = Σ 1*1 = B > 0
-    X[:, 1] = 1.0;   dY[:, 1] = -1.0   # dW[1][1] = Σ (-1)*1 = -B < 0
+    X[:, 0] = 1.0;   dY[:, 0] = 1.0    # dW[0][0] = Σ 1*1 = B > 0 → counter[0,0] < 0
+    X[:, 1] = 1.0;   dY[:, 1] = -1.0   # dW[1][1] = Σ (-1)*1 = -B < 0 → counter[1,1] > 0
 
     update(W_packed, counter, X, dY, threshold=128)
 
-    assert counter[0, 0].item() > 0, f"Expected positive counter at [0,0], got {counter[0,0].item()} (dW[0][0] should be +)"
-    assert counter[1, 1].item() < 0, f"Expected negative counter at [1,1], got {counter[1,1].item()} (dW[1][1] should be -)"
+    assert counter[0, 0].item() < 0, f"Expected negative counter at [0,0], got {counter[0,0].item()} (dW>0 → descent → decrement)"
+    assert counter[1, 1].item() > 0, f"Expected positive counter at [1,1], got {counter[1,1].item()} (dW<0 → descent → increment)"
     print(f"  ✅ gradient direction: +{counter[0,0].item()}, {counter[0,1].item()}")
 
 

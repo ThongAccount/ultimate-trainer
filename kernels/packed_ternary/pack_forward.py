@@ -445,8 +445,19 @@ def packed_ternary_forward_tc(W, X):
     pad_k = (16 - K % 16) % 16
 
     if pad_b or pad_n or pad_k:
-        X_pad = torch.nn.functional.pad(X, (0, pad_k, 0, pad_b), "constant", 0) if (pad_b or pad_k) else X
-        W_pad = torch.nn.functional.pad(W, (0, 0, 0, pad_n), "constant", 0) if pad_n else W
+        from . import compute_stride_words as _csw
+        X_pad = X
+        if pad_b or pad_k:
+            X_pad = torch.nn.functional.pad(X, (0, pad_k, 0, pad_b), "constant", 0)
+        # W padding: pad_n adds rows, pad_k adds packed words per row.
+        W_pad = W
+        if pad_n and not pad_k:
+            W_pad = torch.nn.functional.pad(W, (0, 0, 0, pad_n), "constant", 0)
+        elif pad_k:
+            K_orig = X.size(1)
+            new_stride = _csw(K_orig + pad_k)
+            W_pad = torch.zeros(W.shape[0] + pad_n, new_stride, dtype=torch.int32, device=W.device)
+            W_pad[:W.shape[0], :W.shape[1]] = W
         Y_pad = _forward_fn_tc(W_pad.contiguous(), X_pad.contiguous())
         return Y_pad[:B, :N_out]
     else:
