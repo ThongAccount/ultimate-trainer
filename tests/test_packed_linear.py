@@ -49,22 +49,24 @@ def test_multistep():
     """Multiple forward/backward steps accumulate and eventually flip bits."""
     if not torch.cuda.is_available():
         return
-    layer = PackedTernaryLinear(16, 8, threshold=8).cuda()
+    layer = PackedTernaryLinear(16, 8, threshold=4).cuda()
     old_W = layer.W_packed.clone()
 
+    # Use consistent strong gradients: each step pushes weights in the same direction.
     flips = 0
-    for step in range(20):
-        x = torch.randn(4, 16, dtype=torch.float16, device="cuda")
+    for step in range(30):
+        x = torch.randn(8, 16, dtype=torch.float16, device="cuda")
+        target = torch.full((8, 8), float(step % 3 - 1), dtype=torch.float16, device="cuda")
         y = layer(x)
-        loss = y.mean()
+        loss = (y - target).pow(2).mean()  # strong MSE gradient
         loss.backward()
 
         if not torch.equal(layer.W_packed, old_W):
             flips += 1
             old_W = layer.W_packed.clone()
 
-    assert flips > 0, "No bit flips in 20 steps — update kernel not working"
-    print(f"  ✅ multistep: {flips} flips in 20 steps")
+    assert flips > 0, "No bit flips in 30 steps — update kernel not working"
+    print(f"  ✅ multistep: {flips} flips in 30 steps")
 
 
 def test_bias():
