@@ -5,9 +5,13 @@
  * Packed ternary weights unpacked into __shared__ FP16 tiles.
  *
  * Each block processes a 32×32 super-tile of the output with 4 warps,
- * each warp handling one 16×16 WMMA tile.  This keeps all 4 warps
- * usefully occupied (vs the previous single-tile approach that
- * wasted 7/8 warps on redundant computation).
+ * each warp handling one 16×16 WMMA tile.
+ *
+ * Optimizations:
+ *   - SMEM bank-conflict padding (stride 16→17)
+ *   - Block-contiguous fill with decode4 (4 ternary vals/load)
+ *   - half2 vectorized X loads
+ *   - __launch_bounds__(128)
  *
  * Grid:   (ceil(batch/32), ceil(out_features/32))
  * Block:  128 threads (4 warps)
@@ -25,19 +29,19 @@ namespace wmma = nvcuda::wmma;
 constexpr int kM = 16;   // WMMA tile size (batch)
 constexpr int kN = 16;   // WMMA tile size (out_features)
 constexpr int kK = 16;   // WMMA tile size (in_features / reduction)
+constexpr int kPad = 1;  // SMEM bank-conflict padding (stride = kK + kPad = 17)
 
 constexpr int kWarpsPerBlock = 4;
 constexpr int kSuperM = 32;  // super-tile batch (2 × kM)
 constexpr int kSuperN = 32;  // super-tile out  (2 × kN)
 
-// ── Per-warp SMEM offsets ─────────────────────────────────────────────
-// W, Y are per-warp (4 slots). X is shared across warps with same
-// batch offset: warps 0&1 share X slot 0, warps 2&3 share X slot 1.
-
-#define W_SMEM(w, r, k)   W_smem[(w) * kN * kK + (r) * kK + (k)]
-#define X_SMEM(w, b, k)   X_smem[(w/2) * kM * kK + (b) * kK + (k)]
-#define YF_SMEM(w, r, b)  Y_float_smem[(w) * kN * kM + (r) * kM + (b)]
-#define YH_SMEM(w, r, b)  Y_smem[(w) * kN * kM + (r) * kM + (b)]
+// ── Per-warp SMEM offsets with padding ────────────────────────────────
+// Padding each row from 16 to 17 shifts banks between rows, eliminating
+// the 2-way bank conflicts that occur at stride 16.
+#define W_SMEM(w, r, k)   W_smem[(w) * kN * (kK + kPad) + (r) * (kK + kPad) + (k)]
+#define X_SMEM(w, b, k)   X_smem[(w/2) * kM * (kK + kPad) + (b) * (kK + kPad) + (k)]
+#define YF_SMEM(w, r, b)  Y_float_smem[(w) * kN * (kM + kPad) + (r) * (kM + kPad) + (b)]
+#define YH_SMEM(w, r, b)  Y_smem[(w) * kN * (kM + kPad) + (r) * (kM + kPad) + (b)]
 
 __global__ __launch_bounds__(128) void packed_ternary_tc_kernel(
     const uint32_t* __restrict__ W,
@@ -62,13 +66,14 @@ __global__ __launch_bounds__(128) void packed_ternary_tc_kernel(
     int b0 = super_b0 + warp_b_off;
     int r0 = super_r0 + warp_r_off;
 
-    // ── Shared memory (4 warp W/Y tiles, 2 shared X tiles) ──────────
-    __shared__ half   W_smem[kWarpsPerBlock * kN * kK];
-    __shared__ half   X_smem[2 * kM * kK];  // warps 0&1 share slot 0, 2&3 share slot 1
-    __shared__ float  Y_float_smem[kWarpsPerBlock * kN * kM];
-    __shared__ half   Y_smem[kWarpsPerBlock * kN * kM];
+    // ── Shared memory with bank-conflict padding ──────────────────────
+    // Each row padded by kPad=1: stride = 17 instead of 16.
+    __shared__ half   W_smem[kWarpsPerBlock * kN * (kK + kPad)];
+    __shared__ half   X_smem[2 * kM * (kK + kPad)];
+    __shared__ float  Y_float_smem[kWarpsPerBlock * kN * (kM + kPad)];
+    __shared__ half   Y_smem[kWarpsPerBlock * kN * (kM + kPad)];
 
-    // ── WMMA fragments (per-warp, in registers) ──────────────────────
+    // ── WMMA fragments ──────────────────────────────────────────────
     wmma::fragment<wmma::matrix_a, kM, kN, kK, half, wmma::row_major> a_frag;
     wmma::fragment<wmma::matrix_b, kM, kN, kK, half, wmma::col_major> b_frag;
     wmma::fragment<wmma::accumulator, kM, kN, kK, float> c_frag;
@@ -79,90 +84,125 @@ __global__ __launch_bounds__(128) void packed_ternary_tc_kernel(
     for (int k0 = 0; k0 < in_features; k0 += kK) {
         int tile_k = min(kK, in_features - k0);
 
-        // ── Load W tile → unpack to FP16 (per-warp, strided fill) ────
-        // Each warp has 32 threads, must fill 16×16 = 256 SMEM elements.
-        // Strided loop: each thread handles 8 elements.
-        #pragma unroll
-        for (int i = wtid; i < kN * kK; i += 32) {
-            int r = i / kK;               // 0..15
-            int c = i % kK;               // 0..15
-            half w_val = __float2half(0.0f);
-            if (c < tile_k) {
-                int gr = r0 + r;           // global output row
-                int gc = k0 + c;           // global input col
+        // ── Load W tile → unpack to FP16 (block fill + decode4) ──────
+        // Block partition: 256 elements / 32 threads = 8 per thread.
+        // Each thread loads 1 uint32 word and decodes 8 ternary values
+        // via 2× decode4 (4 values each).
+        {
+            int base = wtid * 8;
+            // First 4: positions base .. base+3
+            int i0 = base;
+            int c0_ = i0 % kK;
+            if (c0_ < tile_k) {
+                int r  = i0 / kK;
+                int gr = r0 + r;
+                int gc = k0 + c0_;
                 if (gr < out_features && gc < in_features) {
                     int wi = gc / kWeightsPerWord;
                     if (wi < stride_words) {
                         uint32_t word = W[gr * stride_words + wi];
                         int pos = gc % kWeightsPerWord;
-                        int8_t t = decode_ternary(word >> (kTernaryBits * pos));
-                        w_val = __float2half((float)t);
+                        int8_t t0, t1, t2, t3;
+                        decode4(word, pos, &t0, &t1, &t2, &t3);
+                        W_SMEM(warp_id, r, c0_    ) = __float2half((float)t0);
+                        W_SMEM(warp_id, r, c0_ + 1) = __float2half((float)t1);
+                        W_SMEM(warp_id, r, c0_ + 2) = __float2half((float)t2);
+                        if (c0_ + 3 < tile_k)
+                            W_SMEM(warp_id, r, c0_ + 3) = __float2half((float)t3);
                     }
                 }
             }
-            W_SMEM(warp_id, r, c) = w_val;
-        }
-
-        // ── Load X tile → X_smem (shared by warps with same b_offset) ─
-        // Warps 0&1 share X slot 0 (b_off=0), warps 2&3 share slot 1 (b_off=16).
-        // Only warps 0 and 2 load — saves 2× global reads.
-        if (warp_id % 2 == 0) {
-            #pragma unroll
-            for (int i = wtid; i < kM * kK; i += 32) {
-                int xb = i / kK;              // 0..15
-                int xk = i % kK;              // 0..15
-                half x_val = __float2half(0.0f);
-                if (xk < tile_k) {
-                    int gb = b0 + xb;
-                    int gk = k0 + xk;
-                    if (gb < batch_size && gk < in_features) {
-                        x_val = X[gb * in_features + gk];
+            // Second 4: positions base+4 .. base+7
+            int i4 = base + 4;
+            int c4_ = i4 % kK;
+            if (c4_ < tile_k) {
+                int r  = i4 / kK;
+                int gr = r0 + r;
+                int gc = k0 + c4_;
+                if (gr < out_features && gc < in_features) {
+                    int wi = gc / kWeightsPerWord;
+                    if (wi < stride_words) {
+                        uint32_t word = W[gr * stride_words + wi];
+                        int pos = gc % kWeightsPerWord;
+                        int8_t t0, t1, t2, t3;
+                        decode4(word, pos, &t0, &t1, &t2, &t3);
+                        W_SMEM(warp_id, r, c4_    ) = __float2half((float)t0);
+                        W_SMEM(warp_id, r, c4_ + 1) = __float2half((float)t1);
+                        W_SMEM(warp_id, r, c4_ + 2) = __float2half((float)t2);
+                        if (c4_ + 3 < tile_k)
+                            W_SMEM(warp_id, r, c4_ + 3) = __float2half((float)t3);
                     }
                 }
-                X_SMEM(warp_id, xb, xk) = x_val;
+            }
+        }
+
+        // ── Load X tile → X_smem (half2 vectorized, block fill) ──────
+        // Warps 0&1 share X slot 0 (b_off=0), warps 2&3 share slot 1.
+        // Only warps 0 and 2 load X from global memory.
+        if (warp_id % 2 == 0) {
+            int xslot = warp_id / 2;
+            int base = wtid * 8;
+            // 4× half2 pairs covering 8 elements
+            for (int j = 0; j < 8; j += 2) {
+                int i = base + j;
+                int xb = i / kK;
+                int xk = i % kK;
+                int gb = b0 + xb;
+                int gk = k0 + xk;
+                if (xk < tile_k && gb < batch_size && gk < in_features) {
+                    if (xk + 1 < tile_k && gk + 1 < in_features) {
+                        // half2 vectorized: 2 elements in one 4B load
+                        half2 v = ((const half2*)&X[gb * in_features + gk])[0];
+                        X_SMEM(warp_id, xb, xk)     = v.x;
+                        X_SMEM(warp_id, xb, xk + 1) = v.y;
+                    } else {
+                        X_SMEM(warp_id, xb, xk) = X[gb * in_features + gk];
+                    }
+                }
             }
         }
         __syncthreads();
 
-        // ── Load WMMA fragments from SMEM ────────────────────────────
-        wmma::load_matrix_sync(a_frag, &W_smem[warp_id * kN * kK], kK);
-        wmma::load_matrix_sync(b_frag, &X_smem[(warp_id / 2) * kM * kK], kM);
+        // ── Load WMMA fragments from SMEM ───────────────────────────
+        // stride = kK + kPad = 17 (padded)
+        wmma::load_matrix_sync(a_frag, &W_smem[warp_id * kN * (kK + kPad)], kK + kPad);
+        wmma::load_matrix_sync(b_frag, &X_smem[(warp_id / 2) * kM * (kK + kPad)], kM + kPad);
 
-        // ── Tensor-core matmul on 16×16×16 tile ──────────────────────
+        // ── Tensor-core matmul on 16×16×16 tile ─────────────────────
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
         __syncthreads();
     }
 
     // ── Store accumulator to shared, then to global Y ────────────────
-    wmma::store_matrix_sync(&Y_float_smem[warp_id * kN * kM], c_frag, kM,
+    wmma::store_matrix_sync(&Y_float_smem[warp_id * kN * (kM + kPad)], c_frag, kM + kPad,
                             wmma::mem_row_major);
     __syncthreads();
+
     // 128 threads convert 1024 float→half elements (8 per thread)
-    for (int idx = threadIdx.x; idx < kWarpsPerBlock * kM * kN; idx += blockDim.x) {
-        ((half*)Y_smem)[idx] =
-            __float2half(((float*)Y_float_smem)[idx]);
+    for (int idx = threadIdx.x; idx < kWarpsPerBlock * kN * (kM + kPad); idx += blockDim.x) {
+        ((half*)Y_smem)[idx] = __float2half(((float*)Y_float_smem)[idx]);
     }
     __syncthreads();
 
     // ── Write Y_smem to global Y (transposing row,batch → batch,row) ─
-    // 128 threads, 1024 elements, 8 per thread.
-    for (int idx = threadIdx.x; idx < kWarpsPerBlock * kM * kN; idx += blockDim.x) {
-            int w = idx / (kM * kN);        // which warp's tile
-            int local = idx % (kM * kN);    // (r,b) within the 16×16 tile
-            int r = local / kM;
-            int b = local % kM;
+    for (int idx = threadIdx.x; idx < kWarpsPerBlock * kN * (kM + kPad); idx += blockDim.x) {
+        int w = idx / (kN * (kM + kPad));      // which warp's tile
+        int linear = idx % (kN * (kM + kPad)); // within tile
+        int r = linear / (kM + kPad);
+        int b = linear % (kM + kPad);
+        if (b >= kM || r >= kN) continue;       // skip padding slots
 
-            int warp_b_off_w = (w / 2) * kM;
-            int warp_r_off_w = (w % 2) * kN;
+        int warp_b_off_w = (w / 2) * kM;
+        int warp_r_off_w = (w % 2) * kN;
 
-            int gr = super_r0 + warp_r_off_w + r;
-            int gb = super_b0 + warp_b_off_w + b;
-            if (gr < out_features && gb < batch_size) {
-                Y[gb * out_features + gr] = YH_SMEM(w, r, b);
-            }
+        int gr = super_r0 + warp_r_off_w + r;
+        int gb = super_b0 + warp_b_off_w + b;
+        if (gr < out_features && gb < batch_size) {
+            Y[gb * out_features + gr] = YH_SMEM(w, r, b);
         }
     }
+}
 
 extern "C" void launch_packed_ternary_tc(
     const uint32_t* W,

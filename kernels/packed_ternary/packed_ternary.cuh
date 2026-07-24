@@ -102,6 +102,22 @@ __host__ __device__ inline void set_weight(
     row[wi] = (row[wi] & mask) | (code << shift);
 }
 
+// ── Bulk decode: extract 4 ternary values from one packed word ────────────
+//  Each call decodes 4 consecutive weights starting at `pos` (0, 4, 8, 12).
+//  Returns 4 int8 values via pointers.  Reduces shift/LUT overhead vs 4
+//  separate decode_ternary calls.
+//
+__device__ __forceinline__ void decode4(
+    uint32_t word, int pos,
+    int8_t* w0, int8_t* w1, int8_t* w2, int8_t* w3)
+{
+    uint32_t shifted = word >> (kTernaryBits * pos);
+    *w0 = decode_ternary(shifted);
+    *w1 = decode_ternary(shifted >> 2);
+    *w2 = decode_ternary(shifted >> 4);
+    *w3 = decode_ternary(shifted >> 6);
+}
+
 // ── Discrete state-machine transitions (for fused backward kernel) ─────────
 
 __host__ __device__ inline void increment_weight(uint32_t* row, int col) {
