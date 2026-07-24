@@ -1,13 +1,14 @@
 /**
- * gemm_update_tc.cu — Tensor-Core fused gradient → counter → bit-flip.
+ * gemm_update_tc.cu — Tensor-Core fused gradient → counter → bit-flip (1 warp).
  *
  * Uses WMMA Tensor Cores to compute dW = dY^T @ X, then applies
  * sign → int16 counter → bit-flip from shared memory, all in one kernel.
  *
  * No dW tensor is ever materialised in global memory.
+ * Only 1 warp (32 threads per block) — no redundant WMMA.
  *
  * Grid:  (ceil(in_features / 16), ceil(out_features / 16))
- * Block: 256 threads
+ * Block: 32 threads (1 warp)
  *
  * For each batch tile of 16:
  *   1. Load dY_tile (batch × out) into shared memory
@@ -28,6 +29,7 @@ namespace wmma = nvcuda::wmma;
 constexpr int kM = 16;   // WMMA: out_features tile
 constexpr int kN = 16;   // WMMA: in_features tile
 constexpr int kK = 16;   // WMMA: batch tile (reduction dim)
+constexpr int kWarpThreads = 32;
 
 __global__ void packed_ternary_update_tc_kernel(
     const half*     __restrict__ X,       // (batch, in_features)
@@ -42,7 +44,7 @@ __global__ void packed_ternary_update_tc_kernel(
 {
     int c0 = blockIdx.x * kN;     // in-feature column offset for this tile
     int r0 = blockIdx.y * kM;     // out-feature row offset for this tile
-    int tid = threadIdx.x;        // 0..255
+    int tid = threadIdx.x;        // 0..31
 
     // ── Shared memory ─────────────────────────────────────────────────
     __shared__ half   dY_smem[kK][kM];     // dY tile (col-major-friendly: batch × out)
@@ -62,11 +64,10 @@ __global__ void packed_ternary_update_tc_kernel(
     for (int b0 = 0; b0 < batch_size; b0 += kK) {
         int tile_b = min(kK, batch_size - b0);
 
-        // ── Load dY tile → dY_smem (batch × out) ─────────────────────
-        // Each thread: b = tid / kM (0..15), r = tid % kM (0..15)
-        {
-            int b = tid / kM;
-            int r = tid % kM;
+        // ── Load dY tile → dY_smem (strided fill, 32 threads) ────────
+        for (int i = tid; i < kK * kM; i += kWarpThreads) {
+            int b = i / kM;               // 0..15
+            int r = i % kM;               // 0..15
             half val = __float2half(0.0f);
             if (b < tile_b) {
                 int gb = b0 + b;
@@ -78,11 +79,10 @@ __global__ void packed_ternary_update_tc_kernel(
             dY_smem[b][r] = val;
         }
 
-        // ── Load X tile → X_smem (batch × in) ────────────────────────
-        // Each thread: b = tid / kN (0..15), c = tid % kN (0..15)
-        {
-            int b = tid / kN;
-            int c = tid % kN;
+        // ── Load X tile → X_smem (strided fill, 32 threads) ──────────
+        for (int i = tid; i < kK * kN; i += kWarpThreads) {
+            int b = i / kN;               // 0..15
+            int c = i % kN;               // 0..15
             half val = __float2half(0.0f);
             if (b < tile_b) {
                 int gb = b0 + b;
@@ -96,14 +96,7 @@ __global__ void packed_ternary_update_tc_kernel(
         __syncthreads();
 
         // ── Load WMMA fragments from SMEM ─────────────────────────────
-        // dY_smem[b][r] loaded as col_major → a_frag[r][b]
-        // col_major stride = kM = 16:  element (r, b) at base + r + b*16
-        // dY_smem[b][r] is at base + b*16 + r = base + r + b*16  ✓
         wmma::load_matrix_sync(a_frag, &dY_smem[0][0], kM);
-
-        // X_smem[b][c] loaded as row_major → b_frag[b][c]
-        // row_major stride = kN = 16:  element (b, c) at base + b*16 + c
-        // X_smem[b][c] is at base + b*16 + c  ✓
         wmma::load_matrix_sync(b_frag, &X_smem[0][0], kN);
 
         // ── Tensor-core matmul: dW[r][c] += Σ_b dY[b][r] * X[b][c] ──
@@ -117,32 +110,35 @@ __global__ void packed_ternary_update_tc_kernel(
     __syncthreads();
 
     // ── Apply sign → counter → bit-flip for each weight in tile ──────
-    int r = tid / kN;    // 0..15, row within tile (out_features)
-    int c = tid % kN;    // 0..15, col within tile (in_features)
-    int gr = r0 + r;     // global out_feature index
-    int gc = c0 + c;     // global in_feature index
+    // 32 threads handle 16×16 = 256 elements (8 per thread)
+    for (int i = tid; i < kM * kN; i += kWarpThreads) {
+        int r = i / kN;               // 0..15, row within tile (out_features)
+        int c = i % kN;               // 0..15, col within tile (in_features)
+        int gr = r0 + r;              // global out_feature index
+        int gc = c0 + c;              // global in_feature index
 
-    if (gr < out_features && gc < in_features) {
-        float grad = dW_float_smem[r][c];
+        if (gr < out_features && gc < in_features) {
+            float grad = dW_float_smem[r][c];
 
-        int idx = gr * in_features + gc;
-        int16_t cnt = counter[idx];
+            int idx = gr * in_features + gc;
+            int16_t cnt = counter[idx];
 
-        // Gradient descent: positive dW → decrease weight → decrement counter
-        if (grad > 0.0f)       cnt--;
-        else if (grad < 0.0f)  cnt++;
+            // Gradient descent: positive dW → decrease weight → decrement counter
+            if (grad > 0.0f)       cnt--;
+            else if (grad < 0.0f)  cnt++;
 
-        uint32_t* w_row = W + gr * stride_words;
+            uint32_t* w_row = W + gr * stride_words;
 
-        if (cnt > threshold) {
-            increment_weight_atomic(w_row, gc);
-            cnt = 0;
-        } else if (cnt < -threshold) {
-            decrement_weight_atomic(w_row, gc);
-            cnt = 0;
+            if (cnt > threshold) {
+                increment_weight_atomic(w_row, gc);
+                cnt = 0;
+            } else if (cnt < -threshold) {
+                decrement_weight_atomic(w_row, gc);
+                cnt = 0;
+            }
+
+            counter[idx] = cnt;
         }
-
-        counter[idx] = cnt;
     }
 }
 
@@ -161,7 +157,7 @@ extern "C" void launch_packed_ternary_update_tc(
     const half* X  = static_cast<const half*>(X_ptr);
     const half* dY = static_cast<const half*>(dY_ptr);
 
-    dim3 block(256);      // 1D block of 256 threads
+    dim3 block(kWarpThreads);  // 1 warp
     dim3 grid((in_features + kN - 1) / kN,
               (out_features + kM - 1) / kM);
 

@@ -52,8 +52,8 @@ __global__ void packed_ternary_tc_kernel(
     int wtid    = threadIdx.x % 32;        // 0..31 (within-warp)
 
     // Each warp handles one 16×16 output tile within the 32×32 super-tile.
-    // warp 0 → (b=0, r=0), warp 1 → (b=16, r=0),
-    // warp 2 → (b=0, r=16), warp 3 → (b=16, r=16)
+    // warp 0 → (b=0, r=0), warp 1 → (b=0, r=16),
+    // warp 2 → (b=16, r=0), warp 3 → (b=16, r=16)
     int warp_b_off = (warp_id / 2) * kM;   // 0 or 16
     int warp_r_off = (warp_id % 2) * kN;   // 0 or 16
 
@@ -76,16 +76,17 @@ __global__ void packed_ternary_tc_kernel(
     // ── Outer loop over K tiles ──────────────────────────────────────
     for (int k0 = 0; k0 < in_features; k0 += kK) {
         int tile_k = min(kK, in_features - k0);
-        int tile_k_words = (tile_k + kWeightsPerWord - 1) / kWeightsPerWord;
 
-        // ── Load W tile → unpack to FP16 (per-warp) ──────────────────
-        {
-            int r = wtid / kK;               // 0..15
-            int c = wtid % kK;               // 0..15
+        // ── Load W tile → unpack to FP16 (per-warp, strided fill) ────
+        // Each warp has 32 threads, must fill 16×16 = 256 SMEM elements.
+        // Strided loop: each thread handles 8 elements.
+        for (int i = wtid; i < kN * kK; i += 32) {
+            int r = i / kK;               // 0..15
+            int c = i % kK;               // 0..15
             half w_val = __float2half(0.0f);
-            if (r < kN && c < tile_k) {
-                int gr = r0 + r;             // global output row
-                int gc = k0 + c;             // global input col
+            if (c < tile_k) {
+                int gr = r0 + r;           // global output row
+                int gc = k0 + c;           // global input col
                 if (gr < out_features && gc < in_features) {
                     int wi = gc / kWeightsPerWord;
                     if (wi < stride_words) {
@@ -99,12 +100,12 @@ __global__ void packed_ternary_tc_kernel(
             W_SMEM(warp_id, r, c) = w_val;
         }
 
-        // ── Load X tile → X_smem (per-warp) ──────────────────────────
-        {
-            int xb = wtid / kK;              // 0..15
-            int xk = wtid % kK;              // 0..15
+        // ── Load X tile → X_smem (per-warp, strided fill) ────────────
+        for (int i = wtid; i < kM * kK; i += 32) {
+            int xb = i / kK;              // 0..15
+            int xk = i % kK;              // 0..15
             half x_val = __float2half(0.0f);
-            if (xb < kM && xk < tile_k) {
+            if (xk < tile_k) {
                 int gb = b0 + xb;
                 int gk = k0 + xk;
                 if (gb < batch_size && gk < in_features) {

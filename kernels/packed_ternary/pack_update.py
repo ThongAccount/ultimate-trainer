@@ -213,24 +213,6 @@ def _load_up_tc():
 TC_MIN_BATCH = 16  # WMMA needs at least 16 in the batch dimension
 
 
-def _pad_for_tc(W_packed: torch.Tensor, in_features: int) -> tuple[torch.Tensor, int]:
-    """Pad W's in_features dimension to a multiple of 16 for TC kernels.
-
-    Returns (padded_W, original_in_features).
-    The TC kernel requires K (in_features) to be a multiple of 16.
-    """
-    pad_k = (16 - in_features % 16) % 16
-    if pad_k == 0:
-        return W_packed, pad_k
-
-    from . import compute_stride_words as _csw
-    new_stride = _csw(in_features + pad_k)
-    out_f = W_packed.shape[0]
-    W_pad = torch.zeros(out_f, new_stride, dtype=torch.int32, device=W_packed.device)
-    W_pad[:, :W_packed.shape[1]] = W_packed
-    return W_pad, pad_k
-
-
 def _load_if_needed():
     """Ensure scalar kernels are loaded (lazy load on first use)."""
     if not _HAS_DX:
@@ -258,15 +240,6 @@ def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Te
     if B >= TC_MIN_BATCH:
         _load_tc_if_needed()
         if _HAS_DX_TC:
-            # Pad in_features to multiple of 16 for TC
-            pad_k = (16 - in_features % 16) % 16
-            if pad_k:
-                from . import compute_stride_words as _csw
-                new_stride = _csw(in_features + pad_k)
-                W_pad = torch.zeros(W.shape[0], new_stride, dtype=torch.int32, device=W.device)
-                W_pad[:, :W.shape[1]] = W
-                dX_pad = _dx_tc_fn(W_pad.contiguous(), dY.contiguous(), in_features + pad_k)
-                return dX_pad[:, :in_features]
             return _dx_tc_fn(W.contiguous(), dY.contiguous(), in_features)
 
     # Fallback to scalar
@@ -284,21 +257,23 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
     otherwise uses the scalar kernel.
     """
     B = X.size(0)
-    K = X.size(1)
+    # Ensure tensors are contiguous so in-place updates affect the original
+    W = W.contiguous()
+    counter = counter.contiguous()
+    X = X.contiguous()
+    dY = dY.contiguous()
 
     if B >= TC_MIN_BATCH:
         _load_tc_if_needed()
         if _HAS_UP_TC:
-            _up_tc_fn(W.contiguous(), counter.contiguous(),
-                      X.contiguous(), dY.contiguous(), int(threshold))
+            _up_tc_fn(W, counter, X, dY, int(threshold))
             return
 
     # Fallback to scalar
     _load_if_needed()
     if not _HAS_UP:
         raise RuntimeError("update kernel not available")
-    _up_fn(W.contiguous(), counter.contiguous(),
-           X.contiguous(), dY.contiguous(), int(threshold))
+    _up_fn(W, counter, X, dY, int(threshold))
 
 
 def init_counter(out_features: int, in_features: int) -> torch.Tensor:
