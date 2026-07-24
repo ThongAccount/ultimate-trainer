@@ -51,3 +51,6 @@ ruff_cache/
 # ── AI agent context (regenerated per-session) ────────────────────
 CONTEXT.md
 temp/
+
+# ── Session handoff (never commit) ───────────────────────────────
+HANDOFF.md
