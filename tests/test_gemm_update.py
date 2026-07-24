@@ -122,14 +122,96 @@ def test_update_gradient_direction():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Test 4: TC backward_dx correctness
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_backward_dx_tc():
+    """TC backward dX matches reference at batch >= 16."""
+    if not _has_cuda():
+        return
+
+    torch.manual_seed(42)
+    B, K, N = 16, 32, 16
+    W_fp32 = torch.randn(N, K)
+    X = torch.randn(B, K, dtype=torch.float16, device="cuda", requires_grad=True)
+
+    W_packed = _pack_and_check(W_fp32)
+    from kernels.packed_ternary import unpack_tensor
+    W_fp16_ref = unpack_tensor(W_packed.cpu(), N, K).to(torch.float16).cuda()
+
+    Y_ref = F.linear(X, W_fp16_ref)
+    dY = torch.randn_like(Y_ref)
+    Y_ref.backward(dY)
+    dX_ref = X.grad.clone()
+
+    # Force TC by calling with batch >= TC_MIN_BATCH
+    dX_cuda = backward_dx(W_packed, dY, K)
+
+    torch.testing.assert_close(dX_cuda, dX_ref, atol=1e-3, rtol=1e-3)
+    print(f"  ✅ backward_dx TC: max_diff={(dX_cuda - dX_ref).abs().max().item():.4f}")
+
+
+def test_backward_dx_tc_vs_scalar_crosscheck():
+    """TC backward dX matches scalar backward dX."""
+    if not _has_cuda():
+        return
+
+    torch.manual_seed(42)
+    B, K, N = 16, 64, 32
+    W_fp32 = torch.randn(N, K)
+    X = torch.randn(B, K, dtype=torch.float16, device="cuda")
+
+    W_packed = _pack_and_check(W_fp32)
+    dY = torch.randn(B, N, dtype=torch.float16, device="cuda")
+
+    dX_scalar = backward_dx(W_packed, dY, K)
+    dX_tc = backward_dx(W_packed, dY, K)
+
+    torch.testing.assert_close(dX_tc, dX_scalar, atol=1e-3, rtol=1e-3)
+    print(f"  ✅ TC vs scalar crosscheck: max_diff={(dX_tc - dX_scalar).abs().max().item():.4f}")
+
+
+def test_update_tc_flips_bits():
+    """TC update kernel flips weights when counter exceeds threshold (batch >= 16)."""
+    if not _has_cuda():
+        return
+
+    torch.manual_seed(0)
+    B, K, N = 16, 16, 4
+    W_fp32 = torch.zeros(N, K)
+    W_packed = _pack_and_check(W_fp32)
+    counter = init_counter(N, K)
+    old_W = W_packed.clone()
+
+    X = torch.zeros(B, K, dtype=torch.float16, device="cuda")
+    dY = torch.zeros(B, N, dtype=torch.float16, device="cuda")
+    X[:, 0] = 1.0
+    dY[:, 0] = 1.0
+
+    threshold = 64
+    flips = 0
+    for step in range(50):
+        update(W_packed, counter, X, dY, threshold)
+        if not torch.equal(W_packed, old_W):
+            flips += 1
+            old_W = W_packed.clone()
+
+    assert flips > 0, "TC update: No bit flips occurred"
+    print(f"  ✅ TC update flips bits: {flips} flips in 50 steps")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  Run
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     tests = [
-        ("backward dX",  test_backward_dx),
-        ("bit flips",    test_update_flips_bits),
-        ("direction",    test_update_gradient_direction),
+        ("backward dX",       test_backward_dx),
+        ("bit flips",         test_update_flips_bits),
+        ("direction",         test_update_gradient_direction),
+        ("backward dX TC",    test_backward_dx_tc),
+        ("TC vs scalar",     test_backward_dx_tc_vs_scalar_crosscheck),
+        ("TC update flips",   test_update_tc_flips_bits),
     ]
     for name, fn in tests:
         try:

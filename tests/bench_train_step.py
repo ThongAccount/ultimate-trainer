@@ -1,11 +1,12 @@
 """Benchmark: one training step — forward + backward + weight update.
 
-Compares three approaches:
-    1. Our discrete stack: PackedTernaryLinear (counter-based, no dW tensor)
-    2. Standard AdamW: nn.Linear + F.linear + AdamW
-    3. Fused AdamW: nn.Linear + F.linear + torch.compile + FusedAdamW
+Compares approaches:
+    1. Discrete (auto-dispatch): TC forward + auto backward/update
+    2. Discrete (scalar forced): all scalar kernels (old behavior)
+    3. Standard AdamW: nn.Linear + F.linear + AdamW
+    4. Fused AdamW: nn.Linear + F.linear + torch.compile + FusedAdamW
 
-Measures GPU kernel time (median over 20 runs) for each phase.
+Measures GPU kernel time (median over 20 runs) for each step.
 """
 
 from __future__ import annotations
@@ -50,7 +51,11 @@ ITERS = 20
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def bench_discrete(B, K, N):
-    """One train step: PackedTernaryLinear forward + backward + update."""
+    """One train step: PackedTernaryLinear forward + backward + update.
+
+    Auto-dispatches to WMMA Tensor Cores for all phases when batch >= 16,
+    scalar kernels for smaller batches.
+    """
 
     # Use the module which includes auto-dispatch for forward
     layer = PackedTernaryLinear(K, N, threshold=64).cuda()
