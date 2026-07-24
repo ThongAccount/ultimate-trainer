@@ -188,7 +188,7 @@ def test_update_tc_flips_bits():
     X[:, 0] = 1.0
     dY[:, 0] = 1.0
 
-    threshold = 64
+    threshold = 16  # with B=16, dW=16/step → counter hits -16 at step 16
     flips = 0
     for step in range(50):
         update(W_packed, counter, X, dY, threshold)

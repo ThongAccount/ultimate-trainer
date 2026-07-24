@@ -154,7 +154,6 @@ __global__ void packed_ternary_tc_kernel(
             }
         }
     }
-}
 
 extern "C" void launch_packed_ternary_tc(
     const uint32_t* W,
