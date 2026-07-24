@@ -197,8 +197,8 @@ if __name__ == "__main__":
     print()
 
     # Discrete optimizer
-    print("Training discrete MLP (counter-based optimizer)...")
-    discrete_losses = train_discrete(d_in, d_hidden, d_out, threshold=64, steps=steps)
+    print("Training discrete MLP (counter-based optimizer, threshold=4)...")
+    discrete_losses = train_discrete(d_in, d_hidden, d_out, threshold=4, steps=steps)
     final_discrete = discrete_losses[-1]
     improved = final_discrete < bl
     print(f"  Final discrete loss: {final_discrete:.6f} (baseline: {bl:.6f})")
