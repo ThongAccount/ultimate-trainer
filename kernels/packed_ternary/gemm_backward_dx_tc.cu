@@ -5,7 +5,6 @@
  * Uses wmma::mma_sync(m=16, n=16, k=16) on T4 Tensor Cores.
  *
  * Optimizations:
- *   - SMEM bank-conflict padding (stride 16→17)
  *   - Block-contiguous fill with decode4 for W
  *   - half2 vectorized dY loads
  *   - 4-warp 32×32 super-tile for occupancy
@@ -15,6 +14,8 @@
  * Block:  128 threads (4 warps)
  *
  * dY (FP16)  × W (packed ternary) → dX (FP16)
+ *
+ * NOTE: WMMA stride must be a multiple of 16 on sm_75.
  */
 
 #include <cuda_runtime.h>
@@ -27,15 +28,14 @@ namespace wmma = nvcuda::wmma;
 constexpr int kM = 16;   // WMMA tile: batch
 constexpr int kN = 16;   // WMMA tile: in_features
 constexpr int kK = 16;   // WMMA tile: out_features (reduction dim)
-constexpr int kPad = 1;  // SMEM bank-conflict padding
 constexpr int kWarpsPerBlock = 4;
 constexpr int kSuperM = 32;  // super-tile batch (2 × kM)
 constexpr int kSuperN = 32;  // super-tile in   (2 × kN)
 
-#define DYS(w, b, r)  dY_smem[(w) * kM * (kK + kPad) + (b) * (kK + kPad) + (r)]
-#define WS(w, r, c)   W_smem[(w) * kK * (kN + kPad) + (r) * (kN + kPad) + (c)]
-#define DXF(w, b, c)  dX_float_smem[(w) * kM * (kN + kPad) + (b) * (kN + kPad) + (c)]
-#define DXH(w, b, c)  dX_smem[(w) * kM * (kN + kPad) + (b) * (kN + kPad) + (c)]
+#define DYS(w, b, r)  dY_smem[(w) * kM * kK + (b) * kK + (r)]
+#define WS(w, r, c)   W_smem[(w) * kK * kN + (r) * kN + (c)]
+#define DXF(w, b, c)  dX_float_smem[(w) * kM * kN + (b) * kN + (c)]
+#define DXH(w, b, c)  dX_smem[(w) * kM * kN + (b) * kN + (c)]
 
 __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
     const uint32_t* __restrict__ W,
@@ -56,11 +56,11 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
     int b0 = super_b0 + warp_b_off;
     int c0 = super_c0 + warp_c_off;
 
-    // ── Shared memory with padding ────────────────────────────────────
-    __shared__ half   dY_smem[kWarpsPerBlock * kM * (kK + kPad)];
-    __shared__ half   W_smem[kWarpsPerBlock * kK * (kN + kPad)];
-    __shared__ float  dX_float_smem[kWarpsPerBlock * kM * (kN + kPad)];
-    __shared__ half   dX_smem[kWarpsPerBlock * kM * (kN + kPad)];
+    // ── Shared memory (stride must be multiple of 16) ─────────────────
+    __shared__ half   dY_smem[kWarpsPerBlock * kM * kK];
+    __shared__ half   W_smem[kWarpsPerBlock * kK * kN];
+    __shared__ float  dX_float_smem[kWarpsPerBlock * kM * kN];
+    __shared__ half   dX_smem[kWarpsPerBlock * kM * kN];
 
     // ── WMMA fragments ──────────────────────────────────────────────
     wmma::fragment<wmma::matrix_a, kM, kN, kK, half, wmma::row_major> a_frag;
@@ -147,20 +147,20 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
         __syncthreads();
 
         // ── Load WMMA fragments from SMEM ───────────────────────────
-        wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kM * (kK + kPad)], kK + kPad);
-        wmma::load_matrix_sync(b_frag, &W_smem[warp_id * kK * (kN + kPad)], kN + kPad);
+        wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kM * kK], kK);
+        wmma::load_matrix_sync(b_frag, &W_smem[warp_id * kK * kN], kN);
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
         __syncthreads();
     }
 
     // ── Store accumulator → global dX ─────────────────────────────────
-    wmma::store_matrix_sync(&dX_float_smem[warp_id * kM * (kN + kPad)], c_frag,
-                            kN + kPad, wmma::mem_row_major);
+    wmma::store_matrix_sync(&dX_float_smem[warp_id * kM * kN], c_frag,
+                            kN, wmma::mem_row_major);
     __syncthreads();
 
     // 128 threads convert 1024 float→half
-    int n_store = kWarpsPerBlock * kM * (kN + kPad);
+    int n_store = kWarpsPerBlock * kM * kN;
     for (int i = threadIdx.x; i < n_store; i += blockDim.x) {
         ((half*)dX_smem)[i] = __float2half(((float*)dX_float_smem)[i]);
     }
@@ -168,11 +168,10 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
 
     // Write dX to global
     for (int i = threadIdx.x; i < n_store; i += blockDim.x) {
-        int w = i / (kM * (kN + kPad));
-        int linear = i % (kM * (kN + kPad));
-        int b = linear / (kN + kPad);
-        int c = linear % (kN + kPad);
-        if (b >= kM || c >= kN) continue;
+        int w = i / (kM * kN);
+        int linear = i % (kM * kN);
+        int b = linear / kN;
+        int c = linear % kN;
 
         int warp_b_off_w = (w / 2) * kM;
         int warp_c_off_w = (w % 2) * kN;

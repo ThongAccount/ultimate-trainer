@@ -5,7 +5,6 @@
  * sign → int16 counter → bit-flip from shared memory, all in one kernel.
  *
  * Optimizations:
- *   - SMEM bank-conflict padding (stride 16→17)
  *   - half2 vectorized X + dY loads
  *   - Block-contiguous fill (8 elements/thread, contiguous)
  *   - 4-warp 32×32 super-tile for occupancy
@@ -13,6 +12,8 @@
  *
  * Grid:  (ceil(in_features / 32), ceil(out_features / 32))
  * Block: 128 threads (4 warps)
+ *
+ * NOTE: WMMA stride must be a multiple of 16 on sm_75.
  */
 
 #include <cuda_runtime.h>
@@ -25,14 +26,13 @@ namespace wmma = nvcuda::wmma;
 constexpr int kM = 16;   // WMMA: out_features tile
 constexpr int kN = 16;   // WMMA: in_features tile
 constexpr int kK = 16;   // WMMA: batch tile (reduction dim)
-constexpr int kPad = 1;  // SMEM bank-conflict padding
 constexpr int kWarpsPerBlock = 4;
 constexpr int kSuperM = 32;  // super-tile out (2 × kM)
 constexpr int kSuperN = 32;  // super-tile in  (2 × kN)
 
-#define DYS(w, b, r)  dY_smem[(w) * kK * (kM + kPad) + (b) * (kM + kPad) + (r)]
-#define XS(w, b, c)   X_smem[(w) * kK * (kN + kPad) + (b) * (kN + kPad) + (c)]
-#define DWF(w, r, c)  dW_float_smem[(w) * kM * (kN + kPad) + (r) * (kN + kPad) + (c)]
+#define DYS(w, b, r)  dY_smem[(w) * kK * kM + (b) * kM + (r)]
+#define XS(w, b, c)   X_smem[(w) * kK * kN + (b) * kN + (c)]
+#define DWF(w, r, c)  dW_float_smem[(w) * kM * kN + (r) * kN + (c)]
 
 __global__ __launch_bounds__(128) void packed_ternary_update_tc_kernel(
     const half*     __restrict__ X,       // (batch, in_features)
@@ -55,10 +55,10 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_kernel(
     int c0 = super_c0 + warp_c_off;
     int r0 = super_r0 + warp_r_off;
 
-    // ── Shared memory with padding ────────────────────────────────────
-    __shared__ half   dY_smem[kWarpsPerBlock * kK * (kM + kPad)];
-    __shared__ half   X_smem[kWarpsPerBlock * kK * (kN + kPad)];
-    __shared__ float  dW_float_smem[kWarpsPerBlock * kM * (kN + kPad)];
+    // ── Shared memory (stride must be multiple of 16) ─────────────────
+    __shared__ half   dY_smem[kWarpsPerBlock * kK * kM];
+    __shared__ half   X_smem[kWarpsPerBlock * kK * kN];
+    __shared__ float  dW_float_smem[kWarpsPerBlock * kM * kN];
 
     // ── WMMA fragments ──────────────────────────────────────────────
     wmma::fragment<wmma::matrix_a, kM, kN, kK, half, wmma::col_major> a_frag;
@@ -119,26 +119,25 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_kernel(
         __syncthreads();
 
         // ── Load WMMA fragments from SMEM ───────────────────────────
-        wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kK * (kM + kPad)], kM + kPad);
-        wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kK * (kN + kPad)], kN + kPad);
+        wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kK * kM], kM);
+        wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kK * kN], kN);
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
         __syncthreads();
     }
 
     // ── Store accumulator → SMEM → sign→counter→flip ─────────────────
-    wmma::store_matrix_sync(&dW_float_smem[warp_id * kM * (kN + kPad)], c_frag,
-                            kN + kPad, wmma::mem_row_major);
+    wmma::store_matrix_sync(&dW_float_smem[warp_id * kM * kN], c_frag,
+                            kN, wmma::mem_row_major);
     __syncthreads();
 
     // 128 threads handle 1024 elements (8 per thread)
-    int n_elems = kWarpsPerBlock * kM * (kN + kPad);
+    int n_elems = kWarpsPerBlock * kM * kN;
     for (int i = threadIdx.x; i < n_elems; i += blockDim.x) {
-        int w = i / (kM * (kN + kPad));
-        int linear = i % (kM * (kN + kPad));
-        int r = linear / (kN + kPad);
-        int c = linear % (kN + kPad);
-        if (r >= kM || c >= kN) continue;  // skip padding
+        int w = i / (kM * kN);
+        int linear = i % (kM * kN);
+        int r = linear / kN;
+        int c = linear % kN;
 
         int warp_r_off_w = (w % 2) * kM;
         int warp_c_off_w = (w / 2) * kN;
