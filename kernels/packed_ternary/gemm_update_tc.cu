@@ -1,22 +1,20 @@
 /**
- * gemm_update_tc.cu — Tensor-Core fused gradient → counter → bit-flip (1 warp).
+ * gemm_update_tc.cu — Tensor-Core fused gradient → counter → bit-flip (4 warps).
  *
  * Uses WMMA Tensor Cores to compute dW = dY^T @ X, then applies
  * sign → int16 counter → bit-flip from shared memory, all in one kernel.
  *
  * No dW tensor is ever materialised in global memory.
- * Only 1 warp (32 threads per block) — no redundant WMMA.
+ * Each block processes a 32×32 super-tile with 4 warps.
  *
- * Grid:  (ceil(in_features / 16), ceil(out_features / 16))
- * Block: 32 threads (1 warp)
+ * Grid:  (ceil(in_features / 32), ceil(out_features / 32))
+ * Block: 128 threads (4 warps)
  *
  * For each batch tile of 16:
- *   1. Load dY_tile (batch × out) into shared memory
- *   2. Load X_tile   (batch × in)  into shared memory
+ *   1. Load dY_tile → dY_smem  2. Load X_tile → X_smem
  *   3. WMMA: accumulate dW[r][c] += Σ_b dY[b][r] * X[b][c]
  * After all batch tiles:
- *   4. Store dW to shared memory (float → 16×16 tile)
- *   5. Each thread: sign → counter → atomically flip ternary bit
+ *   4. Store dW to SMEM  5. sign → counter → atomically flip ternary bit
  */
 
 #include <cuda_runtime.h>
@@ -29,9 +27,16 @@ namespace wmma = nvcuda::wmma;
 constexpr int kM = 16;   // WMMA: out_features tile
 constexpr int kN = 16;   // WMMA: in_features tile
 constexpr int kK = 16;   // WMMA: batch tile (reduction dim)
-constexpr int kWarpThreads = 32;
+constexpr int kWarpsPerBlock = 4;
+constexpr int kSuperM = 32;  // super-tile out (2 × kM)
+constexpr int kSuperN = 32;  // super-tile in  (2 × kN)
 
-__global__ void packed_ternary_update_tc_kernel(
+// ── Per-warp SMEM offsets ─────────────────────────────────────────────
+#define DYS(w, b, r)   dY_smem[(w) * kK * kM + (b) * kM + (r)]
+#define XS(w, b, c)    X_smem[(w) * kK * kN + (b) * kN + (c)]
+#define DWF(w, r, c)   dW_float_smem[(w) * kM * kN + (r) * kN + (c)]
+
+__global__ __launch_bounds__(128) void packed_ternary_update_tc_kernel(
     const half*     __restrict__ X,       // (batch, in_features)
     const half*     __restrict__ dY,      // (batch, out_features)
     uint32_t*       __restrict__ W,       // (out_features, stride_words) — IN PLACE
@@ -42,16 +47,26 @@ __global__ void packed_ternary_update_tc_kernel(
     int stride_words,
     int16_t threshold)
 {
-    int c0 = blockIdx.x * kN;     // in-feature column offset for this tile
-    int r0 = blockIdx.y * kM;     // out-feature row offset for this tile
-    int tid = threadIdx.x;        // 0..31
+    int super_c0 = blockIdx.x * kSuperN;  // super-tile in offset
+    int super_r0 = blockIdx.y * kSuperM;  // super-tile out offset
+    int warp_id = threadIdx.x / 32;       // 0..3
+    int wtid    = threadIdx.x % 32;       // 0..31
 
-    // ── Shared memory ─────────────────────────────────────────────────
-    __shared__ half   dY_smem[kK][kM];     // dY tile (col-major-friendly: batch × out)
-    __shared__ half   X_smem[kK][kN];      // X tile  (row-major: batch × in)
-    __shared__ float  dW_float_smem[kM][kN]; // output tile (WMMA writes to SMEM)
+    // Each warp handles one 16×16 dW tile within the 32×32 super-tile.
+    // warp 0 → (c=0, r=0), warp 1 → (c=16, r=0),
+    // warp 2 → (c=0, r=16), warp 3 → (c=16, r=16)
+    int warp_c_off = (warp_id / 2) * kN;   // 0 or 16
+    int warp_r_off = (warp_id % 2) * kM;   // 0 or 16
 
-    // ── WMMA fragments ────────────────────────────────────────────────
+    int c0 = super_c0 + warp_c_off;   // in offset
+    int r0 = super_r0 + warp_r_off;   // out offset
+
+    // ── Shared memory (4 warps × independent tiles) ──────────────────
+    __shared__ half   dY_smem[kWarpsPerBlock * kK * kM];
+    __shared__ half   X_smem[kWarpsPerBlock * kK * kN];
+    __shared__ float  dW_float_smem[kWarpsPerBlock * kM * kN];
+
+    // ── WMMA fragments ──────────────────────────────────────────────
     // dY as matrix_a col_major:  a_frag[r][b] = dY_smem[b][r]
     // X  as matrix_b row_major:  b_frag[b][c] = X_smem[b][c]
     wmma::fragment<wmma::matrix_a, kM, kN, kK, half, wmma::col_major> a_frag;
@@ -60,12 +75,13 @@ __global__ void packed_ternary_update_tc_kernel(
 
     wmma::fill_fragment(c_frag, 0.0f);
 
-    // ── Outer loop over B (batch) tiles ───────────────────────────────
+    // ── Outer loop over B (batch) tiles ─────────────────────────────
     for (int b0 = 0; b0 < batch_size; b0 += kK) {
         int tile_b = min(kK, batch_size - b0);
 
-        // ── Load dY tile → dY_smem (strided fill, 32 threads) ────────
-        for (int i = tid; i < kK * kM; i += kWarpThreads) {
+        // ── Load dY tile → dY_smem (strided fill) ───────────────────
+        #pragma unroll
+        for (int i = wtid; i < kK * kM; i += 32) {
             int b = i / kM;               // 0..15
             int r = i % kM;               // 0..15
             half val = __float2half(0.0f);
@@ -76,11 +92,12 @@ __global__ void packed_ternary_update_tc_kernel(
                     val = dY[gb * out_features + gr];
                 }
             }
-            dY_smem[b][r] = val;
+            DYS(warp_id, b, r) = val;
         }
 
-        // ── Load X tile → X_smem (strided fill, 32 threads) ──────────
-        for (int i = tid; i < kK * kN; i += kWarpThreads) {
+        // ── Load X tile → X_smem (strided fill) ─────────────────────
+        #pragma unroll
+        for (int i = wtid; i < kK * kN; i += 32) {
             int b = i / kN;               // 0..15
             int c = i % kN;               // 0..15
             half val = __float2half(0.0f);
@@ -91,39 +108,46 @@ __global__ void packed_ternary_update_tc_kernel(
                     val = X[gb * in_features + gc];
                 }
             }
-            X_smem[b][c] = val;
+            XS(warp_id, b, c) = val;
         }
         __syncthreads();
 
-        // ── Load WMMA fragments from SMEM ─────────────────────────────
-        wmma::load_matrix_sync(a_frag, &dY_smem[0][0], kM);
-        wmma::load_matrix_sync(b_frag, &X_smem[0][0], kN);
+        // ── Load WMMA fragments from SMEM ───────────────────────────
+        wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kK * kM], kM);
+        wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kK * kN], kN);
 
-        // ── Tensor-core matmul: dW[r][c] += Σ_b dY[b][r] * X[b][c] ──
+        // ── Tensor-core matmul: dW[r][c] += Σ_b dY[b][r] * X[b][c] ─
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
         __syncthreads();
     }
 
-    // ── Store accumulator to shared memory ────────────────────────────
-    wmma::store_matrix_sync(&dW_float_smem[0][0], c_frag, kN, wmma::mem_row_major);
+    // ── Store accumulator to shared memory ──────────────────────────
+    wmma::store_matrix_sync(&dW_float_smem[warp_id * kM * kN], c_frag, kN,
+                            wmma::mem_row_major);
     __syncthreads();
 
-    // ── Apply sign → counter → bit-flip for each weight in tile ──────
-    // 32 threads handle 16×16 = 256 elements (8 per thread)
-    for (int i = tid; i < kM * kN; i += kWarpThreads) {
-        int r = i / kN;               // 0..15, row within tile (out_features)
-        int c = i % kN;               // 0..15, col within tile (in_features)
-        int gr = r0 + r;              // global out_feature index
-        int gc = c0 + c;              // global in_feature index
+    // ── Apply sign → counter → bit-flip for each weight in tile ────
+    // 128 threads handle 4×256 = 1024 elements (8 per thread)
+    for (int i = threadIdx.x; i < kWarpsPerBlock * kM * kN; i += blockDim.x) {
+        int w = i / (kM * kN);               // which warp's tile
+        int local = i % (kM * kN);           // (r,c) within the 16×16 tile
+        int r = local / kN;
+        int c = local % kN;
+
+        int warp_r_off_w = (w % 2) * kM;
+        int warp_c_off_w = (w / 2) * kN;
+
+        int gr = super_r0 + warp_r_off_w + r;
+        int gc = super_c0 + warp_c_off_w + c;
 
         if (gr < out_features && gc < in_features) {
-            float grad = dW_float_smem[r][c];
+            float grad = DWF(w, r, c);
 
             int idx = gr * in_features + gc;
             int16_t cnt = counter[idx];
 
-            // Gradient descent: positive dW → decrease weight → decrement counter
+            // Gradient descent: positive dW → decrease weight → decrement
             if (grad > 0.0f)       cnt--;
             else if (grad < 0.0f)  cnt++;
 
@@ -157,9 +181,9 @@ extern "C" void launch_packed_ternary_update_tc(
     const half* X  = static_cast<const half*>(X_ptr);
     const half* dY = static_cast<const half*>(dY_ptr);
 
-    dim3 block(kWarpThreads);  // 1 warp
-    dim3 grid((in_features + kN - 1) / kN,
-              (out_features + kM - 1) / kM);
+    dim3 grid((in_features + kSuperN - 1) / kSuperN,
+              (out_features + kSuperM - 1) / kSuperM);
+    dim3 block(128);  // 4 warps
 
     packed_ternary_update_tc_kernel<<<grid, block, 0, stream>>>(
         X, dY, W, counter, batch_size, in_features, out_features,

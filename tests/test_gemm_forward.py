@@ -189,17 +189,45 @@ def test_deterministic():
 #  Run
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def test_non_multiple_16():
+    """Non-multiple-of-16 dimensions work correctly (TC edge cases)."""
+    if not _check_cuda():
+        return
+
+    from kernels.packed_ternary import unpack_tensor
+    torch.manual_seed(42)
+
+    for B, K, N in [(17, 33, 33), (1, 33, 17), (49, 64, 64)]:
+        W_fp32 = torch.randn(N, K)
+        W_packed = _pack_and_check(W_fp32)
+        W_fp16_ref = unpack_tensor(W_packed.cpu(), N, K).to(torch.float16).cuda()
+
+        X = torch.randn(B, K, dtype=torch.float16, device="cuda")
+        Y_ref = ref_linear(W_packed, X)
+
+        Y_cuda = packed_ternary_forward(W_packed, X)
+
+        torch.testing.assert_close(Y_cuda, Y_ref, atol=1e-3, rtol=1e-3)
+        max_diff = (Y_cuda - Y_ref).abs().max().item()
+        print(f"  ✅ non-multiple-16 B={B}, K={K}, N={N}: max_diff={max_diff:.4f}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Run
+# ═══════════════════════════════════════════════════════════════════════════════
+
 if __name__ == "__main__":
     tests = [
-        ("single row",        test_single_row),
-        ("single column",     test_single_column),
-        ("square",            test_square),
-        ("rectangular",       test_rectangular),
-        ("multibatch",        test_multibatch),
-        ("zeros in weights",  test_zeros_in_weights),
-        ("all +1",            test_all_positive),
-        ("all -1",            test_all_negative),
-        ("deterministic",     test_deterministic),
+        ("single row",            test_single_row),
+        ("single column",         test_single_column),
+        ("square",                test_square),
+        ("rectangular",           test_rectangular),
+        ("multibatch",            test_multibatch),
+        ("zeros in weights",      test_zeros_in_weights),
+        ("all +1",                test_all_positive),
+        ("all -1",                test_all_negative),
+        ("deterministic",         test_deterministic),
+        ("non-multiple-16 edges", test_non_multiple_16),
     ]
 
     passed = 0

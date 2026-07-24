@@ -162,6 +162,7 @@ def test_backward_dx_tc_vs_scalar_crosscheck():
     W_packed = _pack_and_check(W_fp32)
 
     # Test across multiple batch sizes — TC kicks in at B >= 16
+    # Standard batch sizes
     for B in [1, 4, 8, 16, 32]:
         X = torch.randn(B, K, dtype=torch.float16, device="cuda", requires_grad=True)
         dY = torch.randn(B, N, dtype=torch.float16, device="cuda")
@@ -180,7 +181,36 @@ def test_backward_dx_tc_vs_scalar_crosscheck():
         print(f"  ✅ TC vs reference B={B}: max_diff={max_diff:.4f}")
 
 
+
+def test_backward_dx_tc_odd_shapes():
+    """TC backward dX works with non-multiple-of-16 K, N dimensions."""
+    if not _has_cuda():
+        return
+
+    torch.manual_seed(42)
+    from kernels.packed_ternary import unpack_tensor
+
+    for B, K, N in [(17, 33, 33), (8, 33, 17), (4, 49, 65)]:
+        W_fp32 = torch.randn(N, K)
+        W_packed = _pack_and_check(W_fp32)
+        dY = torch.randn(B, N, dtype=torch.float16, device="cuda")
+
+        dX_cuda = backward_dx(W_packed, dY, K)
+
+        # Reference via F.linear
+        W_fp16_ref = unpack_tensor(W_packed.cpu(), N, K).to(torch.float16).cuda()
+        X_ref = torch.randn(B, K, dtype=torch.float16, device="cuda", requires_grad=True)
+        Y_ref = F.linear(X_ref, W_fp16_ref)
+        Y_ref.backward(dY)
+        dX_ref = X_ref.grad
+
+        max_diff = (dX_cuda - dX_ref).abs().max().item()
+        assert max_diff < 1e-3, f"B={B} K={K} N={N}: max_diff={max_diff:.6f}"
+        print(f"  ✅ odd shapes B={B} K={K} N={N}: max_diff={max_diff:.4f}")
+
+
 def test_update_tc_flips_bits():
+
     """TC update kernel flips weights when counter exceeds threshold (batch >= 16)."""
     if not _has_cuda():
         return

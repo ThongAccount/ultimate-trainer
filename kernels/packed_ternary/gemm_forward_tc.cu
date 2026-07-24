@@ -31,13 +31,15 @@ constexpr int kSuperM = 32;  // super-tile batch (2 × kM)
 constexpr int kSuperN = 32;  // super-tile out  (2 × kN)
 
 // ── Per-warp SMEM offsets ─────────────────────────────────────────────
+// W, Y are per-warp (4 slots). X is shared across warps with same
+// batch offset: warps 0&1 share X slot 0, warps 2&3 share X slot 1.
 
 #define W_SMEM(w, r, k)   W_smem[(w) * kN * kK + (r) * kK + (k)]
-#define X_SMEM(w, b, k)   X_smem[(w) * kM * kK + (b) * kK + (k)]
+#define X_SMEM(w, b, k)   X_smem[(w/2) * kM * kK + (b) * kK + (k)]
 #define YF_SMEM(w, r, b)  Y_float_smem[(w) * kN * kM + (r) * kM + (b)]
 #define YH_SMEM(w, r, b)  Y_smem[(w) * kN * kM + (r) * kM + (b)]
 
-__global__ void packed_ternary_tc_kernel(
+__global__ __launch_bounds__(128) void packed_ternary_tc_kernel(
     const uint32_t* __restrict__ W,
     const half*     __restrict__ X,
     half*           __restrict__ Y,
@@ -60,9 +62,9 @@ __global__ void packed_ternary_tc_kernel(
     int b0 = super_b0 + warp_b_off;
     int r0 = super_r0 + warp_r_off;
 
-    // ── Shared memory (4 warps × independent tiles) ──────────────────
+    // ── Shared memory (4 warp W/Y tiles, 2 shared X tiles) ──────────
     __shared__ half   W_smem[kWarpsPerBlock * kN * kK];
-    __shared__ half   X_smem[kWarpsPerBlock * kM * kK];
+    __shared__ half   X_smem[2 * kM * kK];  // warps 0&1 share slot 0, 2&3 share slot 1
     __shared__ float  Y_float_smem[kWarpsPerBlock * kN * kM];
     __shared__ half   Y_smem[kWarpsPerBlock * kN * kM];
 
@@ -80,6 +82,7 @@ __global__ void packed_ternary_tc_kernel(
         // ── Load W tile → unpack to FP16 (per-warp, strided fill) ────
         // Each warp has 32 threads, must fill 16×16 = 256 SMEM elements.
         // Strided loop: each thread handles 8 elements.
+        #pragma unroll
         for (int i = wtid; i < kN * kK; i += 32) {
             int r = i / kK;               // 0..15
             int c = i % kK;               // 0..15
@@ -100,25 +103,30 @@ __global__ void packed_ternary_tc_kernel(
             W_SMEM(warp_id, r, c) = w_val;
         }
 
-        // ── Load X tile → X_smem (per-warp, strided fill) ────────────
-        for (int i = wtid; i < kM * kK; i += 32) {
-            int xb = i / kK;              // 0..15
-            int xk = i % kK;              // 0..15
-            half x_val = __float2half(0.0f);
-            if (xk < tile_k) {
-                int gb = b0 + xb;
-                int gk = k0 + xk;
-                if (gb < batch_size && gk < in_features) {
-                    x_val = X[gb * in_features + gk];
+        // ── Load X tile → X_smem (shared by warps with same b_offset) ─
+        // Warps 0&1 share X slot 0 (b_off=0), warps 2&3 share slot 1 (b_off=16).
+        // Only warps 0 and 2 load — saves 2× global reads.
+        if (warp_id % 2 == 0) {
+            #pragma unroll
+            for (int i = wtid; i < kM * kK; i += 32) {
+                int xb = i / kK;              // 0..15
+                int xk = i % kK;              // 0..15
+                half x_val = __float2half(0.0f);
+                if (xk < tile_k) {
+                    int gb = b0 + xb;
+                    int gk = k0 + xk;
+                    if (gb < batch_size && gk < in_features) {
+                        x_val = X[gb * in_features + gk];
+                    }
                 }
+                X_SMEM(warp_id, xb, xk) = x_val;
             }
-            X_SMEM(warp_id, xb, xk) = x_val;
         }
         __syncthreads();
 
         // ── Load WMMA fragments from SMEM ────────────────────────────
         wmma::load_matrix_sync(a_frag, &W_smem[warp_id * kN * kK], kK);
-        wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kM * kK], kM);
+        wmma::load_matrix_sync(b_frag, &X_smem[(warp_id / 2) * kM * kK], kM);
 
         // ── Tensor-core matmul on 16×16×16 tile ──────────────────────
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
