@@ -82,7 +82,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         W_packed: torch.Tensor,
         counter: torch.Tensor,
         in_features: int,
-        threshold: int = 64,
+        threshold: int = 8,
     ) -> torch.Tensor:
         # Ensure autograd graph hooks this Function even if X has no grad.
         # Without this, PyTorch prunes the graph and backward() is never
@@ -140,7 +140,7 @@ class PackedTernaryLinear(nn.Module):
         self,
         in_features: int,
         out_features: int,
-        threshold: int = 64,
+        threshold: int = 8,
         bias: bool = True,
         init_scale: float = 1.0,
     ):

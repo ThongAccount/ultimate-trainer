@@ -58,7 +58,7 @@ def bench_discrete(B, K, N):
     """
 
     # Use the module which includes auto-dispatch for forward
-    layer = PackedTernaryLinear(K, N, threshold=64).cuda()
+    layer = PackedTernaryLinear(K, N, threshold=8).cuda()
 
     # Warmup
     for _ in range(WARMUP):
