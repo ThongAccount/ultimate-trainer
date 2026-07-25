@@ -89,10 +89,10 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         # called, so the update() kernel never executes.
         if torch.is_grad_enabled() and not X.requires_grad:
             X = X.detach().clone().requires_grad_(True)
-            # clone() is critical! detach() alone shares storage with the
-            # input, and PyTorch may reuse that storage after forward,
-            # corrupting the tensor saved by save_for_backward.
-        ctx.save_for_backward(X)
+        # Store X as a plain ctx attribute, NOT via save_for_backward.
+        # save_for_backward has PyTorch version-tracking that can corrupt
+        # the saved tensor's data between forward and backward.
+        ctx.X_saved = X
         ctx.W_packed = W_packed
         ctx.counter = counter
         ctx.in_features = in_features
@@ -101,7 +101,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dY: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
-        (X,) = ctx.saved_tensors
+        X = ctx.X_saved
         W_packed = ctx.W_packed
         counter = ctx.counter
         threshold = ctx.threshold
