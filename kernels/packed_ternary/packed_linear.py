@@ -101,16 +101,23 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         (X,) = ctx.saved_tensors
         W_packed = ctx.W_packed
         counter = ctx.counter
+        threshold = ctx.threshold
+
+        # DIAGNOSTIC: compare data pointers
+        if not hasattr(ctx, '_diag_done'):
+            ctx._diag_done = True
+            import warnings
+            # Check if W_packed passed through apply() is same object
+            if hasattr(W_packed, 'data_ptr'):
+                warnings.warn(f"[PackedTernaryLinearFn] W_packed.data_ptr in backward={W_packed.data_ptr():#x}")
 
         # Gradient w.r.t. input (needed upstream)
         dX = backward_dx(W_packed, dY, ctx.in_features)
 
         # Fused weight update: dW consumed, never stored
-        # Only update if we're not frozen (counter exists)
         if counter is not None:
-            update(W_packed, counter, X, dY, ctx.threshold)
+            update(W_packed, counter, X, dY, threshold)
 
-        # Return gradients for each forward arg (None for non-tensor args)
         return dX, None, None, None, None
 
 
