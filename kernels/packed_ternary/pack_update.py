@@ -292,13 +292,13 @@ def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Te
     if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and in_features >= TC_MIN_DIM:
         _load_tc_if_needed()
         if _HAS_DX_TC:
-            return _dx_tc_fn(W.contiguous(), dY.contiguous(), in_features)
+            return _dx_tc_fn(W, dY, in_features)
 
     # Fallback to scalar
     _load_if_needed()
     if not _HAS_DX:
         raise RuntimeError("dX kernel not available")
-    return _dx_fn(W.contiguous(), dY.contiguous(), in_features)
+    return _dx_fn(W, dY, in_features)
 
 
 def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
@@ -357,15 +357,16 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
     X_c = X.contiguous()
 
     # ── Backward: dX = dY @ W ──
+    # W is already asserted contiguous above — skip redundant .contiguous()
     if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and in_features >= TC_MIN_DIM:
         _load_tc_if_needed()
         if _HAS_DX_TC:
-            dX = _dx_tc_fn(W.contiguous(), dY_c, in_features)
+            dX = _dx_tc_fn(W, dY_c, in_features)
         else:
-            dX = _dx_fn(W.contiguous(), dY_c, in_features)
+            dX = _dx_fn(W, dY_c, in_features)
     else:
         _load_if_needed()
-        dX = _dx_fn(W.contiguous(), dY_c, in_features)
+        dX = _dx_fn(W, dY_c, in_features)
 
     # ── Update: dW→sign→counter→flip ──
     N_in = X_c.size(1)
