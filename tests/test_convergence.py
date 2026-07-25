@@ -120,17 +120,20 @@ def train_discrete(
 
         losses.append(loss.item())
 
-        # Diagnostic: check weight changes and counter range
+        # Diagnostic: check if update actually modifies counter
         if step == 0:
             W_initial = model.fc1.W_packed.clone()
-            W_prev = model.fc1.W_packed.clone()
+            counter_before = model.fc1.counter.clone()
+            # Check tensor identity through contiguity
+            print(f"  counter contiguous: {model.fc1.counter.is_contiguous()}")
+            print(f"  counter device: {model.fc1.counter.device}")
+            print(f"  counter dtype: {model.fc1.counter.dtype}")
         if step == steps - 1:
             W_changed = not torch.equal(W_initial, model.fc1.W_packed)
+            counter_changed = not torch.equal(counter_before, model.fc1.counter)
             print(f"  fc1 weights changed: {W_changed}")
+            print(f"  fc1 counter changed: {counter_changed}")
             print(f"  fc1 counter range: [{model.fc1.counter.min().item()}, {model.fc1.counter.max().item()}]")
-            if W_changed:
-                n_diff = (model.fc1.W_packed != W_initial).sum().item()
-                print(f"  fc1 words changed: {n_diff}/{model.fc1.W_packed.numel()}")
 
         if step % 20 == 0 or step == steps - 1:
             print(f"  step {step:4d}: loss={loss.item():.6f}")
