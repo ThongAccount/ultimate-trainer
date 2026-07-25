@@ -172,7 +172,7 @@ class PackedTernaryLinear(nn.Module):
         out_features: int,
         threshold: int = 8,
         bias: bool = True,
-        init_scale: float = 1.0,
+        init_scale: float | None = None,
     ):
         super().__init__()
         self.in_features = in_features
