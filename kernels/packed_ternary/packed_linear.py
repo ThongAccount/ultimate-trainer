@@ -101,7 +101,6 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         # save_for_backward has PyTorch version-tracking that can corrupt
         # the saved tensor's data between forward and backward.
         ctx.X_saved = X
-        ctx.X_fwd_norm = X.norm().item()
         ctx.W_packed = W_packed
         ctx.counter = counter
         ctx.in_features = in_features
@@ -115,30 +114,11 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         counter = ctx.counter
         threshold = ctx.threshold
 
-        # DIAGNOSTIC: compare forward vs backward X
-        if not hasattr(ctx, '_diag_done'):
-            ctx._diag_done = True
-            import warnings
-            X_norm = X.norm().item()
-            X_ptr = X.data_ptr()
-            if ctx.X_fwd_norm > 0 and X_norm == 0:
-                warnings.warn(f"[CRITICAL] X zeroed! fwd_norm={ctx.X_fwd_norm:.4f} ptr={X_ptr:#x} in_f={ctx.in_features}")
-            dY_norm = dY.norm().item()
-            dY_ptr = dY.data_ptr()
-            warnings.warn(
-                f"[PackedTernaryLinearFn] BWD in_f={ctx.in_features} "
-                f"|X|={X_norm:.4f} X_ptr={X_ptr:#x} "
-                f"|dY|={dY_norm:.4f} dY_ptr={dY_ptr:#x}")
-
         # Gradient w.r.t. input (needed upstream)
         dX = backward_dx(W_packed, dY, ctx.in_features)
 
         # Fused weight update: dW consumed, never stored
         if counter is not None:
-            if not hasattr(ctx, '_up_called'):
-                ctx._up_called = True
-                import warnings
-                warnings.warn(f"[PackedTernaryLinearFn] update() called! dY norm={dY.norm().item():.6f}, X norm={X.norm().item():.6f}")
             update(W_packed, counter, X, dY, threshold)
 
         return dX, None, None, None, None
