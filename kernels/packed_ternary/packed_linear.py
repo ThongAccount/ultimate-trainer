@@ -75,6 +75,12 @@ def xavier_init(out_features: int, in_features: int, gamma: float | None = None)
 #  Autograd Function
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Pre-allocated dX buffer for backward (avoids allocation every step)
+_dX_buf = None
+_dX_shape = None
+_dX_device = None
+
+
 class PackedTernaryLinearFn(torch.autograd.Function):
     """Fused forward + backward + counter update for packed ternary weights.
 
@@ -92,11 +98,11 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         in_features: int,
         threshold: int = 8,
     ) -> torch.Tensor:
-        # Ensure autograd graph hooks this Function even if X has no grad.
-        # Without this, PyTorch prunes the graph and backward() is never
-        # called, so the update() kernel never executes.
+        # Only clone X when it doesn't already require grad (first layer).
+        # Subsequent layers receive X from previous forward, which already
+        # has requires_grad=True and won't trigger this path.
         if torch.is_grad_enabled() and not X.requires_grad:
-            X = X.detach().clone().requires_grad_(True)
+            X = X.detach().requires_grad_(True)
         # Store X as a plain ctx attribute, NOT via save_for_backward.
         # save_for_backward has PyTorch version-tracking that can corrupt
         # the saved tensor's data between forward and backward.
@@ -109,6 +115,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dY: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
+        global _dX_buf, _dX_shape, _dX_device
         X = ctx.X_saved
         W_packed = ctx.W_packed
         counter = ctx.counter
