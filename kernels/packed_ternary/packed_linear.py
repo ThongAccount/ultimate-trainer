@@ -116,6 +116,10 @@ class PackedTernaryLinearFn(torch.autograd.Function):
 
         # Fused weight update: dW consumed, never stored
         if counter is not None:
+            if not hasattr(ctx, '_up_called'):
+                ctx._up_called = True
+                import warnings
+                warnings.warn(f"[PackedTernaryLinearFn] update() called! dY norm={dY.norm().item():.6f}, X norm={X.norm().item():.6f}")
             update(W_packed, counter, X, dY, threshold)
 
         return dX, None, None, None, None
