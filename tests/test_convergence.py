@@ -134,23 +134,19 @@ def train_discrete(
 
         # Check counter immediately after first backward
         if step == 0:
-            c_min = model.fc1.counter.min().item()
-            c_max = model.fc1.counter.max().item()
-            c_nonzero = (model.fc1.counter != 0).sum().item()
-            print(f"  after step 0 backward: counter=[{c_min},{c_max}], nonzero={c_nonzero}/{model.fc1.counter.numel()}")
-            w_diff = (model.fc1.W_packed != W_initial).sum().item()
-            if w_diff > 0:
-                print(f"  weights changed immediately! {w_diff} words differ")
-            else:
-                print(f"  NO weights changed after step 0")
+            for name in ['fc1', 'fc2', 'fc3']:
+                layer = getattr(model, name)
+                c_min = layer.counter.min().item()
+                c_max = layer.counter.max().item()
+                c_nonzero = (layer.counter != 0).sum().item()
+                print(f"  after step 0 backward: {name}.counter=[{c_min},{c_max}], nonzero={c_nonzero}/{layer.counter.numel()}")
+                print(f"    {name}.counter.data_ptr()={layer.counter.data_ptr():#x}")
 
         losses.append(loss.item())
         if step == steps - 1:
-            W_changed = not torch.equal(W_initial, model.fc1.W_packed)
-            counter_changed = not torch.equal(counter_before, model.fc1.counter)
-            print(f"  fc1 weights changed: {W_changed}")
-            print(f"  fc1 counter changed: {counter_changed}")
-            print(f"  fc1 counter range: [{model.fc1.counter.min().item()}, {model.fc1.counter.max().item()}]")
+            for name in ['fc1', 'fc2', 'fc3']:
+                layer = getattr(model, name)
+                print(f"  {name}.counter range=[{layer.counter.min().item()},{layer.counter.max().item()}] nonzero={(layer.counter != 0).sum().item()}/{layer.counter.numel()}")
 
         if step % 20 == 0 or step == steps - 1:
             print(f"  step {step:4d}: loss={loss.item():.6f}")
