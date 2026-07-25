@@ -88,7 +88,10 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         # Without this, PyTorch prunes the graph and backward() is never
         # called, so the update() kernel never executes.
         if torch.is_grad_enabled() and not X.requires_grad:
-            X = X.detach().requires_grad_(True)
+            X = X.detach().clone().requires_grad_(True)
+            # clone() is critical! detach() alone shares storage with the
+            # input, and PyTorch may reuse that storage after forward,
+            # corrupting the tensor saved by save_for_backward.
         ctx.save_for_backward(X)
         ctx.W_packed = W_packed
         ctx.counter = counter
