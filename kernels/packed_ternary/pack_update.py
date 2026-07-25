@@ -257,11 +257,13 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
     otherwise uses the scalar kernel.
     """
     B = X.size(0)
-    # Ensure tensors are contiguous so in-place updates affect the original
-    W = W.contiguous()
-    counter = counter.contiguous()
-    X = X.contiguous()
-    dY = dY.contiguous()
+    # CRITICAL: Do NOT call .contiguous() on W or counter — that can return
+    # a COPY if the tensor is non-contiguous, and the kernel would modify
+    # the copy silently.  Assert contiguity instead so we catch issues early.
+    assert W.is_contiguous(), "W must be contiguous for in-place update"
+    assert counter.is_contiguous(), "counter must be contiguous for in-place update"
+    X = X.contiguous()  # fine — X is only read
+    dY = dY.contiguous()  # fine — dY is only read
 
     if B >= TC_MIN_BATCH:
         _load_tc_if_needed()
