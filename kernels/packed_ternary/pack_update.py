@@ -210,7 +210,7 @@ def _load_up_tc():
 
 # ── Auto-dispatch public API ───────────────────────────────────────────
 
-TC_MIN_BATCH = 16  # WMMA needs at least 16 in the batch dimension
+TC_MIN_DIM = 16  # WMMA m16n16k16 needs M, N, K all >= 16
 
 
 def _load_if_needed():
@@ -230,14 +230,18 @@ def _load_tc_if_needed():
 
 
 def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Tensor:
-    """dX = W^T @ dY  (gradient w.r.t. input).
+    """dX = dY @ W  (gradient w.r.t. input).
 
-    Auto-dispatches to TC (WMMA) when batch_size >= 16,
+    Auto-dispatches to TC (WMMA) when all GEMM dimensions >= 16,
     otherwise uses the scalar kernel.
+
+    GEMM layout: [B, N_out] × [N_out, N_in] → [B, N_in]
+      M = B (batch), K = N_out (dY cols), N = N_in (in_features)
     """
     B = dY.size(0)
+    N_out = dY.size(1)   # K dimension of the GEMM
 
-    if B >= TC_MIN_BATCH:
+    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and in_features >= TC_MIN_DIM:
         _load_tc_if_needed()
         if _HAS_DX_TC:
             return _dx_tc_fn(W.contiguous(), dY.contiguous(), in_features)
@@ -253,10 +257,15 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
            dY: torch.Tensor, threshold: int = 64):
     """Fused gradient -> counter -> bit-flip.  W is updated in-place.
 
-    Auto-dispatches to TC (WMMA) when batch_size >= 16,
+    Auto-dispatches to TC (WMMA) when all GEMM dimensions >= 16,
     otherwise uses the scalar kernel.
+
+    GEMM layout: [N_out, B] × [B, N_in] → [N_out, N_in]
+      M = N_out (dY cols), K = B (batch), N = N_in (X cols)
     """
     B = X.size(0)
+    N_out = dY.size(1)   # M dimension of dW
+    N_in = X.size(1)     # N dimension of dW
     # CRITICAL: Do NOT call .contiguous() on W or counter — that can return
     # a COPY if the tensor is non-contiguous, and the kernel would modify
     # the copy silently.  Assert contiguity instead so we catch issues early.
@@ -265,7 +274,7 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
     X = X.contiguous()  # fine — X is only read
     dY = dY.contiguous()  # fine — dY is only read
 
-    if B >= TC_MIN_BATCH:
+    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and N_in >= TC_MIN_DIM:
         _load_tc_if_needed()
         if _HAS_UP_TC:
             _up_tc_fn(W, counter, X, dY, int(threshold))

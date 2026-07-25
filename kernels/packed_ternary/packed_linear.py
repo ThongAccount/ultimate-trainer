@@ -40,10 +40,10 @@ from .pack_update import backward_dx, update, init_counter
 
 def _forward_auto(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
     """Auto-select forward kernel based on tensor dimensions."""
-    B, _ = X.shape
-    N = W.shape[0]
-    # TC needs batch ≥ 16 and features ≥ 16 for good speedup
-    if B >= 16 and N >= 16 and has_tc():
+    B, K = X.shape       # M=B, K=in_features
+    N = W.shape[0]       # N=out_features
+    # TC WMMA m16n16k16 needs M, N, K all >= 16
+    if B >= 16 and N >= 16 and K >= 16 and has_tc():
         return packed_ternary_forward_tc(W, X)
     # v2 needs N ≥ 4 for multi-output sharing
     if N >= 4 and has_forward_kernel_v2():
