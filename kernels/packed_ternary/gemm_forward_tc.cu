@@ -103,11 +103,13 @@ __global__ __launch_bounds__(128) void packed_ternary_tc_kernel(
                         int pos = gc % kWeightsPerWord;
                         int8_t t0, t1, t2, t3;
                         decode4(word, pos, &t0, &t1, &t2, &t3);
-                        W_SMEM(warp_id, r, c0_    ) = __float2half((float)t0);
-                        W_SMEM(warp_id, r, c0_ + 1) = __float2half((float)t1);
-                        W_SMEM(warp_id, r, c0_ + 2) = __float2half((float)t2);
-                        if (c0_ + 3 < tile_k)
-                            W_SMEM(warp_id, r, c0_ + 3) = __float2half((float)t3);
+                        // half2 vectorized stores (2× fewer SMEM writes)
+                        half2 v01 = __half2(__int2half_rn(t0), __int2half_rn(t1));
+                        *(half2*)&W_SMEM(warp_id, r, c0_) = v01;
+                        if (c0_ + 2 < tile_k) {
+                            half2 v23 = __half2(__int2half_rn(t2), __int2half_rn(t3));
+                            *(half2*)&W_SMEM(warp_id, r, c0_ + 2) = v23;
+                        }
                     }
                 }
             }
@@ -125,11 +127,12 @@ __global__ __launch_bounds__(128) void packed_ternary_tc_kernel(
                         int pos = gc % kWeightsPerWord;
                         int8_t t0, t1, t2, t3;
                         decode4(word, pos, &t0, &t1, &t2, &t3);
-                        W_SMEM(warp_id, r, c4_    ) = __float2half((float)t0);
-                        W_SMEM(warp_id, r, c4_ + 1) = __float2half((float)t1);
-                        W_SMEM(warp_id, r, c4_ + 2) = __float2half((float)t2);
-                        if (c4_ + 3 < tile_k)
-                            W_SMEM(warp_id, r, c4_ + 3) = __float2half((float)t3);
+                        half2 v01b = __half2(__int2half_rn(t0), __int2half_rn(t1));
+                        *(half2*)&W_SMEM(warp_id, r, c4_) = v01b;
+                        if (c4_ + 2 < tile_k) {
+                            half2 v23b = __half2(__int2half_rn(t2), __int2half_rn(t3));
+                            *(half2*)&W_SMEM(warp_id, r, c4_ + 2) = v23b;
+                        }
                     }
                 }
             }
@@ -178,9 +181,12 @@ __global__ __launch_bounds__(128) void packed_ternary_tc_kernel(
                             wmma::mem_row_major);
     __syncthreads();
 
-    // 128 threads convert 1024 float→half elements (8 per thread)
-    for (int idx = threadIdx.x; idx < kWarpsPerBlock * kN * kM; idx += blockDim.x) {
-        ((half*)Y_smem)[idx] = __float2half(((float*)Y_float_smem)[idx]);
+    // 128 threads convert 1024 float→half (half2 vectorized, 4 per thread)
+    constexpr int n_elems = kWarpsPerBlock * kN * kM;
+    for (int idx = threadIdx.x * 2; idx < n_elems; idx += blockDim.x * 2) {
+        float2 f = make_float2(((float*)Y_float_smem)[idx],
+                               ((float*)Y_float_smem)[idx + 1]);
+        *(half2*)&((half*)Y_smem)[idx] = __float22half2_rn(f);
     }
     __syncthreads();
 

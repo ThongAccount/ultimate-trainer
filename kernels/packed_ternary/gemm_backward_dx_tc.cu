@@ -99,7 +99,7 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
         // ── Load W tile → unpack to FP16 (block fill + decode4) ─────
         {
             int base = wtid * 8;
-            // First 4
+            // First 4 — half2 vectorized stores
             int i0 = base;
             int r_  = i0 / kN;
             int c_  = i0 % kN;
@@ -113,15 +113,16 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
                         int pos = gc % kWeightsPerWord;
                         int8_t t0, t1, t2, t3;
                         decode4(word, pos, &t0, &t1, &t2, &t3);
-                        WS(warp_id, r_, c_    ) = __float2half((float)t0);
-                        WS(warp_id, r_, c_ + 1) = __float2half((float)t1);
-                        WS(warp_id, r_, c_ + 2) = __float2half((float)t2);
-                        if (c_ + 3 < kN)
-                            WS(warp_id, r_, c_ + 3) = __float2half((float)t3);
+                        half2 v01 = __half2(__int2half_rn(t0), __int2half_rn(t1));
+                        *(half2*)&WS(warp_id, r_, c_) = v01;
+                        if (c_ + 2 < kN) {
+                            half2 v23 = __half2(__int2half_rn(t2), __int2half_rn(t3));
+                            *(half2*)&WS(warp_id, r_, c_ + 2) = v23;
+                        }
                     }
                 }
             }
-            // Second 4
+            // Second 4 — half2 vectorized stores
             int i4 = base + 4;
             r_  = i4 / kN;
             c_  = i4 % kN;
@@ -135,11 +136,12 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
                         int pos = gc % kWeightsPerWord;
                         int8_t t0, t1, t2, t3;
                         decode4(word, pos, &t0, &t1, &t2, &t3);
-                        WS(warp_id, r_, c_    ) = __float2half((float)t0);
-                        WS(warp_id, r_, c_ + 1) = __float2half((float)t1);
-                        WS(warp_id, r_, c_ + 2) = __float2half((float)t2);
-                        if (c_ + 3 < kN)
-                            WS(warp_id, r_, c_ + 3) = __float2half((float)t3);
+                        half2 v01b = __half2(__int2half_rn(t0), __int2half_rn(t1));
+                        *(half2*)&WS(warp_id, r_, c_) = v01b;
+                        if (c_ + 2 < kN) {
+                            half2 v23b = __half2(__int2half_rn(t2), __int2half_rn(t3));
+                            *(half2*)&WS(warp_id, r_, c_ + 2) = v23b;
+                        }
                     }
                 }
             }
@@ -159,10 +161,12 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
                             kN, wmma::mem_row_major);
     __syncthreads();
 
-    // 128 threads convert 1024 float→half
-    int n_store = kWarpsPerBlock * kM * kN;
-    for (int i = threadIdx.x; i < n_store; i += blockDim.x) {
-        ((half*)dX_smem)[i] = __float2half(((float*)dX_float_smem)[i]);
+    // 128 threads convert 1024 float→half (half2 vectorized)
+    constexpr int n_store = kWarpsPerBlock * kM * kN;
+    for (int i = threadIdx.x * 2; i < n_store; i += blockDim.x * 2) {
+        float2 f = make_float2(((float*)dX_float_smem)[i],
+                               ((float*)dX_float_smem)[i + 1]);
+        *(half2*)&((half*)dX_smem)[i] = __float22half2_rn(f);
     }
     __syncthreads();
 
