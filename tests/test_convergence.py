@@ -226,13 +226,11 @@ if __name__ == "__main__":
     y_pred = model(x)
     dY = 2 * (y_pred - y) / (batch_size * d_out)
     from kernels.packed_ternary.pack_update import update
+    # X for fc3 = activation after fc2+ReLU (before fc3)
+    with torch.no_grad():
+        fc3_in = torch.relu(model.fc2(torch.relu(model.fc1(x))))
     c_before = model.fc3.counter.clone()
-    update(model.fc3.W_packed, model.fc3.counter, model.fc3.in_features, 
-           torch.randn_like(model.fc3.in_features) if False else ...)
-    # Actually call update properly:
-    update(model.fc3.W_packed, model.fc3.counter, 
-           model.fc2(model.fc1(x)).detach(),  # X = activation before fc3
-           dY, threshold=8)
+    update(model.fc3.W_packed, model.fc3.counter, fc3_in, dY, threshold=8)
     torch.cuda.synchronize()
     c_after = model.fc3.counter
     changed = not torch.equal(c_before, c_after)
