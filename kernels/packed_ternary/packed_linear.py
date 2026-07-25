@@ -30,6 +30,8 @@ from .pack_forward import (
     packed_ternary_forward_v2,
     has_tc,
     packed_ternary_forward_tc,
+    has_packed,
+    packed_ternary_forward_packed,
 )
 from .pack_update import backward_dx, update, backward_update, init_counter
 

@@ -463,6 +463,74 @@ def packed_ternary_forward_tc(W, X):
     else:
         return _forward_fn_tc(W.contiguous(), X.contiguous())
 
+# ── packed (CUDA core, no unpack) ────────────────────────────────────────────
+
+_CU_PATH_PACKED = os.path.join(HERE, "gemm_forward_packed.cu")
+_HAS_PACKED = False
+_forward_fn_packed = None
+
+
+def _load_packed():
+    global _HAS_PACKED, _forward_fn_packed
+    if _HAS_PACKED:
+        return
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(_CU_PATH_PACKED) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+
+        _lib = load_inline(
+            name="packed_ternary_packed_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_forward_packed(
+                    const uint32_t* W, const void* X, void* Y,
+                    int batch_size, int in_features, int out_features,
+                    int stride_words, cudaStream_t stream);
+            }
+            torch::Tensor wrapper_packed(torch::Tensor W, torch::Tensor X) {
+                auto Y = torch::empty({X.size(0), W.size(0)},
+                    torch::dtype(torch::kFloat16).device(X.device()));
+                launch_packed_ternary_forward_packed(
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
+                    X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
+                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                return Y;
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("forward_packed", &wrapper_packed,
+                      "Packed ternary forward (no unpack)");
+            }
+            """,
+            cuda_sources=[combined], verbose=False,
+            extra_cuda_cflags=["-O3", "--use_fast_math"],
+        )
+        _forward_fn_packed = _lib.forward_packed
+        _HAS_PACKED = True
+    except Exception as e:
+        print(f"[packed] Failed to load: {e}")
+
+
+def has_packed():
+    if not _HAS_PACKED:
+        _load_packed()
+    return _HAS_PACKED
+
+
+def packed_ternary_forward_packed(W, X):
+    """Forward GEMM using CUDA cores (no unpack to FP16)."""
+    if not _HAS_PACKED:
+        _load_packed()
+    if not _HAS_PACKED:
+        raise RuntimeError("Packed kernel not available")
+    return _forward_fn_packed(W.contiguous(), X.contiguous())
+
+
 # ── Reference (pure PyTorch, for testing) ───────────────────────────────────
 
 def ref_linear(W_packed: torch.Tensor, X: torch.Tensor, gamma: float = 1.0) -> torch.Tensor:
