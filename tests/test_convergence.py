@@ -218,6 +218,32 @@ if __name__ == "__main__":
     print(f"Model: {d_in}→{d_hidden}→{d_out}, {steps} steps, batch={batch_size}")
     print()
 
+    # Direct update() test — bypass autograd, call update() directly
+    print("Direct update() test (bypass autograd)...")
+    model = DiscreteMLP(d_in, d_hidden, d_out, threshold=8).cuda().half()
+    x = torch.randn(batch_size, d_in, dtype=torch.float16, device="cuda")
+    y = torch.randn(batch_size, d_out, dtype=torch.float16, device="cuda")
+    y_pred = model(x)
+    dY = 2 * (y_pred - y) / (batch_size * d_out)
+    from kernels.packed_ternary.pack_update import update
+    c_before = model.fc3.counter.clone()
+    update(model.fc3.W_packed, model.fc3.counter, model.fc3.in_features, 
+           torch.randn_like(model.fc3.in_features) if False else ...)
+    # Actually call update properly:
+    update(model.fc3.W_packed, model.fc3.counter, 
+           model.fc2(model.fc1(x)).detach(),  # X = activation before fc3
+           dY, threshold=8)
+    torch.cuda.synchronize()
+    c_after = model.fc3.counter
+    changed = not torch.equal(c_before, c_after)
+    print(f"  Direct update() fc3 counter changed: {changed}")
+    if changed:
+        nonzero = (c_after != 0).sum().item()
+        print(f"  fc3 counter nonzero: {nonzero}/{c_after.numel()}")
+    else:
+        print(f"  fc3 counter still [0,0] — update() kernel does NOT modify counter when called directly")
+    print()
+
     # Baseline: no training
     print("Computing baseline (frozen random weights)...")
     bl = baseline_loss(d_in, d_hidden, d_out, batch_size)
