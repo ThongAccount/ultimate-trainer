@@ -120,6 +120,18 @@ def train_discrete(
 
         losses.append(loss.item())
 
+        # Diagnostic: check weight changes and counter range
+        if step == 0:
+            self.W_initial = model.fc1.W_packed.clone()
+            self.W_prev = model.fc1.W_packed.clone()
+        if step == steps - 1:
+            W_changed = not torch.equal(self.W_initial, model.fc1.W_packed)
+            print(f"  fc1 weights changed: {W_changed}")
+            print(f"  fc1 counter range: [{model.fc1.counter.min().item()}, {model.fc1.counter.max().item()}]")
+            if W_changed:
+                n_diff = (model.fc1.W_packed != self.W_initial).sum().item()
+                print(f"  fc1 words changed: {n_diff}/{model.fc1.W_packed.numel()}")
+
         if step % 20 == 0 or step == steps - 1:
             print(f"  step {step:4d}: loss={loss.item():.6f}")
 
@@ -151,6 +163,18 @@ def train_float(
         opt.step()
 
         losses.append(loss.item())
+
+        # Diagnostic: check weight changes and counter range
+        if step == 0:
+            self.W_initial = model.fc1.W_packed.clone()
+            self.W_prev = model.fc1.W_packed.clone()
+        if step == steps - 1:
+            W_changed = not torch.equal(self.W_initial, model.fc1.W_packed)
+            print(f"  fc1 weights changed: {W_changed}")
+            print(f"  fc1 counter range: [{model.fc1.counter.min().item()}, {model.fc1.counter.max().item()}]")
+            if W_changed:
+                n_diff = (model.fc1.W_packed != self.W_initial).sum().item()
+                print(f"  fc1 words changed: {n_diff}/{model.fc1.W_packed.numel()}")
 
         if step % 20 == 0 or step == steps - 1:
             print(f"  step {step:4d}: loss={loss.item():.6f}")
