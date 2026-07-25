@@ -56,9 +56,17 @@ def _forward_auto(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
 #  Initialization helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def xavier_init(out_features: int, in_features: int, gamma: float = 1.0) -> torch.Tensor:
-    """Xavier-uniform initialised weights, packed to ternary."""
+def xavier_init(out_features: int, in_features: int, gamma: float | None = None) -> torch.Tensor:
+    """Xavier-uniform initialised weights, packed to ternary.
+
+    gamma controls the quantization threshold.  With default gamma=None,
+    gamma is set to std = sqrt(2/(in+out)) so that ~50% of weights flip
+    to ±1 at init.  If gamma is too large (e.g., 1.0), almost all weights
+    round to 0 and the network produces flat output.
+    """
     std = math.sqrt(2.0 / (in_features + out_features))
+    if gamma is None:
+        gamma = std  # match quantization threshold to weight scale
     W_fp32 = torch.randn(out_features, in_features) * std
     return pack_tensor(W_fp32, gamma=gamma)
 
