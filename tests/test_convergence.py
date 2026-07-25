@@ -114,20 +114,32 @@ def train_discrete(
         y_pred = model(x)
         loss = F.mse_loss(y_pred, y)
 
-        # The backward() triggers PackedTernaryLinearFn.backward(),
-        # which computes dX and applies the fused counter update.
-        loss.backward()
-
-        losses.append(loss.item())
-
-        # Diagnostic: check if update actually modifies counter
+        # Diagnostic init (before first backward to capture initial state)
         if step == 0:
             W_initial = model.fc1.W_packed.clone()
             counter_before = model.fc1.counter.clone()
-            # Check tensor identity through contiguity
             print(f"  counter contiguous: {model.fc1.counter.is_contiguous()}")
             print(f"  counter device: {model.fc1.counter.device}")
             print(f"  counter dtype: {model.fc1.counter.dtype}")
+
+        # The backward() triggers PackedTernaryLinearFn.backward(),
+        # which computes dX and applies the fused counter update.
+        loss.backward()
+        torch.cuda.synchronize()  # ensure kernel completes
+
+        # Check counter immediately after first backward
+        if step == 0:
+            c_min = model.fc1.counter.min().item()
+            c_max = model.fc1.counter.max().item()
+            c_nonzero = (model.fc1.counter != 0).sum().item()
+            print(f"  after step 0 backward: counter=[{c_min},{c_max}], nonzero={c_nonzero}/{model.fc1.counter.numel()}")
+            w_diff = (model.fc1.W_packed != W_initial).sum().item()
+            if w_diff > 0:
+                print(f"  weights changed immediately! {w_diff} words differ")
+            else:
+                print(f"  NO weights changed after step 0")
+
+        losses.append(loss.item())
         if step == steps - 1:
             W_changed = not torch.equal(W_initial, model.fc1.W_packed)
             counter_changed = not torch.equal(counter_before, model.fc1.counter)
