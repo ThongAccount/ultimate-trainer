@@ -98,11 +98,13 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         in_features: int,
         threshold: int = 8,
     ) -> torch.Tensor:
-        # Only clone X when it doesn't already require grad (first layer).
-        # Subsequent layers receive X from previous forward, which already
-        # has requires_grad=True and won't trigger this path.
+        # Ensure autograd graph hooks this Function even if X has no grad.
+        # Without this, PyTorch prunes the graph and backward() is never
+        # called, so the update() kernel never executes.
+        # clone() is required — detach() alone shares storage and causes
+        # autograd tracking issues that triple Python overhead.
         if torch.is_grad_enabled() and not X.requires_grad:
-            X = X.detach().requires_grad_(True)
+            X = X.detach().clone().requires_grad_(True)
         # Store X as a plain ctx attribute, NOT via save_for_backward.
         # save_for_backward has PyTorch version-tracking that can corrupt
         # the saved tensor's data between forward and backward.
