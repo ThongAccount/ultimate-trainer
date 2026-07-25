@@ -93,6 +93,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         # save_for_backward has PyTorch version-tracking that can corrupt
         # the saved tensor's data between forward and backward.
         ctx.X_saved = X
+        ctx.X_fwd_norm = X.norm().item()
         ctx.W_packed = W_packed
         ctx.counter = counter
         ctx.in_features = in_features
@@ -106,12 +107,14 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         counter = ctx.counter
         threshold = ctx.threshold
 
-        # DIAGNOSTIC: check X and dY integrity
+        # DIAGNOSTIC: compare forward vs backward X
         if not hasattr(ctx, '_diag_done'):
             ctx._diag_done = True
             import warnings
             X_norm = X.norm().item()
             X_ptr = X.data_ptr()
+            if ctx.X_fwd_norm > 0 and X_norm == 0:
+                warnings.warn(f"[CRITICAL] X zeroed! fwd_norm={ctx.X_fwd_norm:.4f} ptr={X_ptr:#x} in_f={ctx.in_features}")
             dY_norm = dY.norm().item()
             dY_ptr = dY.data_ptr()
             warnings.warn(
