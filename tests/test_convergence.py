@@ -125,7 +125,12 @@ def train_discrete(
         # The backward() triggers PackedTernaryLinearFn.backward(),
         # which computes dX and applies the fused counter update.
         loss.backward()
-        torch.cuda.synchronize()  # ensure kernel completes
+        torch.cuda.synchronize()
+        # Check for any CUDA error that might indicate kernel failure
+        err = torch.cuda.get_last_error_string() if hasattr(torch.cuda, 'get_last_error_string') else "N/A"
+        if step == 0:
+            cuda_err = torch.cuda.current_stream().query()  # False if error pending
+            print(f"  cuda stream ok: {cuda_err}")
 
         # Check counter immediately after first backward
         if step == 0:
