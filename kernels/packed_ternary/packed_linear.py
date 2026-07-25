@@ -31,7 +31,7 @@ from .pack_forward import (
     has_tc,
     packed_ternary_forward_tc,
 )
-from .pack_update import backward_dx, update, init_counter
+from .pack_update import backward_dx, update, backward_update, init_counter
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -123,12 +123,11 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         counter = ctx.counter
         threshold = ctx.threshold
 
-        # Gradient w.r.t. input (needed upstream)
-        dX = backward_dx(W_packed, dY, ctx.in_features)
-
-        # Fused weight update: dW consumed, never stored
+        # Fused backward + update: one Python call, shared .contiguous()
         if counter is not None:
-            update(W_packed, counter, X, dY, threshold)
+            dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
+        else:
+            dX = backward_dx(W_packed, dY, ctx.in_features)
 
         return dX, None, None, None, None
 

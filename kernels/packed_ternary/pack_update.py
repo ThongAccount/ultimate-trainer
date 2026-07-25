@@ -339,6 +339,49 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
     _up_fn(W, counter, X, dY, int(threshold))
 
 
+def backward_update(W: torch.Tensor, counter: torch.Tensor,
+                    dY: torch.Tensor, X: torch.Tensor,
+                    in_features: int, threshold: int = 64) -> torch.Tensor:
+    """Fused backward (dX) + update (counter flip).  One Python call.
+
+    Returns dX for upstream gradient.  W and counter are updated in-place.
+    Shares .contiguous() calls for dY between backward and update.
+    """
+    B = dY.size(0)
+    N_out = dY.size(1)
+
+    # Make contiguous once (shared between backward and update)
+    assert W.is_contiguous(), "W must be contiguous"
+    assert counter.is_contiguous(), "counter must be contiguous"
+    dY_c = dY.contiguous()
+    X_c = X.contiguous()
+
+    # ── Backward: dX = dY @ W ──
+    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and in_features >= TC_MIN_DIM:
+        _load_tc_if_needed()
+        if _HAS_DX_TC:
+            dX = _dx_tc_fn(W.contiguous(), dY_c, in_features)
+        else:
+            dX = _dx_fn(W.contiguous(), dY_c, in_features)
+    else:
+        _load_if_needed()
+        dX = _dx_fn(W.contiguous(), dY_c, in_features)
+
+    # ── Update: dW→sign→counter→flip ──
+    N_in = X_c.size(1)
+    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and N_in >= TC_MIN_DIM:
+        _load_tc_if_needed()
+        if _HAS_UP_TC_V2:
+            _up_tc_v2_fn(W, counter, X_c, dY_c, int(threshold))
+        elif _HAS_UP_TC:
+            _up_tc_fn(W, counter, X_c, dY_c, int(threshold))
+    else:
+        _load_if_needed()
+        _up_fn(W, counter, X_c, dY_c, int(threshold))
+
+    return dX
+
+
 def init_counter(out_features: int, in_features: int) -> torch.Tensor:
     """Create a zeroed int16 counter tensor."""
     return torch.zeros(out_features, in_features, dtype=torch.int16, device="cuda")
