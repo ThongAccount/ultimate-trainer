@@ -103,13 +103,18 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         counter = ctx.counter
         threshold = ctx.threshold
 
-        # DIAGNOSTIC: compare data pointers
+        # DIAGNOSTIC: check X and dY integrity
         if not hasattr(ctx, '_diag_done'):
             ctx._diag_done = True
             import warnings
-            # Check if W_packed passed through apply() is same object
-            if hasattr(W_packed, 'data_ptr'):
-                warnings.warn(f"[PackedTernaryLinearFn] W_packed.data_ptr in backward={W_packed.data_ptr():#x}")
+            X_norm = X.norm().item()
+            X_ptr = X.data_ptr()
+            dY_norm = dY.norm().item()
+            dY_ptr = dY.data_ptr()
+            warnings.warn(
+                f"[PackedTernaryLinearFn] BWD in_f={ctx.in_features} "
+                f"|X|={X_norm:.4f} X_ptr={X_ptr:#x} "
+                f"|dY|={dY_norm:.4f} dY_ptr={dY_ptr:#x}")
 
         # Gradient w.r.t. input (needed upstream)
         dX = backward_dx(W_packed, dY, ctx.in_features)
