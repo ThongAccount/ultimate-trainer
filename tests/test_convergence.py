@@ -112,9 +112,9 @@ def train_discrete(
         y = y.cuda().half()
 
         y_pred = model(x)
-        loss = F.mse_loss(y_pred, y)
+        loss_before = F.mse_loss(y_pred, y).item()
 
-        # Diagnostic init (before first backward to capture initial state)
+        # Diagnostic init
         if step == 0:
             W_initial = model.fc1.W_packed.clone()
             counter_before = model.fc1.counter.clone()
@@ -122,17 +122,12 @@ def train_discrete(
             print(f"  counter device: {model.fc1.counter.device}")
             print(f"  counter dtype: {model.fc1.counter.dtype}")
 
-        # The backward() triggers PackedTernaryLinearFn.backward(),
-        # which computes dX and applies the fused counter update.
+        # The backward() applies the fused counter update.
+        loss = F.mse_loss(y_pred, y)
         loss.backward()
         torch.cuda.synchronize()
-        # Check for any CUDA error that might indicate kernel failure
-        err = torch.cuda.get_last_error_string() if hasattr(torch.cuda, 'get_last_error_string') else "N/A"
-        if step == 0:
-            cuda_err = torch.cuda.current_stream().query()  # False if error pending
-            print(f"  cuda stream ok: {cuda_err}")
 
-        # Check counter immediately after first backward
+        # Check counter after backward
         if step == 0:
             for name in ['fc1', 'fc2', 'fc3']:
                 layer = getattr(model, name)
@@ -140,9 +135,16 @@ def train_discrete(
                 c_max = layer.counter.max().item()
                 c_nonzero = (layer.counter != 0).sum().item()
                 print(f"  after step 0 backward: {name}.counter=[{c_min},{c_max}], nonzero={c_nonzero}/{layer.counter.numel()}")
-                print(f"    {name}.counter.data_ptr()={layer.counter.data_ptr():#x}")
 
-        losses.append(loss.item())
+        # Re-evaluate loss to see if update helped or hurt
+        with torch.no_grad():
+            y_pred2 = model(x)
+            loss_after = F.mse_loss(y_pred2, y).item()
+        if step < 5 or step == steps - 1:
+            direction = "↓" if loss_after < loss_before else "↑"
+            print(f"  step {step:4d}: loss {loss_before:.2f} → {loss_after:.2f} {direction}")
+
+        losses.append(loss_after)
         if step == steps - 1:
             for name in ['fc1', 'fc2', 'fc3']:
                 layer = getattr(model, name)
