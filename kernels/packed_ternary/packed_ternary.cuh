@@ -1,5 +1,10 @@
 #pragma once
 
+// CUDA runtime MUST come before standard headers to avoid glibc 2.40+
+// conflict on cospi/sinpi between math_functions.h and mathcalls.h
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+
 #include <cstdint>
 #include <cassert>
 
