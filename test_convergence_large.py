@@ -164,19 +164,31 @@ class MiniGPT(nn.Module):
 
 
 def train_gpt_with_accumulation(model, steps=100, accum_steps=4, threshold=8, print_every=10):
-    """Train GPT with gradient accumulation."""
+    """Train GPT with gradient accumulation on structured data.
+
+    Uses a deterministic repeating pattern (next-token on a fixed sequence)
+    so the model can actually learn something. Random labels have a floor
+    of log(vocab_size) ≈ 5.55 which looks like non-convergence.
+    """
     for m in model.modules():
         if isinstance(m, PackedTernaryLinear):
             m.threshold = threshold
+
+    # Fixed structured data: repeating pattern the model can learn
+    vocab_size = 256
+    seq_len = 64
+    batch_size = 4
+    # Simple pattern: each token predicts the next in a cycle
+    base_seq = torch.arange(seq_len + 1, device="cuda") % vocab_size
+    x_fixed = base_seq[:seq_len].unsqueeze(0).expand(batch_size, -1).contiguous()
+    target_fixed = base_seq[1:seq_len+1].unsqueeze(0).expand(batch_size, -1).contiguous()
 
     losses = []
     for step in range(steps):
         total_loss = 0.0
         for accum in range(accum_steps):
-            x = torch.randint(0, 256, (4, 64), device="cuda")
-            target = torch.randint(0, 256, (4, 64), device="cuda")
-            logits = model(x).float()
-            loss = F.cross_entropy(logits.view(-1, 256), target.view(-1))
+            logits = model(x_fixed).float()
+            loss = F.cross_entropy(logits.view(-1, vocab_size), target_fixed.view(-1))
             if torch.isfinite(loss):
                 loss.backward()
                 total_loss += loss.item()
