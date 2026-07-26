@@ -257,13 +257,14 @@ def train_standard(model, batches_x, batches_y, steps, lr, print_every):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
+    global BATCH_SIZE
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--steps", type=int, default=STEPS)
     parser.add_argument("--compare", action="store_true", help="Compare with AdamW")
     parser.add_argument("--batch", type=int, default=BATCH_SIZE)
     args = parser.parse_args()
 
-    global BATCH_SIZE
     BATCH_SIZE = args.batch
 
     print("=" * 60)
