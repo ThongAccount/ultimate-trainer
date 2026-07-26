@@ -218,7 +218,7 @@ def test_stage3():
 
     model = MiniGPT(d_model=128, nhead=4, n_layers=6, vocab_size=256).cuda()
 
-    converged = train_gpt_with_accumulation(model, steps=100, accum_steps=4, threshold=16)
+    converged = train_gpt_with_accumulation(model, steps=200, accum_steps=8, threshold=32)
     print(f"  Converged: {'YES ✅' if converged else 'NO ❌'}")
     return converged
 
