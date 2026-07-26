@@ -193,6 +193,9 @@ def train_graph(model, batches_x, batches_y, steps, print_every):
     start_time = time.time()
 
     for step in range(steps):
+        # Zero gradients BEFORE forward (not between forward and backward)
+        model.zero_grad(set_to_none=True)
+
         # Copy new data into static buffers (async, minimal overhead)
         batch_idx = step % len(batches_x)
         static_x.copy_(batches_x[batch_idx])
@@ -202,7 +205,6 @@ def train_graph(model, batches_x, batches_y, steps, print_every):
         graph.replay()
 
         # Backward outside graph (autograd needs dynamic saved tensors)
-        model.zero_grad(set_to_none=True)
         static_loss.backward()
 
         loss_val = static_loss.item()
