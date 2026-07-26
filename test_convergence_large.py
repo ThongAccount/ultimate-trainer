@@ -22,6 +22,8 @@ class ScaledTernaryLinear(nn.Module):
 
     Ternary weights amplify output by sqrt(in_features * 0.5).
     Scaling by 1/sqrt(in_features) keeps output magnitude stable.
+
+    Handles 2D [B, K] and 3D [B, T, K] inputs by reshaping internally.
     """
     def __init__(self, in_features, out_features, threshold=8):
         super().__init__()
@@ -29,7 +31,14 @@ class ScaledTernaryLinear(nn.Module):
         self.scale = 1.0 / (in_features ** 0.5)
 
     def forward(self, x):
-        return self.linear(x) * self.scale
+        orig_shape = x.shape
+        if x.dim() == 3:
+            B, T, K = x.shape
+            x = x.reshape(B * T, K)
+        y = self.linear(x) * self.scale
+        if len(orig_shape) == 3:
+            y = y.reshape(orig_shape[0], orig_shape[1], -1)
+        return y
 
 
 def test_stage1():
@@ -38,10 +47,12 @@ def test_stage1():
     print("  Stage 1: 768 → 2048 → 768 MLP (scaled)")
     print("=" * 60)
 
+    # threshold=32 for large models (8 is too aggressive — noisy gradients
+    # cause premature flips, leading to oscillation and divergence)
     mlp = nn.Sequential(
-        ScaledTernaryLinear(768, 2048),
+        ScaledTernaryLinear(768, 2048, threshold=32),
         nn.GELU(),
-        ScaledTernaryLinear(2048, 768)
+        ScaledTernaryLinear(2048, 768, threshold=32)
     ).cuda()
 
     x = torch.randn(32, 768, dtype=torch.float16, device="cuda")
@@ -106,7 +117,7 @@ def test_stage2():
     print("  Stage 2: Transformer Block (d=128, heads=4, seq=32)")
     print("=" * 60)
 
-    block = TransformerBlockTernary(d_model=128, nhead=4).cuda()
+    block = TransformerBlockTernary(d_model=128, nhead=4, threshold=16).cuda()
     x = torch.randn(8, 32, 128, dtype=torch.float16, device="cuda")
     target = torch.randn(8, 32, 128, dtype=torch.float16, device="cuda")
 
@@ -162,7 +173,7 @@ def test_stage3():
     print("  Stage 3: MiniGPT (6 layers, d=128, seq=64)")
     print("=" * 60)
 
-    model = MiniGPT(d_model=128, nhead=4, n_layers=6, vocab_size=256).cuda()
+    model = MiniGPT(d_model=128, nhead=4, n_layers=6, vocab_size=256, threshold=16).cuda()
     x = torch.randint(0, 256, (4, 64), device="cuda")
     target = torch.randint(0, 256, (4, 64), device="cuda")
 
