@@ -1,0 +1,68 @@
+--- kernels/packed_ternary/gemm_forward_packed.cu
++++ kernels/packed_ternary/gemm_forward_packed.cu
+@@ -37,50 +37,45 @@
+     if (b >= batch_size || n >= out_features) return;
+ 
+-    // Shared memory for X tile (reused across all output features in block)
+-    // Tile size: blockDim.x × 16 = 256 × 16 = 4096 half = 8 KB
+-    __shared__ half X_tile[256][16];
++    // Block is (32, 8). X_tile only needs to hold elements for the 32 batch elements being processed.
++    __shared__ half X_tile[32][16]; // 32 batch elements × 16 feature chunk = 1 KB
+ 
+     float acc = 0.0f;
++    
++    int b_local = threadIdx.x; // 0..31
+ 
+-    // Iterate over K in chunks of 16 (one uint32 per chunk)
+     for (int k0 = 0; k0 < in_features; k0 += 16) {
+         int tile_k = min(16, in_features - k0);
+ 
+-        // Cooperative load: all threads load X tile into SMEM
+-        // 256 threads × 16 elements = 4096 elements, but we only need
+-        // blockDim.x × tile_k elements
+-        for (int i = threadIdx.x; i < blockDim.x * tile_k; i += blockDim.x) {
+-            int lb = i / tile_k;  // local batch index
+-            int lk = i % tile_k;  // local k index
+-            int gb = blockIdx.x * blockDim.x + lb;
+-            if (gb < batch_size) {
+-                X_tile[lb][lk] = X[gb * in_features + k0 + lk];
+-            }
++        // Cooperative load of X tile: 256 threads loading 32*tile_k elements
++        int linear_tid = threadIdx.y * blockDim.x + threadIdx.x; 
++        int total_elements = blockDim.x * tile_k; // 32 * tile_k <= 512
++        
++        for (int i = linear_tid; i < total_elements; i += 256) {
++            int lb = i / tile_k;
++            int lk = i % tile_k;
++            int gb = blockIdx.x * blockDim.x + lb;
++            X_tile[lb][lk] = (gb < batch_size) ? X[gb * in_features + k0 + lk] : __float2half(0.0f);
+         }
+         __syncthreads();
+ 
+-        // Load packed weight word for this output feature
+         if (k0 / 16 < stride_words) {
+             uint32_t word = W[n * stride_words + k0 / 16];
+ 
+-            // Decode 16 ternary values and accumulate
+             #pragma unroll 16
+             for (int i = 0; i < 16 && i < tile_k; i++) {
+                 int bits = (word >> (2 * i)) & 3;
+-                // Branchless: +1 if bits==1, -1 if bits==2, 0 otherwise
+                 int sign = (bits == 1) - (bits == 2);
+-                if (sign != 0 && b < batch_size) {
+-                    acc += sign * __half2float(X_tile[threadIdx.x][i]);
++                if (sign != 0) {
++                    acc += sign * __half2float(X_tile[b_local][i]);
+                 }
+             }
+         }
+ 
+         __syncthreads();
+     }
+ 
+-    // Store result
+-    Y[b * out_features + n] = __float2half(acc);
++    if (b < batch_size) {
++        Y[b * out_features + n] = __float2half(acc);
++    }
+ }

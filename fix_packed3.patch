@@ -1,0 +1,9 @@
+--- kernels/packed_ternary/gemm_forward_packed.cu
++++ kernels/packed_ternary/gemm_forward_packed.cu
+@@ -102,5 +102,5 @@
+ 
+     packed_ternary_forward_packed_kernel<<<grid, block, 0, stream>>>(
+-        W, X, Y, batch_size, in_features, out_features, stride_words
++        W, X, Y, batch_size, in_features, out_features, stride_words
+     );
+ }

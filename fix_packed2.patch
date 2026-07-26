@@ -1,0 +1,11 @@
+--- kernels/packed_ternary/packed_linear.py
++++ kernels/packed_ternary/packed_linear.py
+@@ -47,9 +47,11 @@
+     # TC WMMA m16n16k16 needs M, N, K all >= 16
+     if B >= 16 and N >= 16 and K >= 16 and has_tc():
+-        return packed_ternary_forward_tc(W, X)
++        if has_packed():
++            return packed_ternary_forward_packed(W, X)
++        else:
++            return packed_ternary_forward_tc(W, X)
+     # v2 needs N ≥ 4 for multi-output sharing
