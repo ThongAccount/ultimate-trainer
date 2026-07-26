@@ -35,6 +35,15 @@ from .pack_forward import (
 )
 from .pack_update import backward_dx, update, backward_update, init_counter
 
+# Custom ops — makes kernels traceable by torch.compile
+try:
+    from .custom_ops import forward_tc as co_forward_tc
+    from .custom_ops import backward_dx_tc as co_backward_dx_tc
+    from .custom_ops import update_tc_v2 as co_update_tc_v2
+    _HAS_CUSTOM_OPS = True
+except Exception:
+    _HAS_CUSTOM_OPS = False
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Auto-dispatch: pick the best forward kernel for the given dimensions
@@ -48,6 +57,9 @@ def _forward_auto(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
     # Packed kernel (CUDA core) is 4× slower — TC unpack overhead is
     # smaller than the 10× compute disadvantage of CUDA cores.
     if B >= 16 and N >= 16 and K >= 16 and has_tc():
+        # Prefer custom op (traceable by torch.compile)
+        if _HAS_CUSTOM_OPS:
+            return co_forward_tc(W, X, K)
         return packed_ternary_forward_tc(W, X)
     # v2 needs N ≥ 4 for multi-output sharing
     if N >= 4 and has_forward_kernel_v2():
@@ -129,7 +141,14 @@ class PackedTernaryLinearFn(torch.autograd.Function):
 
         # Fused backward + update: one Python call, shared .contiguous()
         if counter is not None:
-            dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
+            # Use custom ops when available (traceable by torch.compile)
+            if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16:
+                dX = co_backward_dx_tc(W_packed, dY, ctx.in_features)
+                X_c = X.contiguous()
+                dY_c = dY.contiguous()
+                co_update_tc_v2(W_packed, counter, X_c, dY_c, int(threshold))
+            else:
+                dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
         else:
             dX = backward_dx(W_packed, dY, ctx.in_features)
 
