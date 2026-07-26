@@ -47,12 +47,10 @@ def test_stage1():
     print("  Stage 1: 768 → 2048 → 768 MLP (scaled)")
     print("=" * 60)
 
-    # threshold=32 for large models (8 is too aggressive — noisy gradients
-    # cause premature flips, leading to oscillation and divergence)
     mlp = nn.Sequential(
-        ScaledTernaryLinear(768, 2048, threshold=32),
+        ScaledTernaryLinear(768, 2048),
         nn.GELU(),
-        ScaledTernaryLinear(2048, 768, threshold=32)
+        ScaledTernaryLinear(2048, 768)
     ).cuda()
 
     x = torch.randn(32, 768, dtype=torch.float16, device="cuda")
@@ -117,7 +115,7 @@ def test_stage2():
     print("  Stage 2: Transformer Block (d=128, heads=4, seq=32)")
     print("=" * 60)
 
-    block = TransformerBlockTernary(d_model=128, nhead=4, threshold=16).cuda()
+    block = TransformerBlockTernary(d_model=128, nhead=4).cuda()
     x = torch.randn(8, 32, 128, dtype=torch.float16, device="cuda")
     target = torch.randn(8, 32, 128, dtype=torch.float16, device="cuda")
 
@@ -173,7 +171,7 @@ def test_stage3():
     print("  Stage 3: MiniGPT (6 layers, d=128, seq=64)")
     print("=" * 60)
 
-    model = MiniGPT(d_model=128, nhead=4, n_layers=6, vocab_size=256, threshold=16).cuda()
+    model = MiniGPT(d_model=128, nhead=4, n_layers=6, vocab_size=256).cuda()
     x = torch.randint(0, 256, (4, 64), device="cuda")
     target = torch.randint(0, 256, (4, 64), device="cuda")
 
