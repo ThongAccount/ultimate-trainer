@@ -174,18 +174,16 @@ def train_graph(model, batches_x, batches_y, steps, print_every):
             loss.backward()
     torch.cuda.current_stream().wait_stream(s)
 
-    # Capture graph
-    print("  Capturing CUDAGraph...")
+    # Capture graph — forward only, backward runs outside
+    # (CUDAGraph + autograd saved tensors causes NaN with dynamic intermediates)
+    print("  Capturing CUDAGraph (forward only)...")
     graph = torch.cuda.CUDAGraph()
     model.zero_grad(set_to_none=True)
     static_x.copy_(batches_x[0])
-    static_y.copy_(batches_y[0])
 
     with torch.cuda.graph(graph):
         static_logits = model(static_x)
         static_loss = loss_fn(static_logits, static_y)
-        static_loss.backward()
-        # Counter updates happen inside backward() via autograd hook
 
     # Main training loop — replay graph with zero overhead
     print(f"  Training {steps} steps (CUDAGraph replay)...")
@@ -200,8 +198,12 @@ def train_graph(model, batches_x, batches_y, steps, print_every):
         static_x.copy_(batches_x[batch_idx])
         static_y.copy_(batches_y[batch_idx])
 
-        # Replay graph — GPU runs continuously
+        # Replay forward graph — GPU runs forward continuously
         graph.replay()
+
+        # Backward outside graph (autograd needs dynamic saved tensors)
+        model.zero_grad(set_to_none=True)
+        static_loss.backward()
 
         loss_val = static_loss.item()
         losses.append(loss_val)
