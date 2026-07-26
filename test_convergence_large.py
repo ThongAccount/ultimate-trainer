@@ -41,10 +41,50 @@ class ScaledTernaryLinear(nn.Module):
         return y
 
 
+def train_with_accumulation(model, x, target, steps=200, accum_steps=4, threshold=8, print_every=20):
+    """Train with gradient accumulation to reduce noise.
+
+    Accumulates gradients over accum_steps forward passes before
+    triggering one counter update. Reduces gradient noise by sqrt(accum_steps).
+    """
+    # Set threshold on all PackedTernaryLinear layers
+    for m in model.modules():
+        if isinstance(m, PackedTernaryLinear):
+            m.threshold = threshold
+
+    losses = []
+    for step in range(steps):
+        total_loss = 0.0
+        for accum in range(accum_steps):
+            # Use different random inputs each accumulation step
+            x_acc = x + torch.randn_like(x) * 0.1  # small noise for diversity
+            out = model(x_acc)
+            loss = F.mse_loss(out.float(), target.float())
+            if torch.isfinite(loss):
+                loss.backward()  # accumulates gradients in counter
+                total_loss += loss.item()
+
+        avg_loss = total_loss / accum_steps
+        losses.append(avg_loss)
+        if step % print_every == 0:
+            print(f"  Step {step:3d}: loss={avg_loss:.6f}")
+
+    finite_losses = [l for l in losses if l < float('inf')]
+    if len(finite_losses) > 2:
+        improved = sum(1 for i in range(1, len(finite_losses)) if finite_losses[i] < finite_losses[i-1])
+        print(f"  Steps with improvement: {improved}/{len(finite_losses)-1}")
+        print(f"  Final loss: {finite_losses[-1]:.6f} (started: {finite_losses[0]:.6f})")
+        converged = finite_losses[-1] < finite_losses[0] * 0.5
+    else:
+        print(f"  Only {len(finite_losses)} finite losses")
+        converged = False
+    return converged
+
+
 def test_stage1():
     """Stage 1: 768 → 2048 → 768 MLP with output scaling"""
     print("=" * 60)
-    print("  Stage 1: 768 → 2048 → 768 MLP (scaled)")
+    print("  Stage 1: 768 → 2048 → 768 MLP (scaled, accum=4)")
     print("=" * 60)
 
     mlp = nn.Sequential(
@@ -56,28 +96,7 @@ def test_stage1():
     x = torch.randn(32, 768, dtype=torch.float16, device="cuda")
     target = torch.randn(32, 768, dtype=torch.float16, device="cuda")
 
-    losses = []
-    for step in range(100):
-        mlp.zero_grad()
-        out = mlp(x)
-        loss = F.mse_loss(out.float(), target.float())
-        if torch.isfinite(loss):
-            loss.backward()
-            losses.append(loss.item())
-        else:
-            losses.append(float('inf'))
-        if step % 20 == 0:
-            print(f"  Step {step:3d}: loss={losses[-1]:.6f}")
-
-    finite_losses = [l for l in losses if l < float('inf')]
-    if len(finite_losses) > 2:
-        improved = sum(1 for i in range(1, len(finite_losses)) if finite_losses[i] < finite_losses[i-1])
-        print(f"  Steps with improvement: {improved}/{len(finite_losses)-1}")
-        print(f"  Final loss: {finite_losses[-1]:.6f} (started: {finite_losses[0]:.6f})")
-        converged = finite_losses[-1] < finite_losses[0] * 0.5
-    else:
-        print(f"  Only {len(finite_losses)} finite losses")
-        converged = False
+    converged = train_with_accumulation(mlp, x, target, steps=200, accum_steps=4, threshold=32)
     print(f"  Converged: {'YES ✅' if converged else 'NO ❌'}")
     return converged
 
@@ -112,35 +131,14 @@ class TransformerBlockTernary(nn.Module):
 def test_stage2():
     """Stage 2: Single transformer block (d_model=128, seq_len=32)"""
     print("\n" + "=" * 60)
-    print("  Stage 2: Transformer Block (d=128, heads=4, seq=32)")
+    print("  Stage 2: Transformer Block (d=128, heads=4, seq=32, accum=4)")
     print("=" * 60)
 
     block = TransformerBlockTernary(d_model=128, nhead=4).cuda()
     x = torch.randn(8, 32, 128, dtype=torch.float16, device="cuda")
     target = torch.randn(8, 32, 128, dtype=torch.float16, device="cuda")
 
-    losses = []
-    for step in range(100):
-        block.zero_grad()
-        out = block(x)
-        loss = F.mse_loss(out.float(), target.float())
-        if torch.isfinite(loss):
-            loss.backward()
-            losses.append(loss.item())
-        else:
-            losses.append(float('inf'))
-        if step % 20 == 0:
-            print(f"  Step {step:3d}: loss={losses[-1]:.6f}")
-
-    finite_losses = [l for l in losses if l < float('inf')]
-    if len(finite_losses) > 2:
-        improved = sum(1 for i in range(1, len(finite_losses)) if finite_losses[i] < finite_losses[i-1])
-        print(f"  Steps with improvement: {improved}/{len(finite_losses)-1}")
-        print(f"  Final loss: {finite_losses[-1]:.6f} (started: {finite_losses[0]:.6f})")
-        converged = finite_losses[-1] < finite_losses[0] * 0.5
-    else:
-        print(f"  Only {len(finite_losses)} finite losses")
-        converged = False
+    converged = train_with_accumulation(block, x, target, steps=200, accum_steps=4, threshold=16)
     print(f"  Converged: {'YES ✅' if converged else 'NO ❌'}")
     return converged
 
@@ -165,28 +163,28 @@ class MiniGPT(nn.Module):
         return self.head(x)
 
 
-def test_stage3():
-    """Stage 3: Mini GPT (6 layers, d_model=128, seq=64, vocab=256)"""
-    print("\n" + "=" * 60)
-    print("  Stage 3: MiniGPT (6 layers, d=128, seq=64)")
-    print("=" * 60)
-
-    model = MiniGPT(d_model=128, nhead=4, n_layers=6, vocab_size=256).cuda()
-    x = torch.randint(0, 256, (4, 64), device="cuda")
-    target = torch.randint(0, 256, (4, 64), device="cuda")
+def train_gpt_with_accumulation(model, steps=100, accum_steps=4, threshold=8, print_every=10):
+    """Train GPT with gradient accumulation."""
+    for m in model.modules():
+        if isinstance(m, PackedTernaryLinear):
+            m.threshold = threshold
 
     losses = []
-    for step in range(50):
-        model.zero_grad()
-        logits = model(x).float()
-        loss = F.cross_entropy(logits.view(-1, 256), target.view(-1))
-        if torch.isfinite(loss):
-            loss.backward()
-            losses.append(loss.item())
-        else:
-            losses.append(float('inf'))
-        if step % 10 == 0:
-            print(f"  Step {step:3d}: loss={losses[-1]:.4f}")
+    for step in range(steps):
+        total_loss = 0.0
+        for accum in range(accum_steps):
+            x = torch.randint(0, 256, (4, 64), device="cuda")
+            target = torch.randint(0, 256, (4, 64), device="cuda")
+            logits = model(x).float()
+            loss = F.cross_entropy(logits.view(-1, 256), target.view(-1))
+            if torch.isfinite(loss):
+                loss.backward()
+                total_loss += loss.item()
+
+        avg_loss = total_loss / accum_steps
+        losses.append(avg_loss)
+        if step % print_every == 0:
+            print(f"  Step {step:3d}: loss={avg_loss:.4f}")
 
     finite_losses = [l for l in losses if l < float('inf')]
     if len(finite_losses) > 2:
@@ -197,6 +195,18 @@ def test_stage3():
     else:
         print(f"  Only {len(finite_losses)} finite losses")
         converged = False
+    return converged
+
+
+def test_stage3():
+    """Stage 3: Mini GPT (6 layers, d_model=128, seq=64, vocab=256)"""
+    print("\n" + "=" * 60)
+    print("  Stage 3: MiniGPT (6 layers, d=128, seq=64, accum=4)")
+    print("=" * 60)
+
+    model = MiniGPT(d_model=128, nhead=4, n_layers=6, vocab_size=256).cuda()
+
+    converged = train_gpt_with_accumulation(model, steps=100, accum_steps=4, threshold=16)
     print(f"  Converged: {'YES ✅' if converged else 'NO ❌'}")
     return converged
 
