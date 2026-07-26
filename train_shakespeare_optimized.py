@@ -142,72 +142,42 @@ def make_batches(text, block_size, batch_size, n_batches):
 #  Training: CUDAGraph-based (maximum GPU utilization)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def train_graph(model, batches_x, batches_y, steps, print_every):
-    """Train with CUDAGraph — zero Python overhead per step.
+def train_optimized(model, batches_x, batches_y, steps, print_every):
+    """Train with optimized standard loop — pre-allocated buffers, no CUDAGraph.
 
-    The entire forward+backward+update is captured in a CUDA graph.
-    Each step just copies input data and replays the graph.
-    GPU runs continuously without CPU stalls.
+    CUDAGraph doesn't work with discrete optimizer (in-place weight updates
+    in backward invalidate the captured graph). Instead, use:
+    1. Pre-allocated pinned memory for data transfer
+    2. torch.compile for JIT optimization (if compatible)
+    3. Non-blocking transfers
     """
-    x_shape = (BATCH_SIZE, BLOCK_SIZE)
-    y_shape = (BATCH_SIZE, BLOCK_SIZE)
+    # Try torch.compile for JIT optimization
+    try:
+        compiled_model = torch.compile(model, mode="reduce-overhead")
+        print("  Using torch.compile (reduce-overhead mode)")
+    except Exception:
+        compiled_model = model
+        print("  torch.compile not available, using standard loop")
 
-    # Pre-allocate static buffers
-    static_x = torch.zeros(x_shape, dtype=torch.long, device="cuda")
-    static_y = torch.zeros(y_shape, dtype=torch.long, device="cuda")
-    static_loss = torch.zeros(1, dtype=torch.float32, device="cuda")
-
-    def loss_fn(logits, targets):
-        return F.cross_entropy(logits.float().view(-1, VOCAB_SIZE), targets.view(-1))
-
-    # Warmup (required before capture)
-    print("  Warming up...")
-    s = torch.cuda.Stream()
-    s.wait_stream(torch.cuda.current_stream())
-    with torch.cuda.stream(s):
-        for _ in range(3):
-            model.zero_grad(set_to_none=True)
-            static_x.copy_(batches_x[0])
-            static_y.copy_(batches_y[0])
-            logits = model(static_x)
-            loss = loss_fn(logits, static_y)
-            loss.backward()
-    torch.cuda.current_stream().wait_stream(s)
-
-    # Capture graph — forward only, backward runs outside
-    # (CUDAGraph + autograd saved tensors causes NaN with dynamic intermediates)
-    print("  Capturing CUDAGraph (forward only)...")
-    graph = torch.cuda.CUDAGraph()
-    model.zero_grad(set_to_none=True)
-    static_x.copy_(batches_x[0])
-
-    with torch.cuda.graph(graph):
-        static_logits = model(static_x)
-        static_loss = loss_fn(static_logits, static_y)
-
-    # Main training loop — replay graph with zero overhead
-    print(f"  Training {steps} steps (CUDAGraph replay)...")
     losses = []
     tokens_per_sec = []
     torch.cuda.synchronize()
     start_time = time.time()
 
     for step in range(steps):
-        # Zero gradients BEFORE forward (not between forward and backward)
-        model.zero_grad(set_to_none=True)
-
-        # Copy new data into static buffers (async, minimal overhead)
         batch_idx = step % len(batches_x)
-        static_x.copy_(batches_x[batch_idx])
-        static_y.copy_(batches_y[batch_idx])
 
-        # Replay forward graph — GPU runs forward continuously
-        graph.replay()
+        # Non-blocking transfer from pinned memory
+        x = batches_x[batch_idx].to("cuda", non_blocking=True)
+        y = batches_y[batch_idx].to("cuda", non_blocking=True)
 
-        # Backward outside graph (autograd needs dynamic saved tensors)
-        static_loss.backward()
+        # Forward + backward + update
+        model.zero_grad(set_to_none=True)
+        logits = compiled_model(x)
+        loss = F.cross_entropy(logits.float().view(-1, VOCAB_SIZE), y.view(-1))
+        loss.backward()
 
-        loss_val = static_loss.item()
+        loss_val = loss.item()
         losses.append(loss_val)
 
         # Throughput
@@ -301,7 +271,7 @@ def main():
         if isinstance(m, PackedTernaryLinear):
             m.threshold = THRESHOLD
 
-    losses_d, tps_d = train_graph(model, batches_x, batches_y, args.steps, PRINT_EVERY)
+    losses_d, tps_d = train_optimized(model, batches_x, batches_y, args.steps, PRINT_EVERY)
     mem_d = torch.cuda.max_memory_allocated() / 1024 / 1024
 
     results["discrete"] = {
