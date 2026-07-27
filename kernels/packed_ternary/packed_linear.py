@@ -138,6 +138,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         W_packed = ctx.W_packed
         counter = ctx.counter
         threshold = ctx.threshold
+        B = dY.size(0)
 
         # Fused backward + update: one Python call, shared .contiguous()
         if counter is not None:
