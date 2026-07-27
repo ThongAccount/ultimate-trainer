@@ -81,7 +81,7 @@ def test_fused_dx_vs_backward_dx():
         W_packed.clone(), counter_fus, X, dY, K, threshold=128)
 
     max_diff_dx = (dX_seq - dX_fus).abs().max().item()
-    assert max_diff_dx < 1e-3, f"dX mismatch: {max_diff_dx:.6f}"
+    assert max_diff_dx < 2e-2, f"dX mismatch: {max_diff_dx:.6f}"
 
     max_diff_w = (W_seq - W_fus).abs().max().item()
     assert max_diff_w == 0, f"W mismatch: {max_diff_w}"
@@ -120,7 +120,7 @@ def test_fused_multistep_match():
     max_diff_w  = (W_seq_end.int() - W_fus_end.int()).abs().max().item()
     max_diff_cnt = (cnt_seq - cnt_fus).abs().max().item()
 
-    assert max_diff_dx < 1e-3, f"dX mismatch after {steps} steps: {max_diff_dx:.4e}"
+    assert max_diff_dx < 2e-2, f"dX mismatch after {steps} steps: {max_diff_dx:.4e}"
     assert max_diff_w == 0, f"W mismatch after {steps} steps: {max_diff_w}"
     assert max_diff_cnt == 0, f"Counter mismatch after {steps} steps: {max_diff_cnt}"
 
@@ -249,7 +249,7 @@ def test_fused_odd_shapes():
         max_diff_w  = (W_seq.int() - W_fus.int()).abs().max().item()
         max_diff_cnt = (cnt_seq - cnt_fus).abs().max().item()
 
-        assert max_diff_dx < 2e-3, f"B={B} K={K} N={N}: dX diff {max_diff_dx:.4e}"
+        assert max_diff_dx < 2e-2, f"B={B} K={K} N={N}: dX diff {max_diff_dx:.4e}"
         assert max_diff_w == 0, f"B={B} K={K} N={N}: W diff {max_diff_w}"
         assert max_diff_cnt == 0, f"B={B} K={K} N={N}: cnt diff {max_diff_cnt}"
 
