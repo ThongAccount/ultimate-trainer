@@ -123,6 +123,23 @@ def get_shakespeare():
         return f.read()
 
 
+def make_dataset(text, block_size, batch_size, device="cuda"):
+    """Create byte-level dataset from text."""
+    data = torch.tensor([ord(c) % 256 for c in text], dtype=torch.long, device=device)
+    n_batches = len(data) // (block_size * batch_size)
+    data = data[:n_batches * block_size * batch_size]
+    return data
+
+
+def get_batch(data, block_size, batch_size, step):
+    """Get a batch of (x, y) pairs for next-token prediction."""
+    idx = (step * batch_size * block_size) % (len(data) - block_size * batch_size)
+    chunk = data[idx:idx + batch_size * block_size + 1]
+    x = chunk[:-1].view(batch_size, block_size)
+    y = chunk[1:].view(batch_size, block_size)
+    return x, y
+
+
 def make_batches(text, block_size, batch_size, n_batches):
     """Pre-compute all batches on CPU with pinned memory for fast transfer."""
     data = torch.tensor([ord(c) % 256 for c in text], dtype=torch.long)
@@ -183,8 +200,8 @@ def train_optimized(model, batches_x, batches_y, steps, print_every):
     return losses, tokens_per_sec
 
 
-def train_standard(model, batches_x, batches_y, steps, lr, print_every):
-    """Train with AdamW baseline — no torch.compile (to avoid NaNs)."""
+def train_standard(model, data, steps, lr, print_every):
+    """Train with AdamW baseline — standard non-compiled loop."""
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     losses = []
@@ -241,6 +258,9 @@ def main():
 
     # Load data
     text = get_shakespeare()
+    data_discrete = make_dataset(text, BLOCK_SIZE, BATCH_SIZE)
+    data_adamw = make_dataset(text, BLOCK_SIZE, BATCH_SIZE)
+    
     n_batches = min(args.steps * 2, len(text) // (BLOCK_SIZE * BATCH_SIZE))
     batches_x, batches_y = make_batches(text, BLOCK_SIZE, BATCH_SIZE, n_batches)
     print(f"  Pre-computed {len(batches_x)} batches")
@@ -276,17 +296,21 @@ def main():
     torch.cuda.empty_cache()
 
     # ── AdamW baseline (optional) ───────────────────────────────────
-    if args.compare:
+    if not args.discrete:
         print(f"\n{'─' * 60}")
-        print(f"  AdamW Baseline")
+        print(f"  AdamW Baseline (lr=3e-4)")
         print(f"{'─' * 60}")
 
         torch.cuda.reset_peak_memory_stats()
-        model_a = MiniGPT().cuda()
-        # Replace ternary with standard linear for baseline
-        # (reuse same architecture but with AdamW)
-        losses_a, tps_a = train_standard(
-            model_a, batches_x, batches_y, args.steps, 3e-4, PRINT_EVERY
+        model_a = MiniGPT(use_ternary=False).cuda()
+
+        # Call the original train_standard function from train_shakespeare.py
+        # which reads from data_adamw, avoiding the train_shakespeare_optimized.py's
+        # buggy loader (which went to NaN).
+        from train_shakespeare import train_standard as train_std_raw
+        
+        losses_a, tps_a = train_std_raw(
+            model_a, data_adamw, args.steps, 3e-4, PRINT_EVERY
         )
         mem_a = torch.cuda.max_memory_allocated() / 1024 / 1024
 
