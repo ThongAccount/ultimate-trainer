@@ -86,16 +86,29 @@ class TernaryTransformerBlock(nn.Module):
 
 
 class MiniGPT(nn.Module):
-    def __init__(self):
+    """Small GPT for character-level LM."""
+    def __init__(self, use_ternary=True):
         super().__init__()
+        self.block_size = BLOCK_SIZE
+        self.use_ternary = use_ternary
         self.embed = nn.Embedding(VOCAB_SIZE, D_MODEL)
         self.pos_embed = nn.Embedding(BLOCK_SIZE, D_MODEL)
-        self.blocks = nn.ModuleList([
-            TernaryTransformerBlock(D_MODEL, N_HEADS, THRESHOLD)
-            for _ in range(N_LAYERS)
-        ])
-        self.ln_f = nn.LayerNorm(D_MODEL).half()
-        self.head = ScaledTernaryLinear(D_MODEL, VOCAB_SIZE, threshold=THRESHOLD)
+
+        if use_ternary:
+            self.blocks = nn.ModuleList([
+                TernaryTransformerBlock(D_MODEL, N_HEADS, THRESHOLD)
+                for _ in range(N_LAYERS)
+            ])
+            self.ln_f = nn.LayerNorm(D_MODEL).half()
+            self.head = ScaledTernaryLinear(D_MODEL, VOCAB_SIZE, threshold=THRESHOLD)
+        else:
+            # AdamW baseline uses standard nn.Linear
+            self.blocks = nn.ModuleList([
+                StandardTransformerBlock(D_MODEL, N_HEADS)
+                for _ in range(N_LAYERS)
+            ])
+            self.ln_f = nn.LayerNorm(D_MODEL)
+            self.head = nn.Linear(D_MODEL, VOCAB_SIZE)
 
     def forward(self, x):
         B, T = x.shape
