@@ -148,12 +148,16 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
                     int gb = b0 + b_loc;
                     int gn = gn_warp + n_loc;
                     if (gb < B && gn < N) {
-                        if (n_loc + 1 < kWMMA_K) {
+                        int byte_offset = (gb * N + gn) * (int)sizeof(half);
+                        if ((byte_offset & 3) == 0 && n_loc + 1 < kWMMA_K) {
                             half2 v = ((const half2*)&dY[gb * N + gn])[0];
                             dY_smem[warp_id][b_loc][n_loc]     = v.x;
                             dY_smem[warp_id][b_loc][n_loc + 1] = v.y;
                         } else {
                             dY_smem[warp_id][b_loc][n_loc] = dY[gb * N + gn];
+                            if (n_loc + 1 < kWMMA_K) {
+                                dY_smem[warp_id][b_loc][n_loc + 1] = dY[gb * N + gn + 1];
+                            }
                         }
                     }
                 }
@@ -172,12 +176,16 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
                     int gb = b0 + b_loc;
                     int gk = gk_warp + k_loc;
                     if (gb < B && gk < K) {
-                        if (k_loc + 1 < kWMMA_N) {
+                        int byte_offset = (gb * K + gk) * (int)sizeof(half);
+                        if ((byte_offset & 3) == 0 && k_loc + 1 < kWMMA_N) {
                             half2 v = ((const half2*)&X[gb * K + gk])[0];
                             X_smem[warp_id][b_loc][k_loc]     = v.x;
                             X_smem[warp_id][b_loc][k_loc + 1] = v.y;
                         } else {
                             X_smem[warp_id][b_loc][k_loc] = X[gb * K + gk];
+                            if (k_loc + 1 < kWMMA_N) {
+                                X_smem[warp_id][b_loc][k_loc + 1] = X[gb * K + gk + 1];
+                            }
                         }
                     }
                 }
@@ -301,10 +309,18 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
 
             int idx = gn_w * K + gk_w;
 
-            // Vectorised int32 counter load
-            int32_t cnt_pair = *(const int32_t*)&counter[idx];
-            int16_t cnt0 = (int16_t)(cnt_pair & 0xFFFF);
-            int16_t cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+            // Counter load: use vectorized int32 when aligned, scalar when not
+            int16_t cnt0, cnt1;
+            if ((idx * (int)sizeof(int16_t)) & 3) {
+                // Misaligned: load as two int16 scalars
+                cnt0 = counter[idx];
+                cnt1 = counter[idx + 1];
+            } else {
+                // Aligned: vectorized int32 load
+                int32_t cnt_pair = *(const int32_t*)&counter[idx];
+                cnt0 = (int16_t)(cnt_pair & 0xFFFF);
+                cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+            }
 
             // Sign-based update: grad>0 → decrement (descent)
             if (g0 > 0.0f)       cnt0--;
@@ -331,8 +347,14 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
                 cnt1 = 0;
             }
 
-            *(int32_t*)&counter[idx] =
-                ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+            // Counter store: use vectorized int32 when aligned, scalar when not
+            if ((idx * (int)sizeof(int16_t)) & 3) {
+                counter[idx]     = cnt0;
+                counter[idx + 1] = cnt1;
+            } else {
+                *(int32_t*)&counter[idx] =
+                    ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+            }
         }
     }
 }
