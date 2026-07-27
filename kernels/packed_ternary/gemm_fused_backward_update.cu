@@ -149,7 +149,7 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
                     int gn = gn_warp + n_loc;
                     if (gb < B && gn < N) {
                         int byte_offset = (gb * N + gn) * (int)sizeof(half);
-                        if ((byte_offset & 3) == 0 && n_loc + 1 < kWMMA_K) {
+                        if ((byte_offset & 3) == 0 && n_loc + 1 < kWMMA_K && gn + 1 < N) {
                             half2 v = ((const half2*)&dY[gb * N + gn])[0];
                             dY_smem[warp_id][b_loc][n_loc]     = v.x;
                             dY_smem[warp_id][b_loc][n_loc + 1] = v.y;
@@ -177,7 +177,7 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
                     int gk = gk_warp + k_loc;
                     if (gb < B && gk < K) {
                         int byte_offset = (gb * K + gk) * (int)sizeof(half);
-                        if ((byte_offset & 3) == 0 && k_loc + 1 < kWMMA_N) {
+                        if ((byte_offset & 3) == 0 && k_loc + 1 < kWMMA_N && gk + 1 < K) {
                             half2 v = ((const half2*)&X[gb * K + gk])[0];
                             X_smem[warp_id][b_loc][k_loc]     = v.x;
                             X_smem[warp_id][b_loc][k_loc + 1] = v.y;
