@@ -155,7 +155,7 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
                             dY_smem[warp_id][b_loc][n_loc + 1] = v.y;
                         } else {
                             dY_smem[warp_id][b_loc][n_loc] = dY[gb * N + gn];
-                            if (n_loc + 1 < kWMMA_K) {
+                            if (n_loc + 1 < kWMMA_K && gn + 1 < N) {
                                 dY_smem[warp_id][b_loc][n_loc + 1] = dY[gb * N + gn + 1];
                             }
                         }
@@ -183,7 +183,7 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
                             X_smem[warp_id][b_loc][k_loc + 1] = v.y;
                         } else {
                             X_smem[warp_id][b_loc][k_loc] = X[gb * K + gk];
-                            if (k_loc + 1 < kWMMA_N) {
+                            if (k_loc + 1 < kWMMA_N && gk + 1 < K) {
                                 X_smem[warp_id][b_loc][k_loc + 1] = X[gb * K + gk + 1];
                             }
                         }
