@@ -85,6 +85,27 @@ class TernaryTransformerBlock(nn.Module):
         return x
 
 
+class StandardTransformerBlock(nn.Module):
+    """Standard transformer block for AdamW baseline."""
+    def __init__(self, d_model, nhead):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(d_model, nhead, batch_first=True)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.GELU(),
+            nn.Linear(d_model * 4, d_model),
+        )
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        h = self.ln1(x)
+        attn_out, _ = self.attn(h, h, h)
+        x = x + attn_out
+        x = x + self.ff(self.ln2(x))
+        return x
+
+
 class MiniGPT(nn.Module):
     """Small GPT for character-level LM."""
     def __init__(self, use_ternary=True):
