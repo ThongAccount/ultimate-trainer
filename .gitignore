@@ -42,6 +42,7 @@ data/*.json
 .opencode
 .omo
 .claude
+.pi-subagents
 
 # ── Logs / Reports ────────────────────────────────────────────────
 *.log
