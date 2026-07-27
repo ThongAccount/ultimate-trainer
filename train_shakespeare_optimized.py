@@ -99,10 +99,12 @@ class StandardTransformerBlock(nn.Module):
         self.ln2 = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        h = self.ln1(x)
+        h = self.ln1(x.float())  # Cast to float for LayerNorm
         attn_out, _ = self.attn(h, h, h)
-        x = x + attn_out
-        x = x + self.ff(self.ln2(x))
+        x = x + attn_out.half() if x.dtype == torch.float16 else x + attn_out
+        h2 = self.ln2(x.float())
+        ff_out = self.ff(h2)
+        x = x + ff_out.half() if x.dtype == torch.float16 else x + ff_out
         return x
 
 
