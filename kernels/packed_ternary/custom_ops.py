@@ -33,8 +33,8 @@ def _ensure_loaded():
         _fwd_tc = _forward_fn_tc
 
     _load_tc_if_needed()
-    pu._load_fused()
     from . import pack_update as pu
+    pu._load_fused()
     _dx_tc = pu._dx_tc_fn if pu._HAS_DX_TC else None
     _update_tc_v2 = pu._up_tc_v2_fn if pu._HAS_UP_TC_V2 else None
     _update_tc_v3 = pu._up_tc_v3_fn if pu._HAS_UP_TC_V3 else None
