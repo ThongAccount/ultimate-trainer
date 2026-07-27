@@ -296,7 +296,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ── AdamW baseline (optional) ───────────────────────────────────
-    if not args.discrete:
+    if args.compare:
         print(f"\n{'─' * 60}")
         print(f"  AdamW Baseline (lr=3e-4)")
         print(f"{'─' * 60}")
