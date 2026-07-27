@@ -137,10 +137,22 @@ class MiniGPT(nn.Module):
         B, T = x.shape
         tok_emb = self.embed(x)
         pos = torch.arange(T, device=x.device).unsqueeze(0)
-        x = (tok_emb + self.pos_embed(pos)).half()
-        for block in self.blocks:
-            x = block(x)
-        x = self.ln_f(x)
+        
+        if self.use_ternary:
+            x = (tok_emb + self.pos_embed(pos)).half()
+            for block in self.blocks:
+                x = block(x)
+            x = self.ln_f(x)
+        else:
+            # AdamW baseline uses standard float32 model
+            x = (tok_emb + self.pos_embed(pos)).float()
+            for block in self.blocks:
+                x = block(x)
+            # Ensure ln_f matches float32
+            if self.ln_f.weight.dtype == torch.float16:
+                self.ln_f = self.ln_f.float()
+            x = self.ln_f(x)
+            
         return self.head(x)
 
 
