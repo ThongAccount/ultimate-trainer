@@ -338,10 +338,10 @@ def main():
         torch.cuda.reset_peak_memory_stats()
         model_a = MiniGPT(use_ternary=False).cuda()
 
-        # Call the original train_standard function from train_shakespeare.py
+        # Call the original train_adamw function from train_shakespeare.py
         # which reads from data_adamw, avoiding the train_shakespeare_optimized.py's
         # buggy loader (which went to NaN).
-        from train_shakespeare import train_standard as train_std_raw
+        from train_shakespeare import train_adamw as train_std_raw
         
         losses_a, tps_a = train_std_raw(
             model_a, data_adamw, args.steps, 3e-4, PRINT_EVERY
