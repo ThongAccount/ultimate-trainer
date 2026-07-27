@@ -143,22 +143,12 @@ def make_batches(text, block_size, batch_size, n_batches):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def train_optimized(model, batches_x, batches_y, steps, print_every):
-    """Train with optimized standard loop — pre-allocated buffers, no CUDAGraph.
+    """Train with optimized standard loop — pre-allocated buffers, no torch.compile.
 
-    CUDAGraph doesn't work with discrete optimizer (in-place weight updates
-    in backward invalidate the captured graph). Instead, use:
-    1. Pre-allocated pinned memory for data transfer
-    2. torch.compile for JIT optimization (if compatible)
-    3. Non-blocking transfers
+    torch.compile causes NaN because our custom autograd.Function is not
+    traceable without extra configuration, and the dynamic saved tensors
+    trigger inductor errors.
     """
-    # Try torch.compile for JIT optimization
-    try:
-        compiled_model = torch.compile(model, mode="reduce-overhead")
-        print("  Using torch.compile (reduce-overhead mode)")
-    except Exception:
-        compiled_model = model
-        print("  torch.compile not available, using standard loop")
-
     losses = []
     tokens_per_sec = []
     torch.cuda.synchronize()
@@ -173,7 +163,7 @@ def train_optimized(model, batches_x, batches_y, steps, print_every):
 
         # Forward + backward + update
         model.zero_grad(set_to_none=True)
-        logits = compiled_model(x)
+        logits = model(x)
         loss = F.cross_entropy(logits.float().view(-1, VOCAB_SIZE), y.view(-1))
         loss.backward()
 
@@ -194,7 +184,7 @@ def train_optimized(model, batches_x, batches_y, steps, print_every):
 
 
 def train_standard(model, batches_x, batches_y, steps, lr, print_every):
-    """Standard training with AdamW — for comparison."""
+    """Train with AdamW baseline — no torch.compile (to avoid NaNs)."""
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     losses = []
