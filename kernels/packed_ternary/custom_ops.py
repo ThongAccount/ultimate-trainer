@@ -16,11 +16,12 @@ _fwd_tc = None
 _dx_tc = None
 _update_tc_v2 = None
 _update_tc_v3 = None
+_fused_bwd = None
 _loaded = False
 
 
 def _ensure_loaded():
-    global _fwd_tc, _dx_tc, _update_tc_v2, _update_tc_v3, _loaded
+    global _fwd_tc, _dx_tc, _update_tc_v2, _update_tc_v3, _fused_bwd, _loaded
     if _loaded:
         return
     from .pack_forward import has_tc, _load_tc, _forward_fn_tc
@@ -32,10 +33,12 @@ def _ensure_loaded():
         _fwd_tc = _forward_fn_tc
 
     _load_tc_if_needed()
+    pu._load_fused()
     from . import pack_update as pu
     _dx_tc = pu._dx_tc_fn if pu._HAS_DX_TC else None
     _update_tc_v2 = pu._up_tc_v2_fn if pu._HAS_UP_TC_V2 else None
     _update_tc_v3 = pu._up_tc_v3_fn if pu._HAS_UP_TC_V3 else None
+    _fused_bwd = pu._fused_fn if pu._HAS_FUSED else None
     _loaded = True
 
 
@@ -78,6 +81,33 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     if _update_tc_v2 is None:
         raise RuntimeError("TC update v2 kernel not available")
     _update_tc_v2(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
+
+
+@custom_op("packed_ternary::backward_update_fused", mutates_args=("W", "counter"))
+def backward_update_fused(W: torch.Tensor, counter: torch.Tensor,
+                          dY: torch.Tensor, X: torch.Tensor,
+                          in_features: int, threshold: int) -> torch.Tensor:
+    """Fused backward dX + counter-based weight update (single launch).
+
+    Returns dX for upstream gradient propagation.
+    W and counter are updated in-place.
+    """
+    _ensure_loaded()
+    if _fused_bwd is None:
+        raise RuntimeError("Fused backward kernel not available")
+    assert W.is_contiguous()
+    assert counter.is_contiguous()
+    dY_c = dY.contiguous()
+    X_c = X.contiguous()
+    dX = torch.zeros(dY.size(0), in_features, dtype=torch.float16, device=dY.device)
+    _fused_bwd(dY_c, X_c, W, counter, in_features, int(threshold), dX)
+    return dX
+
+
+@backward_update_fused.register_fake
+def _backward_update_fused_fake(W, counter, dY, X, in_features, threshold):
+    B = dY.size(0)
+    return torch.empty(B, in_features, dtype=torch.float16, device=dY.device)
 
 
 @custom_op("packed_ternary::update_tc_v3", mutates_args=("W", "counter"))

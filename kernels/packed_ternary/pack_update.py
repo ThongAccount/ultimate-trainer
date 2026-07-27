@@ -23,6 +23,7 @@ DX_TC_PATH = os.path.join(HERE, "gemm_backward_dx_tc.cu")
 UP_TC_PATH = os.path.join(HERE, "gemm_update_tc.cu")
 UP_TC_V2_PATH = os.path.join(HERE, "gemm_update_tc_v2.cu")
 UP_TC_V3_PATH = os.path.join(HERE, "gemm_update_tc_v3.cu")
+FUSED_PATH = os.path.join(HERE, "gemm_fused_backward_update.cu")
 
 # ── Scalar kernels ─────────────────────────────────────────────────────
 
@@ -115,6 +116,64 @@ def _load_up():
         _HAS_UP = True
     except Exception as e:
         print(f"[up] load failed: {e}")
+
+
+# ── Fused backward + update kernel ─────────────────────────────────────
+
+_HAS_FUSED = False
+_fused_fn = None
+
+
+def _load_fused():
+    global _HAS_FUSED, _fused_fn
+    if _HAS_FUSED:
+        return
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(FUSED_PATH) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+        _lib = load_inline(
+            name="packed_ternary_fused_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_backward_update_fused(
+                    const void* dY, const void* X, const uint32_t* W_read,
+                    void* dX, uint32_t* W_mut, int16_t* counter,
+                    int B, int K, int N, int stride_words,
+                    int16_t threshold, cudaStream_t s);
+            }
+            void fused_wrapper(
+                torch::Tensor dY, torch::Tensor X,
+                torch::Tensor W, torch::Tensor counter,
+                int in_features, int16_t threshold,
+                torch::Tensor dX)
+            {
+                launch_packed_ternary_backward_update_fused(
+                    dY.data_ptr<at::Half>(), X.data_ptr<at::Half>(),
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
+                    dX.data_ptr<at::Half>(),
+                    const_cast<uint32_t*>(reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>())),
+                    counter.data_ptr<int16_t>(),
+                    dY.size(0), in_features, dY.size(1), W.size(1),
+                    threshold, nullptr);
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("backward_update_fused", &fused_wrapper,
+                      "Fused dX backward + counter update (WMMA)");
+            }
+            """,
+            cuda_sources=[combined], verbose=False,
+            extra_cuda_cflags=["-O3", "--use_fast_math"],
+        )
+        _fused_fn = _lib.backward_update_fused
+        _HAS_FUSED = True
+    except Exception as e:
+        print(f"[fused] load failed: {e}")
 
 
 # ── TC (Tensor Core WMMA) kernels ──────────────────────────────────────
@@ -435,6 +494,46 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
         _up_fn(W, counter, X_c, dY_c, int(threshold))
 
     return dX
+
+
+def backward_update_fused(
+    W: torch.Tensor, counter: torch.Tensor,
+    dY: torch.Tensor, X: torch.Tensor,
+    in_features: int, threshold: int = 64) -> torch.Tensor:
+    """Fused backward dX + weight update via single WMMA kernel.
+
+    Replaces separate backward_dx() + update() calls with one launch.
+    The kernel reads W and dY once from global memory, computes both
+    dX and dW simultaneously, and applies counter/bit-flip in-place.
+
+    Returns dX (gradient w.r.t. input) for upstream.
+    W and counter are updated in-place.
+
+    TC dimensions required: B >= 16, N >= 16, in_features >= 16.
+    Falls back to backward_update() if dimensions are too small.
+    """
+    B = dY.size(0)
+    N_out = dY.size(1)
+    N_in = X.size(1)
+
+    # Validate dimensions for WMMA fused kernel
+    fused_ok = (B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and N_in >= TC_MIN_DIM
+                and in_features >= TC_MIN_DIM)
+
+    if fused_ok:
+        _load_fused()
+        if _HAS_FUSED:
+            assert W.is_contiguous(), "W must be contiguous for in-place update"
+            assert counter.is_contiguous(), "counter must be contiguous"
+            dY_c = dY.contiguous()
+            X_c = X.contiguous()
+            # dX must be pre-zeroed for atomic accumulation
+            dX = torch.zeros(B, in_features, dtype=torch.float16, device=dY.device)
+            _fused_fn(dY_c, X_c, W, counter, in_features, int(threshold), dX)
+            return dX
+
+    # Fallback to sequential backward_update
+    return backward_update(W, counter, dY, X, in_features, threshold)
 
 
 def init_counter(out_features: int, in_features: int) -> torch.Tensor:
