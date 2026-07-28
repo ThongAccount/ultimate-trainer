@@ -377,10 +377,152 @@ def packed_ternary_forward_v4(W, X):
 
 _CU_PATH_TC = os.path.join(HERE, "gemm_forward_tc.cu")
 _HAS_TC = False
+_CU_PATH_TC_32 = os.path.join(HERE, "gemm_forward_tc_32.cu")
 _forward_fn_tc = None
+_forward_fn_tc_64 = None
+_HAS_TC_64 = False
+_HAS_TC_32 = False
 
 
-def _load_tc():
+def _load_tc_32():
+    """Load 32x32 tile forward TC kernel (legacy, for dims 16-63)."""
+    global _HAS_TC_32, _forward_fn_tc
+    if _HAS_TC_32:
+        return True
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(_CU_PATH_TC_32) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+        _lib = load_inline(
+            name="packed_ternary_tc_32_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_tc(
+                    const uint32_t* W, const void* X, void* Y,
+                    int batch_size, int in_features, int out_features,
+                    int stride_words, cudaStream_t stream);
+            }
+            torch::Tensor wrapper_tc(torch::Tensor W, torch::Tensor X) {
+                auto Y = torch::empty({X.size(0), W.size(0)}, torch::dtype(torch::kFloat16).device(X.device()));
+                launch_packed_ternary_tc(
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
+                    X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
+                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                return Y;
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("forward_tc", &wrapper_tc, "Packed ternary forward TC 32x32");
+            }
+            """,
+            cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2"],
+        )
+        _forward_fn_tc = _lib.forward_tc
+        _HAS_TC_32 = True
+    except Exception as e:
+        print(f"[tc_32] Failed to load: {e}")
+        _HAS_TC_32 = False
+    return _HAS_TC_32
+
+
+def has_tc_32():
+    return _load_tc_32()  # ensures loaded
+
+
+def packed_ternary_forward_tc_32(W, X):
+    """32x32 tile forward (legacy, for dims 16-63)."""
+    if not _HAS_TC_32:
+        _load_tc_32()
+    if not _HAS_TC_32:
+        raise RuntimeError("32x32 TC forward kernel not available")
+    B, K = X.shape
+    N_out = W.shape[0]
+    pad_b = (16 - B % 16) % 16
+    pad_n = (16 - N_out % 16) % 16
+    pad_k = (16 - K % 16) % 16
+    if pad_b or pad_n or pad_k:
+        from . import compute_stride_words as _csw
+        X_pad = X
+        if pad_b or pad_k:
+            X_pad = torch.nn.functional.pad(X, (0, pad_k, 0, pad_b), "constant", 0)
+        W_pad = W
+        if pad_n and not pad_k:
+            W_pad = torch.nn.functional.pad(W, (0, 0, 0, pad_n), "constant", 0)
+        elif pad_k:
+            K_orig = X.size(1)
+            new_stride = _csw(K_orig + pad_k)
+            W_pad = torch.zeros(W.shape[0] + pad_n, new_stride, dtype=torch.int32, device=W.device)
+            W_pad[:W.shape[0], :W.shape[1]] = W
+        Y_pad = _forward_fn_tc(W_pad.contiguous(), X_pad.contiguous())
+        return Y_pad[:B, :N_out]
+    else:
+        return _forward_fn_tc(W.contiguous(), X.contiguous())
+
+
+_forward_fn_tc_64 = None
+_HAS_TC_64 = False
+
+
+def _load_tc_64():
+    """Load 64x64 tile forward TC kernel."""
+    global _HAS_TC_64, _forward_fn_tc_64
+    if _HAS_TC_64:
+        return True
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(_CU_PATH_TC) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+        _lib = load_inline(
+            name="packed_ternary_tc_64_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_forward_tc_64(
+                    const uint32_t* W, const void* X, void* Y,
+                    int batch_size, int in_features, int out_features,
+                    int stride_words, cudaStream_t stream);
+            }
+            torch::Tensor wrapper_tc_64(torch::Tensor W, torch::Tensor X) {
+                auto Y = torch::empty({X.size(0), W.size(0)}, torch::dtype(torch::kFloat16).device(X.device()));
+                launch_packed_ternary_forward_tc_64(
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
+                    X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
+                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                return Y;
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("forward_tc_64", &wrapper_tc_64, "Packed ternary forward TC 64x64");
+            }
+            """,
+            cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O3", "--use_fast_math"],
+        )
+        _forward_fn_tc_64 = _lib.forward_tc_64
+        _HAS_TC_64 = True
+    except Exception as e:
+        print(f"[tc_64] Failed to load: {e}")
+        _HAS_TC_64 = False
+    return _HAS_TC_64
+
+
+def has_tc_64():
+    return _load_tc_64()
+
+
+def packed_ternary_forward_tc_64(W, X):
+    """64x64 tile forward."""
+    if not _HAS_TC_64:
+        _load_tc_64()
+    if not _HAS_TC_64:
+        raise RuntimeError("64x64 TC forward kernel not available")
+    return _forward_fn_tc_64(W.contiguous(), X.contiguous())
     global _HAS_TC, _forward_fn_tc
     if _HAS_TC:
         return
@@ -425,9 +567,7 @@ def _load_tc():
 
 
 def has_tc():
-    if not _HAS_TC:
-        _load_tc()
-    return _HAS_TC
+    return has_tc_32()
 
 
 def packed_ternary_forward_tc(W, X):

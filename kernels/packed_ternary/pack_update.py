@@ -25,6 +25,11 @@ UP_TC_V2_PATH = os.path.join(HERE, "gemm_update_tc_v2.cu")
 UP_TC_V3_PATH = os.path.join(HERE, "gemm_update_tc_v3.cu")
 FUSED_PATH = os.path.join(HERE, "gemm_fused_backward_update.cu")
 
+# 32x32 tile variants (for dims 16-63, when 64x64 doesn't fit)
+DX_TC_32_PATH = os.path.join(HERE, "gemm_backward_dx_tc_32.cu")
+UP_TC_V2_32_PATH = os.path.join(HERE, "gemm_update_tc_v2_32.cu")
+UP_TC_V3_32_PATH = os.path.join(HERE, "gemm_update_tc_v3_32.cu")
+
 # ── Scalar kernels ─────────────────────────────────────────────────────
 
 _HAS_DX = _HAS_UP = False
@@ -179,10 +184,53 @@ def _load_fused():
 # ── TC (Tensor Core WMMA) kernels ──────────────────────────────────────
 
 _HAS_DX_TC = _HAS_UP_TC = _HAS_UP_TC_V2 = _HAS_UP_TC_V3 = False
+_HAS_DX_TC_32 = _HAS_UP_TC_V2_32 = _HAS_UP_TC_V3_32 = False
 _dx_tc_fn = _up_tc_fn = _up_tc_v2_fn = _up_tc_v3_fn = None
+_dx_tc_32_fn = _up_tc_v2_32_fn = _up_tc_v3_32_fn = None
 
 
-def _load_dx_tc():
+def _load_dx_tc_32():
+    """Load 32x32 backward dX TC (legacy, for dims 16-63)."""
+    global _HAS_DX_TC_32, _dx_tc_32_fn
+    if _HAS_DX_TC_32:
+        return
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(DX_TC_32_PATH) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+        _lib = load_inline(
+            name="packed_ternary_dx_tc_32_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_backward_dx_tc(
+                    const uint32_t* W, const void* dY, void* dX,
+                    int B, int K, int N, int stride, cudaStream_t s);
+            }
+            torch::Tensor dx_tc_32_wrapper(torch::Tensor W, torch::Tensor dY, int K) {
+                int B = dY.size(0);
+                int N = dY.size(1);
+                auto dX = torch::empty({B, K}, torch::dtype(torch::kFloat16).device(dY.device()));
+                launch_packed_ternary_backward_dx_tc(
+                    reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
+                    dY.data_ptr<at::Half>(), dX.data_ptr<at::Half>(),
+                    B, K, N, W.size(1), nullptr);
+                return dX;
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("backward_dx_tc_32", &dx_tc_32_wrapper, "dX = W^T @ dY (TC 32x32)");
+            }
+            """,
+            cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2"],
+        )
+        _dx_tc_32_fn = _lib.backward_dx_tc_32
+        _HAS_DX_TC_32 = True
+    except Exception as e:
+        print(f"[dx_tc_32] load failed: {e}")
     global _HAS_DX_TC, _dx_tc_fn
     if _HAS_DX_TC:
         return
@@ -366,8 +414,13 @@ TC_ALIGN = 16  # WMMA requires all dims to be multiples of 16 for correctness
 
 
 def _tc_ok(dim: int) -> bool:
-    """True if dim is valid for TC dispatch."""
+    """True if dim is valid for 32x32 TC dispatch."""
     return dim >= TC_MIN_DIM and (dim % TC_ALIGN) == 0
+
+
+def _tc_ok_64(dim: int) -> bool:
+    """True if dim is valid for 64x64 TC dispatch."""
+    return dim >= 64 and (dim % 64) == 0
 
 
 def _load_if_needed():
@@ -402,10 +455,16 @@ def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Te
     B = dY.size(0)
     N_out = dY.size(1)   # K dimension of the GEMM
 
-    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and in_features >= TC_MIN_DIM:
-        _load_tc_if_needed()
+    # 64x64 TC: 4x faster for large dims
+    if _tc_ok_64(B) and _tc_ok_64(N_out) and _tc_ok_64(in_features):
+        _load_dx_tc()
         if _HAS_DX_TC:
             return _dx_tc_fn(W, dY, in_features)
+    # 32x32 TC (legacy, for dims 16-63)
+    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(in_features):
+        _load_dx_tc_32()
+        if _HAS_DX_TC_32:
+            return _dx_tc_32_fn(W, dY, in_features)
 
     # Fallback to scalar
     _load_if_needed()
@@ -435,7 +494,14 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
     X = X.contiguous()  # fine — X is only read
     dY = dY.contiguous()  # fine — dY is only read
 
-    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and N_in >= TC_MIN_DIM:
+    # 64x64 TC (fast path for large dims)
+    if _tc_ok_64(B) and _tc_ok_64(N_out) and _tc_ok_64(N_in):
+        _load_up_tc_v2()
+        if _HAS_UP_TC_V2:
+            _up_tc_v2_fn(W, counter, X, dY, int(threshold))
+            return
+    # 32x32 TC (legacy, for dims 16-63)
+    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(N_in):
         _load_tc_if_needed()
         # Prefer v3 (magnitude-scaled) > v2 (vectorized) > v1
         if _HAS_UP_TC_V3:
