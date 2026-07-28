@@ -133,17 +133,30 @@ def main():
 
     times = []
     for step in range(STEPS):
-        t0 = time.perf_counter()
+        # Memory at start
+        mem_alloc = torch.cuda.memory_allocated() / 1024**2
+        mem_resv  = torch.cuda.memory_reserved() / 1024**2
+
+        # Timing with CUDA events
+        start = torch.cuda.Event(enable_timing=True)
+        end   = torch.cuda.Event(enable_timing=True)
+        start.record()
         loss = train_step_cudagraph(model, x, y)
-        t1 = time.perf_counter()
-        elapsed = t1 - t0
+        end.record()
+        torch.cuda.synchronize()
+        elapsed_ms = start.elapsed_time(end)
+        elapsed = elapsed_ms / 1000
         times.append(elapsed)
 
+        # After each layer's first clean JIT compilation, compilers finish
+        if step <= 2:
+            import glob as _glob
+            cache_dirs = _glob.glob("/root/.cache/torch_extensions/*")
+            print(f"  [CACHE] {len(cache_dirs)} .so files cached")
+
         tok_per_sec = (B * SEQ) / elapsed
-        if step < WARMUP:
-            print(f"  {step:>5} {loss:>10.4f} {tok_per_sec:>12,.0f} {elapsed*1000:>7.1f}ms (warmup)")
-        else:
-            print(f"  {step:>5} {loss:>10.4f} {tok_per_sec:>12,.0f} {elapsed*1000:>7.1f}ms")
+        tag = "warmup" if step < WARMUP else ""
+        print(f"  {step:>5} {loss:>10.4f} {tok_per_sec:>12,.0f} {elapsed_ms:>6.1f}ms  mem={mem_alloc:.0f}M/{mem_resv:.0f}M {tag}")
 
     # Summary
     stable = times[WARMUP:]
