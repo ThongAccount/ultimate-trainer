@@ -85,6 +85,7 @@ def train_step_cudagraph(model, x, y):
     """One training step via CUDAGraph."""
     # Forward
     logits = model(x)
+    print(f"  DEBUG: logits.shape={logits.shape}, y.shape={y.shape}", flush=True)
 
     # Loss: cross-entropy on all positions
     loss = torch.nn.functional.cross_entropy(
