@@ -6,7 +6,7 @@ B, T = 32, 511
 total = B * T
 V = 50272
 
-t = torch.randn(total, V, dtype=torch.float16, device='cuda')
+t = torch.randn(total, V, dtype=torch.float16, device='cuda', requires_grad=True)
 y = torch.randint(0, V, (total,), device='cuda')
 
 for _ in range(3):
