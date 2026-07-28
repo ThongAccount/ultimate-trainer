@@ -53,11 +53,11 @@ def build_model():
 
 def tokenize_file(path: str, vocab: str = "gpt2"):
     """Tokenize entire file, return flat uint16 array on GPU."""
-    from gigatoken import GigaTokenizer
+    from gigatoken import Tokenizer
     if vocab == "gpt2":
-        tok = GigaTokenizer.from_pretrained("gpt2")
+        tok = Tokenizer.from_pretrained("gpt2")
     elif vocab == "llama3":
-        tok = GigaTokenizer.from_pretrained("meta-llama/Llama-3.2-3B")
+        tok = Tokenizer.from_pretrained("meta-llama/Llama-3.2-3B")
     else:
         raise ValueError(f"Unknown vocab: {vocab}")
 
