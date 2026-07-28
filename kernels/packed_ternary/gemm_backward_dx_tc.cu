@@ -152,6 +152,28 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
         }
         __syncthreads();
 
+        // ── Zero unused reduction rows in dY/W SMEM (partial tile) ──
+        if (tile_r < kK) {
+            half zero = __float2half(0.0f);
+            int n_total = kWarpsPerBlock * kM * kK;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kM * kK);
+                int rem = tid % (kM * kK);
+                int b = rem / kK;
+                int r = rem % kK;
+                if (r >= tile_r) DYS(w, b, r) = zero;
+            }
+            n_total = kWarpsPerBlock * kK * kN;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kN);
+                int rem = tid % (kK * kN);
+                int r = rem / kN;
+                int c = rem % kN;
+                if (r >= tile_r) WS(w, r, c) = zero;
+            }
+            __syncthreads();
+        }
+
         // ── Load WMMA fragments from SMEM ───────────────────────────
         wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kM * kK], kK);
         wmma::load_matrix_sync(b_frag, &W_smem[warp_id * kK * kN], kN);

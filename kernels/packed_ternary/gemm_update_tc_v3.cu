@@ -124,6 +124,28 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
         }
         __syncthreads();
 
+        // ── Zero unused batch rows in dY/X SMEM (partial batch) ──
+        if (tile_b < kK) {
+            half zero = __float2half(0.0f);
+            int n_total = kWarpsPerBlock * kK * kM;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kM);
+                int rem = tid % (kK * kM);
+                int b = rem / kM;
+                int r = rem % kM;
+                if (b >= tile_b) DYS(w, b, r) = zero;
+            }
+            n_total = kWarpsPerBlock * kK * kN;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kN);
+                int rem = tid % (kK * kN);
+                int b = rem / kN;
+                int c = rem % kN;
+                if (b >= tile_b) XS(w, b, c) = zero;
+            }
+            __syncthreads();
+        }
+
         wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kK * kM], kM);
         wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kK * kN], kN);
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
