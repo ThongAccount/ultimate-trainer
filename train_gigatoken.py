@@ -54,30 +54,27 @@ def build_model():
 def tokenize_file(path: str, vocab: str = "gpt2"):
     """Tokenize entire file, return flat uint16 array on GPU."""
     from gigatoken import Tokenizer
-    if vocab == "gpt2":
-        tok = Tokenizer.from_pretrained("gpt2")
-    elif vocab == "llama3":
-        tok = Tokenizer.from_pretrained("meta-llama/Llama-3.2-3B")
-    else:
-        raise ValueError(f"Unknown vocab: {vocab}")
+    tok = Tokenizer(vocab)
 
-    with open(path, "r") as f:
-        text = f.read()
+    with open(path, "rb") as f:
+        data = f.read()
 
-    ids = tok.encode(text)
-    print(f"  Tokenized {len(text):_} chars → {len(ids):_} tokens"
-          f"  ({len(text)/max(len(ids),1):.1f} char/tok)")
+    ids = tok.encode(data)
+    print(f"  Read {len(data):_} bytes → {len(ids):_} tokens"
+          f"  ({len(data)/max(len(ids),1):.1f} byte/tok)")
 
     # Pad to multiple of B*SEQ
-    total = (len(ids) // (B * SEQ)) * (B * SEQ)
-    ids = ids[:total] if total else ids[:-(len(ids) % (B*SEQ))]
-    if len(ids) == 0:
-        ids = ids[:B*SEQ]
-        while len(ids) < B * SEQ:
-            ids.extend(ids[:B*SEQ - len(ids)])
-
-    t = torch.tensor(ids[:B*SEQ], dtype=torch.long, device="cuda").view(B, SEQ)
-    return t, tok
+    n_tok = B * SEQ
+    if len(ids) < n_tok:
+        # Repeat
+        ids = ids.tolist() if hasattr(ids, 'tolist') else list(ids)
+        ids = (ids * (n_tok // len(ids) + 1))[:n_tok]
+        t = torch.tensor(ids, dtype=torch.long, device="cuda").view(B, SEQ)
+    else:
+        total = (len(ids) // n_tok) * n_tok
+        ids_arr = ids[:total].copy() if hasattr(ids, 'copy') else ids[:total]
+        t = torch.tensor(ids_arr, dtype=torch.long, device="cuda").view(B, SEQ)
+    return t  # GPU tensor [B, SEQ]
 
 
 def train_step_cudagraph(model, x, y):
@@ -114,7 +111,7 @@ def main():
     # Tokenize
     print(f"\n[1/4] Tokenizing {args.text}...")
     t0 = time.perf_counter()
-    data_tensor, tok = tokenize_file(args.text, args.vocab)
+    data_tensor = tokenize_file(args.text, args.vocab)
     t1 = time.perf_counter()
     print(f"  Tokenization: {t1-t0:.3f}s")
 
