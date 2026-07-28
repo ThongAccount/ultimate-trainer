@@ -32,73 +32,73 @@ __global__ __launch_bounds__(256) void packed_ternary_forward_packed_kernel(
     int b = blockIdx.x * blockDim.x + threadIdx.x;
     int n = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (b >= batch_size || n >= out_features) return;
+    if (b < batch_size && n < out_features) {
+        // ── Kernel body ─────────────────────────────────────────────
 
-    // Double-buffered SMEM: load next tile while computing current
-    __shared__ half X_tile[2][32][16];
+        // Double-buffered SMEM: load next tile while computing current
+        __shared__ half X_tile[2][32][16];
 
-    float acc = 0.0f;
-    int b_local = threadIdx.x;
-    int linear_tid = threadIdx.y * blockDim.x + threadIdx.x;
+        float acc = 0.0f;
+        int b_local = threadIdx.x;
+        int linear_tid = threadIdx.y * blockDim.x + threadIdx.x;
 
-    // Load first tile (buffer 0)
-    {
-        int tile_k = min(16, in_features);
-        int total_elements = blockDim.x * tile_k;
-        for (int i = linear_tid; i < total_elements; i += 256) {
-            int lb = i / tile_k;
-            int lk = i % tile_k;
-            int gb = blockIdx.x * blockDim.x + lb;
-            X_tile[0][lb][lk] = (gb < batch_size) ? X[gb * in_features + lk] : __float2half(0.0f);
-        }
-    }
-    __syncthreads();
-
-    int load_buf = 1;
-    int compute_buf = 0;
-
-    // Main loop: compute current tile, load next tile
-    for (int k0 = 0; k0 < in_features; k0 += 16) {
-        int tile_k = min(16, in_features - k0);
-
-        // Asynchronously load NEXT tile into load_buf
-        if (k0 + 16 < in_features) {
-            int next_k = k0 + 16;
-            int next_tile_k = min(16, in_features - next_k);
-            int total_elements = blockDim.x * next_tile_k;
+        // Load first tile (buffer 0)
+        {
+            int tile_k = min(16, in_features);
+            int total_elements = blockDim.x * tile_k;
             for (int i = linear_tid; i < total_elements; i += 256) {
-                int lb = i / next_tile_k;
-                int lk = i % next_tile_k;
+                int lb = i / tile_k;
+                int lk = i % tile_k;
                 int gb = blockIdx.x * blockDim.x + lb;
-                X_tile[load_buf][lb][lk] = (gb < batch_size)
-                    ? X[gb * in_features + next_k + lk]
-                    : __float2half(0.0f);
+                X_tile[0][lb][lk] = (gb < batch_size) ? X[gb * in_features + lk] : __float2half(0.0f);
             }
         }
-
-        // Compute CURRENT tile
-        if (k0 / 16 < stride_words) {
-            uint32_t word = W[n * stride_words + k0 / 16];
-            #pragma unroll 16
-            for (int i = 0; i < 16 && i < tile_k; i++) {
-                int bits = (word >> (2 * i)) & 3;
-                int sign = (bits == 1) - (bits == 2);
-                if (sign != 0) {
-                    acc += sign * __half2float(X_tile[compute_buf][b_local][i]);
-                }
-            }
-        }
-
         __syncthreads();
 
-        // Swap buffers
-        load_buf ^= 1;
-        compute_buf ^= 1;
-    }
+        int load_buf = 1;
+        int compute_buf = 0;
 
-    // Store result
-    if (b < batch_size) {
-        Y[b * out_features + n] = __float2half(acc);
+        // Main loop: compute current tile, load next tile
+        for (int k0 = 0; k0 < in_features; k0 += 16) {
+            int tile_k = min(16, in_features - k0);
+
+            // Asynchronously load NEXT tile into load_buf
+            if (k0 + 16 < in_features) {
+                int next_k = k0 + 16;
+                int next_tile_k = min(16, in_features - next_k);
+                int total_elements = blockDim.x * next_tile_k;
+                for (int i = linear_tid; i < total_elements; i += 256) {
+                    int lb = i / next_tile_k;
+                    int lk = i % next_tile_k;
+                    int gb = blockIdx.x * blockDim.x + lb;
+                    X_tile[load_buf][lb][lk] = (gb < batch_size)
+                        ? X[gb * in_features + next_k + lk]
+                        : __float2half(0.0f);
+                }
+            }
+
+            // Compute CURRENT tile
+            if (k0 / 16 < stride_words) {
+                uint32_t word = W[n * stride_words + k0 / 16];
+                #pragma unroll 16
+                for (int i = 0; i < 16 && i < tile_k; i++) {
+                    int bits = (word >> (2 * i)) & 3;
+                    int sign = (bits == 1) - (bits == 2);
+                    if (sign != 0) {
+                        acc += sign * __half2float(X_tile[compute_buf][b_local][i]);
+                    }
+                }
+            }
+
+            __syncthreads();
+
+            // Swap buffers
+            load_buf ^= 1;
+            compute_buf ^= 1;
+        }
+
+        // Store result
+        Y[b * in_features + out_features * n + 0] = __float2half(acc);
     }
 }
 

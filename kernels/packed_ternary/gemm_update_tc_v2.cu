@@ -119,6 +119,28 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
         }
         __syncthreads();
 
+        // ── Zero unused batch rows in dY/X SMEM (partial batch) ──
+        if (tile_b < kK) {
+            half zero = __float2half(0.0f);
+            int n_total = kWarpsPerBlock * kK * kM;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kM);
+                int rem = tid % (kK * kM);
+                int b = rem / kM;
+                int r = rem % kM;
+                if (b >= tile_b) DYS(w, b, r) = zero;
+            }
+            n_total = kWarpsPerBlock * kK * kN;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kN);
+                int rem = tid % (kK * kN);
+                int b = rem / kN;
+                int c = rem % kN;
+                if (b >= tile_b) XS(w, b, c) = zero;
+            }
+            __syncthreads();
+        }
+
         wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kK * kM], kM);
         wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kK * kN], kN);
         wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
@@ -202,6 +224,41 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
             counter[idx + 1] = cnt1;
         } else {
             *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        }
+    }
+
+    // ── Tail: handle last column when in_features is odd ────────
+    if (in_features & 1) {
+        int last_gc = in_features - 1;
+        for (int i = threadIdx.x; i < kWarpsPerBlock * kM * kN; i += blockDim.x) {
+            int w = i / (kM * kN);
+            int linear = i % (kM * kN);
+            int r = linear / kN;
+            int c = linear % kN;
+            if (c != (kN - 1)) continue;  // last column in warp tile
+
+            int warp_r_off_w = (w % 2) * kM;
+            int gr = super_r0 + warp_r_off_w + r;
+            int gc = last_gc;
+
+            if (gr >= out_features) continue;
+
+            float g = DWF(w, r, c);
+            if (g == 0.0f) continue;
+
+            int idx = gr * in_features + gc;
+            int16_t cnt = counter[idx];
+            cnt += (g > 0.0f) ? -1 : (g < 0.0f) ? 1 : 0;
+
+            uint32_t* w_row = W + gr * stride_words;
+            if (cnt > threshold) {
+                increment_weight_atomic(w_row, gc);
+                cnt = 0;
+            } else if (cnt < -threshold) {
+                decrement_weight_atomic(w_row, gc);
+                cnt = 0;
+            }
+            counter[idx] = cnt;
         }
     }
 }

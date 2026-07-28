@@ -238,6 +238,43 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
             *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
         }
     }
+
+    // ── Tail: handle last column when in_features is odd ────────
+    if (in_features & 1) {
+        int last_gc = in_features - 1;
+        for (int i = threadIdx.x; i < kWarpsPerBlock * kM * kN; i += blockDim.x) {
+            int w = i / (kM * kN);
+            int linear = i % (kM * kN);
+            int r = linear / kN;
+            int c = linear % kN;
+            if (c != (kN - 1)) continue;
+
+            int warp_r_off_w = (w % 2) * kM;
+            int gr = super_r0 + warp_r_off_w + r;
+            int gc = last_gc;
+
+            if (gr >= out_features) continue;
+
+            float g_avg = DWF(w, r, c) * inv_batch;
+            if (g_avg == 0.0f) continue;
+
+            int idx = gr * in_features + gc;
+            int16_t cnt = counter[idx];
+            int delta = __float2int_rn(fabsf(g_avg));
+            delta = max(1, min(8, delta));
+            cnt += (g_avg > 0.0f) ? -delta : delta;
+
+            uint32_t* w_row = W + gr * stride_words;
+            if (cnt > threshold) {
+                increment_weight_atomic(w_row, gc);
+                cnt = 0;
+            } else if (cnt < -threshold) {
+                decrement_weight_atomic(w_row, gc);
+                cnt = 0;
+            }
+            counter[idx] = cnt;
+        }
+    }
 }
 
 extern "C" void launch_packed_ternary_update_tc_v3(
