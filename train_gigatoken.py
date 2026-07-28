@@ -31,26 +31,22 @@ def build_model():
         def __init__(self):
             super().__init__()
             self.embed = torch.nn.Embedding(VOCAB, K)
-            self.layers = torch.nn.ModuleList([
-                torch.nn.Sequential(
-                    torch.nn.LayerNorm(K),  # runs in FP32 via bf16/fp32 mixed
-                    PackedTernaryLinear(K, 4*K, threshold=THRESHOLD),
-                    torch.nn.GELU(),
-                    PackedTernaryLinear(4*K, K, threshold=THRESHOLD),
-                ) for _ in range(N_LAYERS)
-            ])
+            self.norms = torch.nn.ModuleList([torch.nn.LayerNorm(K) for _ in range(N_LAYERS)])
+            self.fc1s = torch.nn.ModuleList([PackedTernaryLinear(K, 4*K, threshold=THRESHOLD) for _ in range(N_LAYERS)])
+            self.fc2s = torch.nn.ModuleList([PackedTernaryLinear(4*K, K, threshold=THRESHOLD) for _ in range(N_LAYERS)])
             self.head = PackedTernaryLinear(K, VOCAB, threshold=THRESHOLD)
 
         def forward(self, x):
-            # x: [B, SEQ]
             B, T = x.shape
             scale = K ** -0.5
-            h = self.embed(x).half()  # [B, T, K]
-            h = h.view(B * T, K)      # flatten for linear layers
-            for layer in self.layers:
-                h = layer(h.float()).half() * scale  # LayerNorm in FP32, scale prevents overflow
+            h = self.embed(x).half().view(B * T, K)
+            for i in range(N_LAYERS):
+                h = self.norms[i](h.float()).half()
+                h = self.fc1s[i](h) * scale
+                h = torch.nn.functional.gelu(h)
+                h = self.fc2s[i](h) * scale
             h = self.head(h) * scale
-            return h.view(B, T, VOCAB) # [B, T, VOCAB]
+            return h.view(B, T, VOCAB)
 
     model = TernaryTransformer().cuda()
     return model
