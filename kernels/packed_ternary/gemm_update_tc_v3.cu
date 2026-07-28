@@ -80,12 +80,16 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
                     int gb = b0 + b;
                     int gr = r0 + r;
                     if (gb < batch_size && gr < out_features) {
-                        if (r + 1 < kM) {
+                        int byte_off = (gb * out_features + gr) * (int)sizeof(half);
+                        if ((byte_off & 3) == 0 && r + 1 < kM && gr + 1 < out_features) {
                             half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
                             DYS(warp_id, b, r)     = v.x;
                             DYS(warp_id, b, r + 1) = v.y;
                         } else {
                             DYS(warp_id, b, r) = dY[gb * out_features + gr];
+                            if (r + 1 < kM && gr + 1 < out_features) {
+                                DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
+                            }
                         }
                     }
                 }
@@ -103,12 +107,16 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
                     int gb = b0 + b;
                     int gc = c0 + c;
                     if (gb < batch_size && gc < in_features) {
-                        if (c + 1 < kN) {
+                        int byte_off = (gb * in_features + gc) * (int)sizeof(half);
+                        if ((byte_off & 3) == 0 && c + 1 < kN && gc + 1 < in_features) {
                             half2 v = ((const half2*)&X[gb * in_features + gc])[0];
                             XS(warp_id, b, c)     = v.x;
                             XS(warp_id, b, c + 1) = v.y;
                         } else {
                             XS(warp_id, b, c) = X[gb * in_features + gc];
+                            if (c + 1 < kN && gc + 1 < in_features) {
+                                XS(warp_id, b, c + 1) = X[gb * in_features + gc + 1];
+                            }
                         }
                     }
                 }
