@@ -67,12 +67,12 @@ def tokenize_file(path: str, vocab: str = "gpt2"):
     n_tok = B * SEQ
     if len(ids) < n_tok:
         # Repeat
-        ids = ids.tolist() if hasattr(ids, 'tolist') else list(ids)
-        ids = (ids * (n_tok // len(ids) + 1))[:n_tok]
-        t = torch.tensor(ids, dtype=torch.long, device="cuda").view(B, SEQ)
+        ids_list = ids.tolist() if hasattr(ids, 'tolist') else list(ids)
+        ids_list = (ids_list * (n_tok // len(ids_list) + 1))[:n_tok]
+        t = torch.tensor(ids_list, dtype=torch.long, device="cuda").view(B, SEQ)
     else:
-        total = (len(ids) // n_tok) * n_tok
-        ids_arr = ids[:total].copy() if hasattr(ids, 'copy') else ids[:total]
+        # Take exactly n_tok tokens
+        ids_arr = ids[:n_tok].copy() if hasattr(ids, 'copy') else ids[:n_tok]
         t = torch.tensor(ids_arr, dtype=torch.long, device="cuda").view(B, SEQ)
     return t  # GPU tensor [B, SEQ]
 
