@@ -36,17 +36,17 @@ def build_model():
             self.fc2s = torch.nn.ModuleList([PackedTernaryLinear(4*K, K, threshold=THRESHOLD) for _ in range(N_LAYERS)])
             self.head = PackedTernaryLinear(K, VOCAB, threshold=THRESHOLD)
 
-        def forward(self, x):
-            B, T = x.shape
-            scale = K ** -0.5
-            h = self.embed(x).half().view(B * T, K)
-            for i in range(N_LAYERS):
-                h = self.norms[i](h.float()).half()
-                h = self.fc1s[i](h) * scale
-                h = torch.nn.functional.gelu(h)
-                h = self.fc2s[i](h) * scale
-            h = self.head(h) * scale
-            return h.view(B, T, VOCAB)
+    def forward(self, x):
+        B, T = x.shape
+        scale = K ** -0.5
+        h = self.embed(x).half().view(B * T, K)
+        for i in range(N_LAYERS):
+            h = self.norms[i](h.float()).half()
+            h = self.fc1s[i](h) * scale
+            h = torch.nn.functional.gelu(h)
+            h = self.fc2s[i](h) * scale
+        h = self.head(h) * scale
+        return h.view(B, T, VOCAB)
 
     model = TernaryTransformer().cuda()
     return model
