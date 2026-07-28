@@ -79,20 +79,30 @@ def tokenize_file(path: str, vocab: str = "gpt2"):
 
 
 def train_step_cudagraph(model, x, y):
-    """One training step via CUDAGraph."""
-    # Forward
+    """One training step with per-phase timing."""
+    e = [torch.cuda.Event(enable_timing=True) for _ in range(6)]
+
+    e[0].record()
     logits = model(x)
+    e[1].record()
     print(f"  DEBUG: logits.shape={logits.shape}, y.shape={y.shape}", flush=True)
 
-    # Loss: next-token prediction (shift logits vs targets)
+    e[2].record()
     loss = torch.nn.functional.cross_entropy(
         logits.view(-1, VOCAB), y[:, 1:].contiguous().view(-1),
         reduction='mean')
+    e[3].record()
 
-    # Backward
+    e[4].record()
     loss.backward()
+    e[5].record()
 
-    # Update (counter flips happen inside PackedTernaryLinear.backward)
+    torch.cuda.synchronize()
+    fwd_ms = e[0].elapsed_time(e[1])
+    loss_ms = e[2].elapsed_time(e[3])
+    bwd_ms = e[4].elapsed_time(e[5])
+    total_ms = fwd_ms + loss_ms + bwd_ms
+    print(f"  [TIME] fwd={fwd_ms:.0f}ms  loss={loss_ms:.0f}ms  bwd={bwd_ms:.0f}ms  total={total_ms:.0f}ms", flush=True)
     return loss.item()
 
 
