@@ -33,7 +33,7 @@ def build_model():
             self.embed = torch.nn.Embedding(VOCAB, K)
             self.layers = torch.nn.ModuleList([
                 torch.nn.Sequential(
-                    torch.nn.LayerNorm(K, dtype=torch.float16),
+                    torch.nn.LayerNorm(K),  # runs in FP32 via bf16/fp32 mixed
                     PackedTernaryLinear(K, 4*K, threshold=THRESHOLD),
                     torch.nn.GELU(),
                     PackedTernaryLinear(4*K, K, threshold=THRESHOLD),
@@ -44,15 +44,12 @@ def build_model():
         def forward(self, x):
             # x: [B, SEQ]
             B, T = x.shape
+            scale = K ** -0.5
             h = self.embed(x).half()  # [B, T, K]
             h = h.view(B * T, K)      # flatten for linear layers
-            for i, layer in enumerate(self.layers):
-                h = layer(h)
-                if h.shape[0] != B * T:
-                    print(f"  DEBUG: layer {i} changed batch: {h.shape[0]} vs {B*T}", flush=True)
-            h = self.head(h)          # [B*T, VOCAB]
-            if h.shape[0] != B * T:
-                print(f"  DEBUG: head changed batch: {h.shape[0]} vs {B*T}", flush=True)
+            for layer in self.layers:
+                h = layer(h) * scale   # output scaling prevents FP16 overflow
+            h = self.head(h) * scale
             return h.view(B, T, VOCAB) # [B, T, VOCAB]
 
     model = TernaryTransformer().cuda()
