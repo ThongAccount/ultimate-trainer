@@ -91,9 +91,9 @@ def train_step_cudagraph(model, x, y):
     logits = model(x)
     print(f"  DEBUG: logits.shape={logits.shape}, y.shape={y.shape}", flush=True)
 
-    # Loss: cross-entropy on all positions
+    # Loss: next-token prediction (shift logits vs targets)
     loss = torch.nn.functional.cross_entropy(
-        logits.view(-1, VOCAB), y.view(-1),
+        logits.view(-1, VOCAB), y[:, 1:].contiguous().view(-1),
         reduction='mean')
 
     # Backward
