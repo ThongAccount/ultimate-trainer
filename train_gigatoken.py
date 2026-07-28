@@ -48,7 +48,7 @@ def build_model():
             h = self.embed(x).half()  # [B, T, K]
             h = h.view(B * T, K)      # flatten for linear layers
             for layer in self.layers:
-                h = layer(h) * scale   # output scaling prevents FP16 overflow
+                h = layer(h.float()).half() * scale  # LayerNorm in FP32, scale prevents overflow
             h = self.head(h) * scale
             return h.view(B, T, VOCAB) # [B, T, VOCAB]
 
