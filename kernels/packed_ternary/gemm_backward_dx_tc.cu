@@ -84,12 +84,16 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
                     int gb = b0 + b;
                     int gr = r0 + r;
                     if (gb < batch_size && gr < out_features) {
-                        if (r + 1 < tile_r) {
+                        int byte_off = (gb * out_features + gr) * (int)sizeof(half);
+                        if ((byte_off & 3) == 0 && r + 1 < tile_r && gr + 1 < out_features) {
                             half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
                             DYS(warp_id, b, r)     = v.x;
                             DYS(warp_id, b, r + 1) = v.y;
                         } else {
                             DYS(warp_id, b, r) = dY[gb * out_features + gr];
+                            if (r + 1 < tile_r && gr + 1 < out_features) {
+                                DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
+                            }
                         }
                     }
                 }
