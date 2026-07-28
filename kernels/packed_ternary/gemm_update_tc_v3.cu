@@ -165,9 +165,16 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
 
         int idx = gr * in_features + gc;
 
-        int32_t cnt_pair = *(const int32_t*)&counter[idx];
-        int16_t cnt0 = (int16_t)(cnt_pair & 0xFFFF);
-        int16_t cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+        // Counter load: align-safe int32 or scalar int16
+        int16_t cnt0, cnt1;
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            cnt0 = counter[idx];
+            cnt1 = counter[idx + 1];
+        } else {
+            int32_t cnt_pair = *(const int32_t*)&counter[idx];
+            cnt0 = (int16_t)(cnt_pair & 0xFFFF);
+            cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+        }
 
         // Magnitude-scaled counter update
         // delta = clamp(round(|avg_grad|), 1, 8)
@@ -201,7 +208,13 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
             cnt1 = 0;
         }
 
-        *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        // Counter store: align-safe int32 or scalar int16
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            counter[idx]     = cnt0;
+            counter[idx + 1] = cnt1;
+        } else {
+            *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        }
     }
 }
 

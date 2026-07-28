@@ -162,10 +162,16 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
 
         int idx = gr * in_features + gc;
 
-        // Vectorized counter load: two int16 as one int32
-        int32_t cnt_pair = *(const int32_t*)&counter[idx];
-        int16_t cnt0 = (int16_t)(cnt_pair & 0xFFFF);
-        int16_t cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+        // Counter load: align-safe int32 or scalar int16
+        int16_t cnt0, cnt1;
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            cnt0 = counter[idx];
+            cnt1 = counter[idx + 1];
+        } else {
+            int32_t cnt_pair = *(const int32_t*)&counter[idx];
+            cnt0 = (int16_t)(cnt_pair & 0xFFFF);
+            cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+        }
 
         // Branchless counter update: -1 if grad>0, +1 if grad<0, 0 if grad==0
         cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
@@ -190,8 +196,13 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
             cnt1 = 0;
         }
 
-        // Vectorized counter store
-        *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        // Counter store: align-safe int32 or scalar int16
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            counter[idx]     = cnt0;
+            counter[idx + 1] = cnt1;
+        } else {
+            *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        }
     }
 }
 
