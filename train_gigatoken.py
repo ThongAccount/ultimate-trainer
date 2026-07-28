@@ -47,9 +47,9 @@ def build_model():
             h = self.embed(x).half()  # [B, T, K]
             h = h.view(B * T, K)      # flatten for linear layers
             for layer in self.layers:
-                h = layer(h)
-            h = h.view(B, T, -1)      # reshape to [B, T, VOCAB]
-            return self.head(h)
+                h = layer(h)          # [B*T, K] throughout
+            h = self.head(h)          # [B*T, VOCAB]
+            return h.view(B, T, VOCAB) # [B, T, VOCAB]
 
     model = TernaryTransformer().cuda()
     return model
