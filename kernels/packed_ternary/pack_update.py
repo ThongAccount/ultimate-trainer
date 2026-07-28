@@ -362,6 +362,12 @@ def _load_up_tc_v3():
 # ── Auto-dispatch public API ───────────────────────────────────────────
 
 TC_MIN_DIM = 16  # WMMA m16n16k16 needs M, N, K all >= 16
+TC_ALIGN = 16  # WMMA requires all dims to be multiples of 16 for correctness
+
+
+def _tc_ok(dim: int) -> bool:
+    """True if dim is valid for TC dispatch."""
+    return dim >= TC_MIN_DIM and (dim % TC_ALIGN) == 0
 
 
 def _load_if_needed():
@@ -468,7 +474,7 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
 
     # ── Backward: dX = dY @ W ──
     # W is already asserted contiguous above — skip redundant .contiguous()
-    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and in_features >= TC_MIN_DIM:
+    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(in_features):
         _load_tc_if_needed()
         if _HAS_DX_TC:
             dX = _dx_tc_fn(W, dY_c, in_features)
@@ -480,7 +486,7 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
 
     # ── Update: dW→sign→counter→flip ──
     N_in = X_c.size(1)
-    if B >= TC_MIN_DIM and N_out >= TC_MIN_DIM and N_in >= TC_MIN_DIM:
+    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(N_in):
         _load_tc_if_needed()
         # Prefer v3 (magnitude-scaled) > v2 (vectorized) > v1
         if _HAS_UP_TC_V3:
