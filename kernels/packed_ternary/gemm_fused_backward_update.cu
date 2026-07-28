@@ -193,6 +193,28 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_update_fused_kern
         }
         __syncthreads();
 
+        // ── Zero unused batch rows in dY/X SMEM (for partial batch) ──
+        if (Bt < kBatchStep) {
+            half zero = __float2half(0.0f);
+            int n_total = kWarps * kWMMA_M * kWMMA_K;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kWMMA_M * kWMMA_K);
+                int rem = tid % (kWMMA_M * kWMMA_K);
+                int b = rem / kWMMA_K;
+                int r = rem % kWMMA_K;
+                if (b >= Bt) dY_smem[w][b][r] = zero;
+            }
+            n_total = kWarps * kWMMA_M * kWMMA_N;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kWMMA_M * kWMMA_N);
+                int rem = tid % (kWMMA_M * kWMMA_N);
+                int b = rem / kWMMA_N;
+                int c = rem % kWMMA_N;
+                if (b >= Bt) X_smem[w][b][c] = zero;
+            }
+            __syncthreads();
+        }
+
         // ── Phase 1: dX_partial = dY_tile × W_tile (WMMA) ─────────
         {
             wmma::load_matrix_sync(a_frag,
