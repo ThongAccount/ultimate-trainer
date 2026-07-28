@@ -82,31 +82,46 @@ for _ in range(ITERS):
     times_bwd.append(e0.elapsed_time(e1))
 bwd_ms = sorted(times_bwd)[len(times_bwd)//2]
 
-# ── 3. Fused backward dX + update (single kernel launch) ───────────
-
-from kernels.packed_ternary.pack_update import backward_update_fused
+# ── 3. Backward dX only (direct kernel call) ──────────────────────
 
 y_ref = torch.randn(B, N, dtype=torch.float16, device="cuda")
+for _ in range(WARMUP):
+    backward_dx(layer.W_packed, y_ref, K)
+torch.cuda.synchronize()
+
+times_bwd = []
+for _ in range(ITERS):
+    e0.record()
+    dx = backward_dx(layer.W_packed, y_ref, K)
+    e1.record()
+    torch.cuda.synchronize()
+    times_bwd.append(e0.elapsed_time(e1))
+bwd_ms = sorted(times_bwd)[len(times_bwd)//2]
+
+# ── 4. Update only (direct kernel call) ───────────────────────────
+
+x_ref2 = torch.randn(B, K, dtype=torch.float16, device="cuda")
+y_ref2 = torch.randn(B, N, dtype=torch.float16, device="cuda")
 counter_snap = layer.counter.clone()
 
 for _ in range(WARMUP):
+    update(layer.W_packed, layer.counter, x_ref2, y_ref2, 8)
     layer.counter.copy_(counter_snap)
-    backward_update_fused(layer.W_packed, layer.counter, y_ref, x_ref, K, 8)
 torch.cuda.synchronize()
 
-times_fused = []
+times_upd = []
 for _ in range(ITERS):
     layer.counter.copy_(counter_snap)
     e0.record()
-    dx = backward_update_fused(layer.W_packed, layer.counter, y_ref, x_ref, K, 8)
+    update(layer.W_packed, layer.counter, x_ref2, y_ref2, 8)
     e1.record()
     torch.cuda.synchronize()
-    times_fused.append(e0.elapsed_time(e1))
-fused_ms = sorted(times_fused)[len(times_fused)//2]
+    times_upd.append(e0.elapsed_time(e1))
+upd_ms = sorted(times_upd)[len(times_upd)//2]
 
-# ── 4. CPU overhead (Python + autograd dispatch) ──────────────────
+# ── 5. CPU overhead (Python + autograd dispatch) ──────────────────
 
-overhead_ms = full_ms - fwd_ms - fused_ms
+overhead_ms = full_ms - fwd_ms - bwd_ms - upd_ms
 
 # ── Report ─────────────────────────────────────────────────────────
 
@@ -116,7 +131,8 @@ print(f"{'═'*60}")
 print(f"  {'Phase':<30} {'ms':>8} {'%':>8}")
 print(f"  {'─'*48}")
 print(f"  {'Forward (ternary TC)':<30} {fwd_ms:>8.3f} {100*fwd_ms/full_ms:>7.1f}%")
-print(f"  {'Fused backward+update (TC)':<30} {fused_ms:>8.3f} {100*fused_ms/full_ms:>7.1f}%")
+print(f"  {'Backward dX (ternary TC)':<30} {bwd_ms:>8.3f} {100*bwd_ms/full_ms:>7.1f}%")
+print(f"  {'Update (dense TC + counter)':<30} {upd_ms:>8.3f} {100*upd_ms/full_ms:>7.1f}%")
 print(f"  {'Python/autograd overhead':<30} {overhead_ms:>8.3f} {100*overhead_ms/full_ms:>7.1f}%")
 print(f"  {'─'*48}")
 print(f"  {'TOTAL (autograd step)':<30} {full_ms:>8.3f} {'100.0':>7}%")
@@ -124,10 +140,10 @@ print(f"{'═'*60}")
 
 # ── Theoretical minimum ───────────────────────────────────────────
 
-# Memory traffic (fused saves one W + one dY read)
-x_bytes = 2 * B * K * 2        # X read: forward + fused (dW)
-dy_bytes = 1 * B * N * 2       # dY read: fused (shared by dX + dW)
-w_bytes = 2 * K * N // 16      # W packed read: forward + fused (dX + counter flip) — 2-bit
+# Memory traffic
+x_bytes = 2 * B * K * 2        # X read ×2 (fwd + update)
+dy_bytes = 2 * B * N * 2       # dY read ×2 (bwd + update)
+w_bytes = 3 * K * N // 16      # W packed read ×3 (fwd + bwd + update) — 2-bit
 ctr_bytes = 2 * K * N * 2      # counter read+write (int16)
 y_bytes = B * N * 2            # Y write
 dx_bytes = B * K * 2           # dX write

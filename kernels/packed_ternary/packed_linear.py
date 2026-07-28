@@ -145,14 +145,20 @@ class PackedTernaryLinearFn(torch.autograd.Function):
 
         # Fused backward + update: single kernel when dimensions allow
         if counter is not None:
-            from .pack_update import _tc_ok
-            if _HAS_CUSTOM_OPS and _tc_ok(B) and _tc_ok(dY.size(1)) and _tc_ok(ctx.in_features):
-                # Fused kernel: one launch computes both dX and update
+            # Separate backward_dx + update is faster than fused kernel
+            # due to atomicAdd contention on dX when many CTAs compete.
+            # Use fused only when B, N, K are small.
+            if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16 and B <= 64 and dY.size(1) <= 128 and ctx.in_features <= 128:
+                from .pack_update import _tc_ok
                 dX = co_backward_update_fused(
                     W_packed, counter, dY, X, ctx.in_features, int(threshold))
             else:
-                # Separate launches for small dimensions
-                dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
+                # Separate launches: faster for large dimensions
+                if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16:
+                    dX = co_backward_dx_tc(W_packed, dY, ctx.in_features)
+                    co_update_tc_v2(W_packed, counter, X.contiguous(), dY.contiguous(), int(threshold))
+                else:
+                    dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
         else:
             dX = backward_dx(W_packed, dY, ctx.in_features)
 
