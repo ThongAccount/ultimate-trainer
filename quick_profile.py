@@ -5,4 +5,5 @@ import train_gigatoken as tg
 tg.STEPS = 5
 import os
 os.chdir(os.path.dirname(__file__) or ".")
+sys.argv = ['quick_profile.py', '--text', 'shakespeare.txt']
 tg.main()
