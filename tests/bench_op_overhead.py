@@ -1,6 +1,6 @@
 """Isolate: custom op overhead vs raw CUDA call."""
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import torch
 from kernels.packed_ternary.custom_ops import _ensure_loaded, forward_tc
 _ensure_loaded()
