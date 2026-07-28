@@ -38,10 +38,10 @@ class TrainStepGraphCUDAGraph:
 
         # Pre-allocate static memory (fixed addresses for CUDAGraph)
         self.static_X = torch.zeros(self.B, self.K, dtype=torch.float16, device="cuda")
-        self.static_Y = torch.zeros(self.B, self.N, dtype=torch.float16, device="cuda")
+        self.static_target = torch.zeros(self.B, self.N, dtype=torch.float16, device="cuda")
+        self.static_pred = torch.zeros(self.B, self.N, dtype=torch.float16, device="cuda")
         self.static_dY = torch.zeros(self.B, self.N, dtype=torch.float16, device="cuda")
         self.static_dX = torch.zeros(self.B, self.K, dtype=torch.float16, device="cuda")
-        self.static_loss = torch.zeros(1, dtype=torch.float32, device="cuda")
 
         # Snapshot initial state for reset
         self._W0 = layer.W_packed.clone()
@@ -59,12 +59,9 @@ class TrainStepGraphCUDAGraph:
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
             for _ in range(3):
-                # Forward
                 y = _forward_op(self.layer.W_packed, self.static_X, self.K)
-                self.static_Y.copy_(y)
-                # dY = gradient of MSE loss (mean squared error)
-                self.static_dY.copy_(2.0 * (self.static_Y - self.static_dY) / (self.B * self.N))
-                # Backward dX
+                self.static_pred.copy_(y)
+                self.static_dY.copy_(2.0 * (self.static_pred - self.static_target) / (self.B * self.N))
                 dx = _backward_op(self.layer.W_packed, self.static_dY, self.K)
                 self.static_dX.copy_(dx)
         torch.cuda.current_stream().wait_stream(s)
@@ -73,8 +70,8 @@ class TrainStepGraphCUDAGraph:
         self.graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(self.graph):
             y = _forward_op(self.layer.W_packed, self.static_X, self.K)
-            self.static_Y.copy_(y)
-            self.static_dY.copy_(2.0 * (self.static_Y - self.static_dY) / (self.B * self.N))
+            self.static_pred.copy_(y)
+            self.static_dY.copy_(2.0 * (self.static_pred - self.static_target) / (self.B * self.N))
             dx = _backward_op(self.layer.W_packed, self.static_dY, self.K)
             self.static_dX.copy_(dx)
 
@@ -85,20 +82,18 @@ class TrainStepGraphCUDAGraph:
         """
         if self.graph is not None:
             self.static_X.copy_(X)
-            self.static_Y.copy_(Y_target)
+            self.static_target.copy_(Y_target)
             self.graph.replay()
-            Y_out = self.static_Y
-            dX_out = self.static_dX
+            Y_out = self.static_pred
+            dY = self.static_dY
         else:
             # Manual path (no graph)
             Y_out = _forward_op(self.layer.W_packed, X.contiguous(), self.K)
             dY = 2.0 * (Y_out - Y_target) / (self.B * self.N)
-            dX_out = _backward_op(self.layer.W_packed, dY, self.K)
 
-        # Update runs outside graph (conditional atomicCAS breaks graph determinism)
+        # Update runs outside graph using the computed dY, NOT Y_target
         _update_op(self.layer.W_packed, self.layer.counter,
-                    X.contiguous(), Y_target if self.graph is None else self.static_dY,
-                    self.threshold)
+                   X.contiguous(), dY, self.threshold)
 
         # Compute loss
         loss_val = (Y_out - Y_target).pow(2).mean().item()

@@ -56,10 +56,9 @@ def _forward_auto(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
     """Auto-select forward kernel based on tensor dimensions."""
     B, K = X.shape       # M=B, K=in_features
     N = W.shape[0]       # N=out_features
-    # TC WMMA m16n16k16 needs M, N, K all >= 16
-    # Packed kernel (CUDA core) is 4× slower — TC unpack overhead is
-    # smaller than the 10× compute disadvantage of CUDA cores.
-    if B >= 16 and N >= 16 and K >= 16 and has_tc():
+    # TC WMMA m16n16k16 needs M, N, K all >= 16 AND multiples of 16
+    from .pack_update import _tc_ok
+    if _tc_ok(B) and _tc_ok(N) and _tc_ok(K) and has_tc():
         # Prefer custom op (traceable by torch.compile)
         if _HAS_CUSTOM_OPS:
             return co_forward_tc(W, X, K)
