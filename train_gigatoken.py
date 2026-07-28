@@ -46,9 +46,13 @@ def build_model():
             B, T = x.shape
             h = self.embed(x).half()  # [B, T, K]
             h = h.view(B * T, K)      # flatten for linear layers
-            for layer in self.layers:
-                h = layer(h)          # [B*T, K] throughout
+            for i, layer in enumerate(self.layers):
+                h = layer(h)
+                if h.shape[0] != B * T:
+                    print(f"  DEBUG: layer {i} changed batch: {h.shape[0]} vs {B*T}", flush=True)
             h = self.head(h)          # [B*T, VOCAB]
+            if h.shape[0] != B * T:
+                print(f"  DEBUG: head changed batch: {h.shape[0]} vs {B*T}", flush=True)
             return h.view(B, T, VOCAB) # [B, T, VOCAB]
 
     model = TernaryTransformer().cuda()
