@@ -42,9 +42,13 @@ def build_model():
             self.head = PackedTernaryLinear(K, VOCAB, threshold=THRESHOLD)
 
         def forward(self, x):
-            h = self.embed(x).half()
+            # x: [B, SEQ]
+            B, T = x.shape
+            h = self.embed(x).half()  # [B, T, K]
+            h = h.view(B * T, K)      # flatten for linear layers
             for layer in self.layers:
                 h = layer(h)
+            h = h.view(B, T, -1)      # reshape to [B, T, VOCAB]
             return self.head(h)
 
     model = TernaryTransformer().cuda()
@@ -82,11 +86,9 @@ def train_step_cudagraph(model, x, y):
     # Forward
     logits = model(x)
 
-    # Loss: cross-entropy on last token (next-token prediction)
-    shift_logits = logits[:, :-1, :].contiguous()
-    shift_labels = y[:, 1:].contiguous()
+    # Loss: cross-entropy on all positions
     loss = torch.nn.functional.cross_entropy(
-        shift_logits.view(-1, VOCAB), shift_labels.view(-1),
+        logits.view(-1, VOCAB), y.view(-1),
         reduction='mean')
 
     # Backward
