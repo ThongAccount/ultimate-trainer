@@ -1,7 +1,7 @@
 """Benchmark: autograd vs manual vs CUDAGraph for discrete train step."""
 import sys, os, time
 import torch
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from kernels.packed_ternary import PackedTernaryLinear
 
 B, K, N = 32, 4096, 4096
