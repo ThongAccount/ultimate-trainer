@@ -523,18 +523,24 @@ def _load_if_needed():
 
 def _load_tc_if_needed():
     """Ensure 32x32 TC kernels are loaded (legacy path)."""
-    global _dx_tc_fn, _up_tc_v2_fn, _up_tc_v3_fn
+    global _HAS_DX_TC, _dx_tc_fn, _HAS_UP_TC_V2, _up_tc_v2_fn, _HAS_UP_TC_V3, _up_tc_v3_fn
     if not _HAS_DX_TC_32:
         _load_dx_tc_32()
-        _dx_tc_fn = _dx_tc_32_fn  # alias 32x32 versions into legacy function pointers
+        if _HAS_DX_TC_32:
+            _dx_tc_fn = _dx_tc_32_fn
+            _HAS_DX_TC = True
     if not _HAS_UP_TC:
         _load_up_tc()
     if not _HAS_UP_TC_V2_32:
         _load_up_tc_v2_32()
-        _up_tc_v2_fn = _up_tc_v2_32_fn
+        if _HAS_UP_TC_V2_32:
+            _up_tc_v2_fn = _up_tc_v2_32_fn
+            _HAS_UP_TC_V2 = True
     if not _HAS_UP_TC_V3_32:
         _load_up_tc_v3_32()
-        _up_tc_v3_fn = _up_tc_v3_32_fn
+        if _HAS_UP_TC_V3_32:
+            _up_tc_v3_fn = _up_tc_v3_32_fn
+            _HAS_UP_TC_V3 = True
 
 
 def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Tensor:
