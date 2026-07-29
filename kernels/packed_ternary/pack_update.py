@@ -432,15 +432,15 @@ def _load_if_needed():
 
 
 def _load_tc_if_needed():
-    """Ensure TC kernels are loaded (lazy load on first use)."""
-    if not _HAS_DX_TC:
-        _load_dx_tc()
+    """Ensure 32x32 TC kernels are loaded (legacy path)."""
+    if not _HAS_DX_TC_32:
+        _load_dx_tc_32()
     if not _HAS_UP_TC:
         _load_up_tc()
-    if not _HAS_UP_TC_V2:
-        _load_up_tc_v2()
-    if not _HAS_UP_TC_V3:
-        _load_up_tc_v3()
+    if not _HAS_UP_TC_V2_32:
+        _load_up_tc_v2_32()
+    if not _HAS_UP_TC_V3_32:
+        _load_up_tc_v3_32()
 
 
 def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Tensor:

@@ -249,9 +249,12 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
             int c = linear % kN;
             if (c != (kN - 1)) continue;
 
+            int warp_c_off_w = (w / 2) * kN;
+            int gc = super_c0 + warp_c_off_w + c;
+            if (gc != last_gc) continue;
+
             int warp_r_off_w = (w % 2) * kM;
             int gr = super_r0 + warp_r_off_w + r;
-            int gc = last_gc;
 
             if (gr >= out_features) continue;
 
