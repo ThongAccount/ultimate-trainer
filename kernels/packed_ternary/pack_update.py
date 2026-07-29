@@ -407,6 +407,96 @@ def _load_up_tc_v3():
         print(f"[up_tc_v3] load failed: {e}")
 
 
+def _load_up_tc_v2_32():
+    """Load 32x32 tile update TC v2 kernel."""
+    global _HAS_UP_TC_V2_32, _up_tc_v2_32_fn
+    if _HAS_UP_TC_V2_32:
+        return
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(UP_TC_V2_32_PATH) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+        _lib = load_inline(
+            name="packed_ternary_up_tc_v2_32_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_update_tc_v2(
+                    const void* X, const void* dY, uint32_t* W, int16_t* counter,
+                    int batch_size, int in_features, int out_features,
+                    int stride_words, int16_t threshold, cudaStream_t stream);
+            }
+            void up_tc_v2_32_wrapper(torch::Tensor X, torch::Tensor dY,
+                                      torch::Tensor W, torch::Tensor counter,
+                                      int64_t threshold) {
+                launch_packed_ternary_update_tc_v2(
+                    X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
+                    reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
+                    counter.data_ptr<int16_t>(),
+                    X.size(0), X.size(1), dY.size(1), W.size(1),
+                    (int16_t)threshold, nullptr);
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("update_tc_v2_32", &up_tc_v2_32_wrapper, "Update TC 32x32");
+            }
+            """,
+            cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2"],
+        )
+        _up_tc_v2_32_fn = _lib.update_tc_v2_32
+        _HAS_UP_TC_V2_32 = True
+    except Exception as e:
+        print(f"[up_tc_v2_32] load failed: {e}")
+
+
+def _load_up_tc_v3_32():
+    """Load 32x32 tile update TC v3 kernel."""
+    global _HAS_UP_TC_V3_32, _up_tc_v3_32_fn
+    if _HAS_UP_TC_V3_32:
+        return
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(UP_TC_V3_32_PATH) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+        _lib = load_inline(
+            name="packed_ternary_up_tc_v3_32_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+            extern "C" {
+                void launch_packed_ternary_update_tc_v3(
+                    const void* X, const void* dY, uint32_t* W, int16_t* counter,
+                    int batch_size, int in_features, int out_features,
+                    int stride_words, int16_t threshold, cudaStream_t stream);
+            }
+            void up_tc_v3_32_wrapper(torch::Tensor X, torch::Tensor dY,
+                                      torch::Tensor W, torch::Tensor counter,
+                                      int64_t threshold) {
+                launch_packed_ternary_update_tc_v3(
+                    X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
+                    reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
+                    counter.data_ptr<int16_t>(),
+                    X.size(0), X.size(1), dY.size(1), W.size(1),
+                    (int16_t)threshold, nullptr);
+            }
+            PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+                m.def("update_tc_v3_32", &up_tc_v3_32_wrapper, "Update TC 32x32 v3");
+            }
+            """,
+            cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2"],
+        )
+        _up_tc_v3_32_fn = _lib.update_tc_v3_32
+        _HAS_UP_TC_V3_32 = True
+    except Exception as e:
+        print(f"[up_tc_v3_32] load failed: {e}")
+
+
 # ── Auto-dispatch public API ───────────────────────────────────────────
 
 TC_MIN_DIM = 16  # WMMA m16n16k16 needs M, N, K all >= 16
@@ -433,14 +523,18 @@ def _load_if_needed():
 
 def _load_tc_if_needed():
     """Ensure 32x32 TC kernels are loaded (legacy path)."""
+    global _dx_tc_fn, _up_tc_v2_fn, _up_tc_v3_fn
     if not _HAS_DX_TC_32:
         _load_dx_tc_32()
+        _dx_tc_fn = _dx_tc_32_fn  # alias 32x32 versions into legacy function pointers
     if not _HAS_UP_TC:
         _load_up_tc()
     if not _HAS_UP_TC_V2_32:
         _load_up_tc_v2_32()
+        _up_tc_v2_fn = _up_tc_v2_32_fn
     if not _HAS_UP_TC_V3_32:
         _load_up_tc_v3_32()
+        _up_tc_v3_fn = _up_tc_v3_32_fn
 
 
 def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Tensor:

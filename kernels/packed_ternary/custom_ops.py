@@ -28,7 +28,7 @@ def _ensure_loaded():
     from .pack_update import _load_tc_if_needed, _HAS_DX_TC, _dx_tc_fn, _HAS_UP_TC_V2, _up_tc_v2_fn, _HAS_UP_TC_V3, _up_tc_v3_fn
 
     if has_tc():
-        _load_tc()
+        _load_tc_32()
         from .pack_forward import _forward_fn_tc
         _fwd_tc = _forward_fn_tc
 
