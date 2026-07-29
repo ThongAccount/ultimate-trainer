@@ -430,8 +430,8 @@ def _load_up_tc_v2_32():
                     int batch_size, int in_features, int out_features,
                     int stride_words, int16_t threshold, cudaStream_t stream);
             }
-            void up_tc_v2_32_wrapper(torch::Tensor X, torch::Tensor dY,
-                                      torch::Tensor W, torch::Tensor counter,
+            void up_tc_v2_32_wrapper(torch::Tensor W, torch::Tensor counter,
+                                      torch::Tensor X, torch::Tensor dY,
                                       int64_t threshold) {
                 launch_packed_ternary_update_tc_v2(
                     X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
@@ -475,8 +475,8 @@ def _load_up_tc_v3_32():
                     int batch_size, int in_features, int out_features,
                     int stride_words, int16_t threshold, cudaStream_t stream);
             }
-            void up_tc_v3_32_wrapper(torch::Tensor X, torch::Tensor dY,
-                                      torch::Tensor W, torch::Tensor counter,
+            void up_tc_v3_32_wrapper(torch::Tensor W, torch::Tensor counter,
+                                      torch::Tensor X, torch::Tensor dY,
                                       int64_t threshold) {
                 launch_packed_ternary_update_tc_v3(
                     X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
@@ -529,8 +529,6 @@ def _load_tc_if_needed():
         if _HAS_DX_TC_32:
             _dx_tc_fn = _dx_tc_32_fn
             _HAS_DX_TC = True
-    if not _HAS_UP_TC:
-        _load_up_tc()
     if not _HAS_UP_TC_V2_32:
         _load_up_tc_v2_32()
         if _HAS_UP_TC_V2_32:
