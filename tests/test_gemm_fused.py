@@ -251,7 +251,7 @@ def test_fused_odd_shapes():
 
         assert max_diff_dx < 2e-2, f"B={B} K={K} N={N}: dX diff {max_diff_dx:.4e}"
         assert max_diff_w == 0, f"B={B} K={K} N={N}: W diff {max_diff_w}"
-            assert max_diff_cnt <= 1, f"B={B} K={K} N={N}: cnt diff {max_diff_cnt}"
+        assert max_diff_cnt <= 1, f"B={B} K={K} N={N}: cnt diff {max_diff_cnt}"
 
         print(f"  ✅ odd B={B} K={K} N={N}: dX={max_diff_dx:.4e}, W={max_diff_w}, cnt={max_diff_cnt}")
 
