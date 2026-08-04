@@ -13,6 +13,7 @@ _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
 #include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
 
 // Forward declarations
 void launch_fused_compressed_attn_forward(
@@ -51,14 +52,15 @@ at::Tensor forward_wrapper(
     int n_blocks = (T - block_len) / stride;
     if (n_blocks <= 0) n_blocks = 1;
 
-    // Handle bias by folding into weights for CUDA kernel
-    // phi_k: w1 @ x + b1, then SiLU, then w2 @ h + b2
-    // We fold biases: w1 has bias appended as extra column, x has 1 appended
-    // For simplicity in v1, we keep biases separate but add them in the kernel
+    TORCH_CHECK(k.is_cuda(), "k must be a CUDA tensor");
+    TORCH_CHECK(k.dtype() == at::kFloat, "k must be float32 (kernel reads half-packed data)");
+    TORCH_CHECK(k.is_contiguous(), "k must be contiguous");
+    TORCH_CHECK(block_len > 0 && stride > 0, "block_len/stride must be positive");
+
     auto k_cmp = at::empty({B, H, n_blocks, D}, k.options().dtype(at::kFloat));
     auto v_cmp = at::empty({B, H, n_blocks, D}, v.options().dtype(at::kFloat));
 
-    cudaStream_t stream = nullptr;
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     launch_fused_compressed_attn_forward(
         reinterpret_cast<const float*>(k.data_ptr<float>()),
@@ -72,6 +74,8 @@ at::Tensor forward_wrapper(
         B, H, T, D, block_len, stride, n_blocks,
         stream
     );
+
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return torch::cat({k_cmp, v_cmp}, -1);  // return stacked for autograd simplicity
 }
@@ -111,13 +115,19 @@ class CompressedAttnFn(torch.autograd.Function):
         ctx.stride = stride
 
         if k.is_cuda and _HAS_COMPRESSED_ATTN:
-            # CUDA path
+            has_bias = any(b is not None for b in (phi_k_b1, phi_k_b2, phi_v_b1, phi_v_b2))
+            if has_bias:
+                # The CUDA kernel has no bias support; fall back to the eager
+                # path so bias terms are NOT silently dropped.
+                return _compressed_attn_eager(k, v, phi_k_w1, phi_k_b1, phi_k_w2, phi_k_b2,
+                                              phi_v_w1, phi_v_b1, phi_v_w2, phi_v_b2, block_len, stride)
+            # CUDA path (bias-free)
             k_cmp_v_cmp = _compressed_lib.forward(
                 k.contiguous().float(), v.contiguous().float(),
-                phi_k_w1.contiguous().float(), phi_k_b1.contiguous().float() if phi_k_b1 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
-                phi_k_w2.contiguous().float(), phi_k_b2.contiguous().float() if phi_k_b2 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
-                phi_v_w1.contiguous().float(), phi_v_b1.contiguous().float() if phi_v_b1 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
-                phi_v_w2.contiguous().float(), phi_v_b2.contiguous().float() if phi_v_b2 is not None else torch.zeros(1, device=k.device, dtype=k.dtype),
+                phi_k_w1.contiguous().float(),
+                phi_k_w2.contiguous().float(),
+                phi_v_w1.contiguous().float(),
+                phi_v_w2.contiguous().float(),
                 block_len, stride
             )
             k_cmp = k_cmp_v_cmp[..., :k_cmp_v_cmp.size(-1)//2]

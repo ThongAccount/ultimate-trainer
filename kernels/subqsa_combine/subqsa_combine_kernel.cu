@@ -217,6 +217,15 @@ void launch_subqsa_combine_forward(
     size_t phase5_size = (size_t)D * sizeof(float) + (THREADS / WARP_SIZE) * sizeof(float);
     size_t shared_mem = phase1_size > phase5_size ? phase1_size : phase5_size;
 
+    // Guard against exceeding the 48 KB default dynamic-shared limit on
+    // sm_70+ (can be raised, but only explicitly via cudaFuncSetAttribute).
+    if (shared_mem > 48 * 1024) {
+        fprintf(stderr, "[subqsa_combine] shared memory %zu B exceeds 48 KB limit "
+                        "(D=%d, H=%d). Recompile with cudaFuncSetAttribute or "
+                        "use the eager fallback.\n", shared_mem, D, H);
+        return;
+    }
+
     dim3 grid(B, T);
     subqsa_combine_kernel<<<grid, THREADS, shared_mem, stream>>>(
         x, o_cmp, o_slc, o_win,

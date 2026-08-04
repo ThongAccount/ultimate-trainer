@@ -92,14 +92,26 @@ def compute_block_mask(top_idx, n_sel, block_size, num_n_tiles, num_k_tiles):
     """Convert top-K indices to a block-sparse bitmask.
 
     Each selected block's K-range is fully active. Non-selected blocks are masked out.
+
+    ``top_idx`` may be ``(K,)``, ``(H, K)`` or ``(B, H, K)``. Because the CUDA
+    kernel consumes a *single* global mask, the mask is the union over all
+    batch/head entries: a block is kept active if it is selected by ANY
+    (b, h). This guarantees no active block is dropped (correctness), at the
+    cost of possibly keeping a few extra blocks active for other (b, h).
     """
     num_tiles = num_n_tiles * num_k_tiles
     num_ints = max(1, (num_tiles + 63) // 64)
     mask = torch.zeros(num_ints, dtype=torch.int64, device=top_idx.device)
-    for i in range(top_idx.size(-1)):
-        tile_n = top_idx[0, 0, i].item()
+
+    # Flatten leading (batch, head) dims so any shape >= 1-D is handled.
+    flat = top_idx.reshape(-1, top_idx.size(-1))
+    for i in range(flat.size(-1)):
+        tile_n = flat[:, i]  # (batch*head,) tile indices
         for tk in range(num_k_tiles):
             bit_pos = tile_n * num_k_tiles + tk
+            bit_pos = bit_pos[bit_pos < num_tiles]  # guard OOB
+            if bit_pos.numel() == 0:
+                continue
             mask[bit_pos // 64] |= 1 << (bit_pos % 64)
     return mask
 

@@ -17,6 +17,7 @@ _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
 #include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
 
 // Forward declarations from the CUDA source
 void launch_selective_phase1(
@@ -46,7 +47,7 @@ std::vector<at::Tensor> forward_wrapper(
                               scores_agg.options().dtype(at::kLong));
     auto attn_out = at::empty({B, H, T, D}, q.options().dtype(at::kFloat));
 
-    cudaStream_t stream = nullptr;
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     launch_selective_phase1(
         reinterpret_cast<const float*>(scores_agg.data_ptr<float>()),
@@ -60,6 +61,8 @@ std::vector<at::Tensor> forward_wrapper(
         reinterpret_cast<const long*>(top_idx.data_ptr<long>()),
         reinterpret_cast<float*>(attn_out.data_ptr<float>()),
         B, H, T, D, block_size, topk, n_sel, stream);
+
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 
     return {attn_out, top_idx};
 }
@@ -107,9 +110,21 @@ class SelectiveAttnFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         q, k, v, scores_agg = ctx.saved_tensors
-        # Standard backward through SDPA (grad_q, grad_k, grad_v)
-        # CPU fallback for now
-        return (grad_output, None, None, None, None, None)
+        topk = ctx.topk
+        block_size = ctx.block_size
+
+        # Backward through the selection + SDPA graph. Re-run the selection
+        # forward under grad mode so q/k/v receive real gradients
+        # (top-k selection itself is non-differentiable -> no grad to scores_agg).
+        with torch.enable_grad():
+            k_in = k.detach().requires_grad_(True)
+            v_in = v.detach().requires_grad_(True)
+            q_in = q.detach().requires_grad_(True)
+            out = _selective_attn_eager(q_in, k_in, v_in, scores_agg, topk, block_size)
+            grad_q, grad_k, grad_v = torch.autograd.grad(
+                out, (q_in, k_in, v_in), grad_output, retain_graph=False)
+
+        return (grad_q, grad_k, grad_v, None, None, None)
 
 
 def _selective_attn_eager(q, k, v, scores_agg, topk, block_size):

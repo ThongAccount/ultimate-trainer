@@ -130,11 +130,15 @@ def _subqsa_combine_eager(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
     o = o / (rms + 1e-5) * out_norm_weight
 
     # Sparse ternary O projection when block_mask is provided
+    # NOTE: block_sparse_ternary_matmul returns x @ Q with Q in {-1, 0, 1}
+    # (no gamma rescale), so multiply by gamma to match the standard
+    # ternary path below (w_q = clamp(round(w/gamma), -1, 1) * gamma).
     if block_mask is not None and _HAS_BLOCK_SPARSE and o.is_cuda:
         d_out = o_proj_weight.shape[0]
         o_flat = o.reshape(-1, d_out)
-        return block_sparse_ternary_matmul(o_flat, o_proj_weight, gamma, block_mask,
-                                           BM=64, BN=64, BK=32).reshape(B, T, -1)
+        y = block_sparse_ternary_matmul(o_flat, o_proj_weight, gamma, block_mask,
+                                        BM=64, BN=64, BK=32).reshape(B, T, -1)
+        return (y * gamma).to(dtype=o.dtype)
 
     # Standard gamma-scaled ternary O projection
     w_q = torch.clamp(torch.round(o_proj_weight / gamma), -1, 1) * gamma
@@ -172,38 +176,52 @@ class SubQSACombineFn(torch.autograd.Function):
     def backward(ctx, grad_output):
         x, o_cmp, o_slc, o_win, gate_w1, gate_w2, out_norm_weight, o_proj_weight = ctx.saved_tensors
         gamma = ctx.gamma
-        # Detach the input: all backward computation is off the graph to
-        # avoid 'backward through graph a second time' errors.
+        block_mask = ctx.block_mask
+
+        # Full differentiable recompute: gate MLP, blend, RMSNorm and O-proj
+        # all receive real gradients (no zeros for gate_w1/gate_w2/norm weights).
+        with torch.enable_grad():
+            x_in = x.detach().requires_grad_(True)
+            o_cmp_in = o_cmp.detach().requires_grad_(True)
+            o_slc_in = o_slc.detach().requires_grad_(True)
+            o_win_in = o_win.detach().requires_grad_(True)
+            gw1 = gate_w1.detach().requires_grad_(True)
+            gw2 = gate_w2.detach().requires_grad_(True)
+            onw = out_norm_weight.detach().requires_grad_(True)
+            opw = o_proj_weight.detach().requires_grad_(True)
+
+            y = _subqsa_combine_eager(x_in, o_cmp_in, o_slc_in, o_win_in,
+                                      gw1, gw2, onw, opw, gamma, block_mask)
+            grads = torch.autograd.grad(
+                y, (x_in, o_cmp_in, o_slc_in, o_win_in, gw1, gw2, onw, opw),
+                grad_output, allow_unused=True)
+
+        grads = list(grads)
+        # STE for the ternary O projection: round()/clamp() have zero
+        # autograd gradient, so compute d_y^T @ blended input manually.
+        # Blended input = o after RMSNorm (before O projection).
         with torch.no_grad():
-            xd, o_cmp_d, o_slc_d, o_win_d = x.detach(), o_cmp.detach(), o_slc.detach(), o_win.detach()
-            gw1_d, gw2_d = gate_w1.detach(), gate_w2.detach()
-            onw_d, opw_d = out_norm_weight.detach(), o_proj_weight.detach()
+            g1 = F.linear(x.detach(), gate_w1.detach())
+            g2 = F.linear(F.silu(g1), gate_w2.detach())
+            B, H, T, D_head = o_cmp.shape
+            g = g2.view(B, T, 3, H).permute(0, 3, 1, 2).sigmoid()
+            g_norm = g / (g.sum(dim=-1, keepdim=True) + 1e-8)
+            blended = (g_norm[..., 0:1] * o_cmp.detach()
+                       + g_norm[..., 1:2] * o_slc.detach()
+                       + g_norm[..., 2:3] * o_win.detach())
+            blended = blended.transpose(1, 2).reshape(B, T, -1)
+            rms = blended.pow(2).mean(-1, keepdim=True).sqrt()
+            blended = blended / (rms + 1e-5) * out_norm_weight.detach()
+            d_opw = torch.mm(
+                grad_output.reshape(-1, grad_output.shape[-1]).t(),
+                blended.reshape(-1, blended.shape[-1]).float())
+        if o_proj_weight.numel() > 0:
+            grads[-1] = d_opw.to(o_proj_weight.dtype)
+        else:
+            grads[-1] = torch.zeros_like(o_proj_weight)
 
-            B, H, T, D_head = o_cmp_d.shape
-            g1 = F.linear(xd, gw1_d)
-            g_silu = F.silu(g1)
-            g2 = F.linear(g_silu, gw2_d).view(B, T, 3, H).permute(0, 3, 1, 2)
-            g = g2.sigmoid()
-            g_sum = g.sum(dim=-1, keepdim=True) + 1e-8
-            g_norm = g / g_sum
-
-            grad_bch = grad_output.detach().reshape(B, H, T, D_head)
-            d_o_cmp = g_norm[..., 0:1] * grad_bch
-            d_o_slc = g_norm[..., 1:2] * grad_bch
-            d_o_win = g_norm[..., 2:3] * grad_bch
-
-        # All returns are detached to prevent autograd from tracing a
-        # second graph through this Function's backward outputs.
-        # O-proj weight grad: dy^T @ (blended_input) — shaped (D_out, D_in)
-        d_opw = torch.mm(
-            grad_output.detach().reshape(-1, grad_output.shape[-1]).t(),
-            x.view(-1, x.shape[-1]).float()
-        ).to(o_proj_weight.dtype) if o_proj_weight.numel() > 0 else torch.zeros_like(o_proj_weight)
-
-        return (grad_output.detach(), d_o_cmp, d_o_slc, d_o_win,
-                torch.zeros_like(gate_w1), torch.zeros_like(gate_w2),
-                torch.zeros_like(out_norm_weight), d_opw,
-                None, None)
+        # None -> zero for non-differentiable inputs (block_mask, gamma)
+        return (*grads, None, None)
 
 
 def subqsa_combine_forward(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,

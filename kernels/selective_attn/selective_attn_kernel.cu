@@ -207,6 +207,16 @@ void launch_selective_phase1(
     // Shared memory: s_scores[n_sel] + s_indices[n_sel]
     size_t shared_mem = (size_t)n_sel * (sizeof(float) + sizeof(int));
 
+    // n_sel is user-controlled (scores_agg.size(-1)); cap it before launch.
+    // 16 K entries * 8 B fits well under the 48 KB dynamic limit.
+    const size_t kMaxPhase1Shared = 48 * 1024;
+    if (shared_mem > kMaxPhase1Shared) {
+        fprintf(stderr, "[selective_attn] phase1 shared memory %zu B exceeds 48 KB limit "
+                        "(n_sel=%d). Reduce n_sel or use the eager fallback.\n",
+                shared_mem, n_sel);
+        return;
+    }
+
     dim3 grid(B, H);
     fused_selective_attn_phase1_kernel<<<grid, threads, shared_mem, stream>>>(
         scores, top_idx, B, H, n_sel, topk);
