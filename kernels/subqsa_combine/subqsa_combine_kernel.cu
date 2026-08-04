@@ -22,6 +22,7 @@
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
+#include <stdio.h>
 #include <math.h>
 
 // Error-checking macro for host launch helpers
