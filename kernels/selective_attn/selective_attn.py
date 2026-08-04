@@ -17,7 +17,6 @@ _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
 #include <cuda_runtime.h>
-#include <ATen/cuda/CUDAContext.h>
 
 // Forward declarations from the CUDA source
 void launch_selective_phase1(
@@ -47,7 +46,10 @@ std::vector<at::Tensor> forward_wrapper(
                               scores_agg.options().dtype(at::kLong));
     auto attn_out = at::empty({B, H, T, D}, q.options().dtype(at::kFloat));
 
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    // Eager (non-CUDAGraph) kernels: default stream is correct here.
+    // at::cuda::getCurrentCUDAStream() pulls in CUDAContext.h -> cusparse.h
+    // which load_inline cannot resolve, so we stay on the default stream.
+    cudaStream_t stream = nullptr;
 
     launch_selective_phase1(
         reinterpret_cast<const float*>(scores_agg.data_ptr<float>()),

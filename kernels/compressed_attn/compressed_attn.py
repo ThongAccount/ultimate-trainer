@@ -13,7 +13,6 @@ _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
 #include <cuda_runtime.h>
-#include <ATen/cuda/CUDAContext.h>
 
 // Forward declarations
 void launch_fused_compressed_attn_forward(
@@ -60,7 +59,10 @@ at::Tensor forward_wrapper(
     auto k_cmp = at::empty({B, H, n_blocks, D}, k.options().dtype(at::kFloat));
     auto v_cmp = at::empty({B, H, n_blocks, D}, v.options().dtype(at::kFloat));
 
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    // Eager (non-CUDAGraph) kernels: default stream is correct here.
+    // at::cuda::getCurrentCUDAStream() needs CUDAContext.h -> cusparse.h
+    // which load_inline cannot resolve, so keep the default stream.
+    cudaStream_t stream = nullptr;
 
     launch_fused_compressed_attn_forward(
         reinterpret_cast<const float*>(k.data_ptr<float>()),
