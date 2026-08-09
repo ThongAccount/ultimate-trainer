@@ -13,6 +13,7 @@ _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
 #include <cuda_runtime.h>
+#include <c10/cuda/CUDAException.h>
 
 // Forward declarations
 void launch_fused_compressed_attn_forward(

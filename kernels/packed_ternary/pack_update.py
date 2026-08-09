@@ -247,7 +247,7 @@ def _load_dx_tc_32():
             #include <cuda_runtime.h>
             #include <torch/extension.h>
             extern "C" {
-                void launch_packed_ternary_backward_dx_tc(
+                void launch_packed_ternary_backward_dx_tc_64(
                     const uint32_t* W, const void* dY, void* dX,
                     int B, int K, int N, int stride, cudaStream_t s);
             }
@@ -255,7 +255,7 @@ def _load_dx_tc_32():
                 int B = dY.size(0);
                 int N = dY.size(1);
                 auto dX = torch::empty({B, K}, torch::dtype(torch::kFloat16).device(dY.device()));
-                launch_packed_ternary_backward_dx_tc(
+                launch_packed_ternary_backward_dx_tc_64(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     dY.data_ptr<at::Half>(), dX.data_ptr<at::Half>(),
                     B, K, N, W.size(1), nullptr);
@@ -334,7 +334,7 @@ def _load_up_tc_v2():
             #include <cuda_runtime.h>
             #include <torch/extension.h>
             extern "C" {
-                void launch_packed_ternary_update_tc_v2(
+                void launch_packed_ternary_update_tc_v2_64(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
                     int B, int K, int N, int stride, int16_t threshold, cudaStream_t s);
             }
@@ -342,7 +342,7 @@ def _load_up_tc_v2():
                 torch::Tensor W, torch::Tensor counter,
                 torch::Tensor X, torch::Tensor dY, int16_t threshold)
             {
-                launch_packed_ternary_update_tc_v2(
+                launch_packed_ternary_update_tc_v2_64(
                     X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),

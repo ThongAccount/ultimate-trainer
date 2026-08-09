@@ -17,6 +17,7 @@ _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
 #include <cuda_runtime.h>
+#include <c10/cuda/CUDAException.h>
 
 // Forward declarations from the CUDA source
 void launch_selective_phase1(
