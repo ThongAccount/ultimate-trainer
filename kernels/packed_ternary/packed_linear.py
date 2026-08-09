@@ -58,11 +58,13 @@ def _forward_auto(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
     N = W.shape[0]       # N=out_features
     # TC WMMA m16n16k16 needs M, N, K all >= 16 AND multiples of 16
     from .pack_update import _tc_ok
-    # 64x64 TC: 4x fewer CTAs for large dimensions
-    if B >= 64 and N >= 64 and K >= 64 and _tc_ok(B) and _tc_ok(N) and _tc_ok(K):
-        from .pack_forward import has_tc_64, packed_ternary_forward_tc_64
-        if has_tc_64():
-            return packed_ternary_forward_tc_64(W, X)
+    # NOTE (2026-08-09): 64x64 TC forward is numerically WRONG (outputs ~3x
+    # the reference magnitude, verified in diag_forward_nan.py). Disabled
+    # until fixed; the 32x32 TC + v2 paths agree with the reference.
+    # if B >= 64 and N >= 64 and K >= 64 and _tc_ok(B) and _tc_ok(N) and _tc_ok(K):
+    #     from .pack_forward import has_tc_64, packed_ternary_forward_tc_64
+    #     if has_tc_64():
+    #         return packed_ternary_forward_tc_64(W, X)
     if _tc_ok(B) and _tc_ok(N) and _tc_ok(K) and has_tc():
         # Prefer custom op (traceable by torch.compile)
         if _HAS_CUSTOM_OPS:
