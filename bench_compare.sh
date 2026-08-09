@@ -20,7 +20,9 @@ git log --oneline -3
 echo "== [2/4] clean torch extension cache =="
 rm -rf "${TORCH_EXTENSIONS_DIR:-/root/.cache/torch_extensions}"/*
 
-echo "== [3/4] device check =="
+echo "== [3/4] deps + device check =="
+python -c "import ninja" 2>/dev/null || { echo "installing ninja..."; pip install -q ninja; }
+
 python - <<'PY'
 import torch
 print(f"torch {torch.__version__} | cuda {torch.version.cuda} | device: "
