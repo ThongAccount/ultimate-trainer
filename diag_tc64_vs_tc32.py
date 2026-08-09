@@ -21,10 +21,10 @@ for (B, N, K) in [(64, 64, 64), (64, 64, 128), (64, 128, 64), (128, 64, 64),
     Wd = W.to(torch.int64)
     tern = torch.zeros(N, K, dtype=torch.int64, device="cuda")
     for i in range(16):
-        val = (Wd >> (2 * i)) & 3
-        tern[:, i::16] = torch.where(val == 1, torch.tensor(1),
-                           torch.where(val == 2, torch.tensor(-1),
-                                        torch.tensor(0)))
+        v = (Wd >> (2 * i)) & 3  # (N, K)
+        tern[:, i::16] = torch.where(v[:, i::16] == 1, torch.tensor(1, device="cuda"),
+                                     torch.where(v[:, i::16] == 2, torch.tensor(-1, device="cuda"),
+                                                  torch.tensor(0, device="cuda")))
     ref = (X.float() @ tern.float().T)
     e32 = (ref - y32).abs().max().item()
     e64 = (ref - y64).abs().max().item()
