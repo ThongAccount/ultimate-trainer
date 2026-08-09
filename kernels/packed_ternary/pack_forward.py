@@ -571,9 +571,9 @@ def has_tc():
 
 
 def packed_ternary_forward_tc(W, X):
-    if not _HAS_TC:
-        _load_tc()
-    if not _HAS_TC:
+    if not _HAS_TC_32:
+        _load_tc_32()
+    if not _HAS_TC_32:
         raise RuntimeError("TC kernel not available")
 
     B, K = X.shape
