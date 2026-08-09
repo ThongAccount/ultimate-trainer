@@ -11,7 +11,7 @@ torch.manual_seed(0)
 
 for (B, N, K) in [(64, 64, 64), (64, 64, 128), (64, 128, 64), (128, 64, 64),
                   (64, 64, 16), (64, 64, 32), (64, 96, 96), (64, 128, 256)]:
-    W = torch.randint(-2, 3, (N, K), dtype=torch.int32, device="cuda")
+    W = torch.randint(0, 4, (N, K), dtype=torch.int32, device="cuda")  # ternary codes 0..3
     X = (torch.randn(B, K, device="cuda") * 0.5).half()
     y64 = packed_ternary_forward_tc_64(W, X).float()
     y32 = packed_ternary_forward_tc(W, X).float()
@@ -38,5 +38,5 @@ for (B, N, K) in [(64, 64, 64), (64, 64, 128), (64, 128, 64), (128, 64, 64),
         print(f"   elems >5% rel diff: {nz}/{bad.numel()}")
         # where
         b_idx = torch.nonzero(y32 != y64, as_tuple=False)[:8]
-        for bi, nj, ki_ in b_idx:
-            print(f"    y32[{bi},{nj}]={y32[bi,nj].item():.3f} y64={y64[bi,nj].item():.3f}")
+        for ri, ci_ in b_idx:
+            print(f"    y32[{ri},{ci_}]={y32[ri,ci_].item():.3f} y64={y64[ri,ci_].item():.3f}")
