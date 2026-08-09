@@ -55,7 +55,7 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
     int warp_n_off = (warp_id % 2) * 32;  // 0 or 32
 
     // Shared memory
-    __shared__ half W_smem[kSuperN][kWMMA_K];  // [64][16]
+    __shared__ half W_smem[kWMMA_K][kSuperN];  // [16][64] — k-major (transposed) for WMMA matrix_b
     __shared__ half X_smem[kSuperM][kWMMA_K];  // [64][16]
 
     // WMMA fragments for 4 sub-tiles per warp
@@ -89,9 +89,9 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
                     int pos = gk % kWeightsPerWord;
                     uint32_t word = W[gn * stride_words + wi];
                     int8_t t = decode_ternary(word >> (2 * pos));
-                    W_smem[r][c] = __int2half_rn(t);
+                    W_smem[c][r] = __int2half_rn(t);  // transposed: W_smem[k][n]
                 } else {
-                    W_smem[r][c] = __float2half(0.0f);
+                    W_smem[c][r] = __float2half(0.0f);
                 }
             }
         }
@@ -127,8 +127,10 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
                 &X_smem[b_base][0], kWMMA_K);
 
             // Load W tile: rows n_base..n_base+15 × columns 0..kWMMA_K-1
+            // W_smem is k-major [k][n]; matrix_b fragment expects b[k][n] with
+            // leading dim kSuperN (64).
             wmma::load_matrix_sync(b_frag,
-                &W_smem[n_base][0], kWMMA_K);
+                &W_smem[0][n_base], kSuperN);
 
             wmma::mma_sync(c_frag[fi], a_frag, b_frag, c_frag[fi]);
         }
