@@ -139,28 +139,36 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
     }
 
     // ── Store results ──
-    // Each warp stores its 4 fragments directly to global Y (fragmented
-    // store, ld = N).  No SMEM spill: the old spill buffer was 16x16 floats
-    // shared by all 4 warps — every warp raced on the same 256 floats and the
-    // cooperative read loop only touched rows 0..7 (tid/16 < 8), producing
-    // garbage (NaN / 512.0) for the remaining 3/4 of each tile.
+    // c_frag is float accumulator; Y is half.  Spill via per-warp SMEM
+    // buffers, then a cooperative copy to global with full 256-elem coverage
+    // (the old shared spill raced 4 warps on one 256-float buffer and only
+    // touched rows 0..7 — that was the NaN / 512.0 garbage).
+    __shared__ float spill[4][kWMMA_M * kWMMA_N];  // 4 KB total
     #pragma unroll
     for (int fi = 0; fi < kFragsPerWarp; ++fi) {
         int frag_b_off = (fi / 2) * kWMMA_M;
         int frag_n_off = (fi % 2) * kWMMA_N;
-        int b_base = warp_b_off + frag_b_off;
-        int n_base = warp_n_off + frag_n_off;
 
-        int gb0 = super_b0 + b_base;
-        int gn0 = super_n0 + n_base;
+        int gb0 = super_b0 + warp_b_off + frag_b_off;
+        int gn0 = super_n0 + warp_n_off + frag_n_off;
 
-        // Edge tiles (B or N not a multiple of 64) must be masked.
-        // Caller pads to tile multiples (see _tc_ok / padding in pack_forward),
-        // so direct store is safe; guard anyway for robustness.
-        if (gb0 + kWMMA_M <= B && gn0 + kWMMA_N <= N) {
-            wmma::store_matrix_sync(&Y[gb0 * N + gn0], c_frag[fi], N,
-                                    wmma::mem_row_major);
+        wmma::store_matrix_sync(&spill[warp_id][0], c_frag[fi],
+                                kWMMA_N, wmma::mem_row_major);
+        __syncthreads();
+
+        int n_elems = kWMMA_M * kWMMA_N;  // 256
+        for (int tid = threadIdx.x; tid < n_elems; tid += 128) {
+            int r = tid / kWMMA_N;
+            int c = tid % kWMMA_N;
+
+            int gb = gb0 + r;
+            int gn = gn0 + c;
+
+            if (gb < B && gn < N) {
+                Y[gb * N + gn] = __float2half_rn(spill[warp_id][tid]);
+            }
         }
+        __syncthreads();
     }
 }
 
