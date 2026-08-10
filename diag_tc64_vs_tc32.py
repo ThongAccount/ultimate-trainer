@@ -11,20 +11,26 @@ torch.manual_seed(0)
 
 for (B, N, K) in [(64, 64, 64), (64, 64, 128), (64, 128, 64), (128, 64, 64),
                   (64, 64, 16), (64, 64, 32), (64, 96, 96), (64, 128, 256)]:
-    W = torch.randint(0, 4, (N, K), dtype=torch.int32, device="cuda")  # ternary codes 0..3
+    # Build a REAL packed W: [N, ceil(K/16)] uint32 words, 16 ternary codes each.
+    nw = (K + 15) // 16
+    codes = torch.randint(0, 3, (N, K), device="cuda")  # 0,1,2 = 0,+1,-1
+    Wp = torch.zeros(N, nw, dtype=torch.int32, device="cuda")
+    for k in range(K):
+        Wp[:, k // 16] |= (codes[:, k] << (2 * (k % 16)))
+    Wp = Wp.contiguous()
     X = (torch.randn(B, K, device="cuda") * 0.5).half()
-    y64 = packed_ternary_forward_tc_64(W, X).float()
-    y32 = packed_ternary_forward_tc(W, X).float()
+    y64 = packed_ternary_forward_tc_64(Wp, X).float()
+    y32 = packed_ternary_forward_tc(Wp, X).float()
     d = (y32 - y64).abs()
-    # Also compare against a torch reference using pack/unpack semantics
-    # decode: {-1,0,1} per 2-bit; W int32 stores 16 ternary/word little-endian
-    Wd = W.to(torch.int64)
+    # torch reference: unpack words
     tern = torch.zeros(N, K, dtype=torch.int64, device="cuda")
-    for i in range(16):
-        v = (Wd >> (2 * i)) & 3  # (N, K)
-        tern[:, i::16] = torch.where(v[:, i::16] == 1, torch.tensor(1, device="cuda"),
-                                     torch.where(v[:, i::16] == 2, torch.tensor(-1, device="cuda"),
-                                                  torch.tensor(0, device="cuda")))
+    for j in range(nw):
+        for i in range(16):
+            if j * 16 + i < K:
+                v = (Wp[:, j] >> (2 * i)) & 3
+                tern[:, j * 16 + i] = torch.where(v == 1, torch.tensor(1, device="cuda"),
+                               torch.where(v == 2, torch.tensor(-1, device="cuda"),
+                                            torch.tensor(0, device="cuda")))
     ref = (X.float() @ tern.float().T)
     e32 = (ref - y32).abs().max().item()
     e64 = (ref - y64).abs().max().item()
