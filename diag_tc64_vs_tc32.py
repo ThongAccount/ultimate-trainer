@@ -31,6 +31,15 @@ for (B, N, K) in [(64, 64, 64), (64, 64, 128), (64, 128, 64), (128, 64, 64),
     print(f"B={B:4d} N={N:4d} K={K:4d}  max|y32|={y32.abs().max().item():7.2f} "
           f"max|y64|={y64.abs().max().item():7.2f} max|ref|={ref.abs().max().item():7.2f} "
           f" err32={e32:.4f} err64={e64:.4f}")
+    if torch.isnan(y64).any():
+        nz = torch.nonzero(torch.isnan(y64), as_tuple=False)
+        print(f"   NaN count={nz.size(0)}/{y64.numel()}  first 12: "
+              + " ".join(f"({int(b)},{int(n)})" for b, n in nz[:12].tolist()))
+        # tile-corner histogram: which 64x64 CTA / warp region
+        bq = (nz[:, 0] // 16) * 4 + (nz[:, 1] // 16)  # 16x16 frag idx
+        import collections
+        hist = collections.Counter(bq.tolist())
+        print("   frag-idx histogram:", dict(sorted(hist.items())))
     if e64 > 1e-1 and y32.abs().max().item() > 1e-6:
         bad = (y32 - y64).abs() / (y32.abs() + 1e-6)
         print("   worst rel-diff idx:", bad.argmax().item())
