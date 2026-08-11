@@ -1,4 +1,9 @@
-"""Correctness: Triton JIT impl vs CUDA ground truth (ref_linear / unpack)."""
+"""Correctness: Triton JIT impl vs ground truth (ref_linear / autograd dX) and
+the pure-torch oracle (torch_impl.ternary_update) for the counter update.
+
+Run on a GPU host (Triton kernels are CUDA-only):
+    python tests/test_triton_impl.py
+"""
 import os, sys
 import torch
 
@@ -11,12 +16,21 @@ from kernels.packed_ternary import triton_impl
 
 torch.manual_seed(0)
 
+# (B, N, K) — includes a ragged K (65) that is not a multiple of 16.
+SHAPES = [(64, 64, 64), (32, 128, 128), (128, 96, 96), (17, 33, 65)]
+
+
+def _make(N, K, B):
+    Wf = torch.randn(N, K) * 0.1
+    Wp = pack_tensor(Wf, gamma=1.0).cuda()
+    X = torch.randn(B, K).half().cuda()
+    dY = torch.randn(B, N).half().cuda()
+    return Wp, X, dY
+
 
 def test_fwd():
-    for (B, N, K) in [(64, 64, 64), (32, 128, 128), (128, 96, 96), (17, 33, 65)]:
-        Wf = torch.randn(N, K) * 0.1
-        Wp = pack_tensor(Wf, gamma=1.0).cuda()
-        X = torch.randn(B, K).half().cuda()
+    for (B, N, K) in SHAPES:
+        Wp, X, _ = _make(N, K, B)
         y_mine = triton_impl.ternary_forward(Wp, X, K)
         y_ref = ref_linear(Wp.cpu(), X.cpu()).cuda()
         err = (y_mine.float() - y_ref.float()).abs().max().item()
@@ -25,10 +39,9 @@ def test_fwd():
 
 
 def test_bwd():
-    for (B, N, K) in [(64, 64, 64), (32, 128, 128)]:
-        Wf = torch.randn(N, K) * 0.1
-        Wp = pack_tensor(Wf, gamma=1.0).cuda()
-        dY = torch.randn(B, N).half().cuda()
+    for (B, N, K) in SHAPES:
+        Wp, X, dY = _make(N, K, B)
+        # reference: autograd-through-dequantized W  (dX = dY @ W)
         tern = unpack_tensor(Wp.cpu(), N, K).half().cuda()
         dX_ref = (dY.float() @ tern.float()).half()
         dX_mine = triton_impl.ternary_backward_dx(Wp, dY, K)
@@ -37,27 +50,58 @@ def test_bwd():
         print(f"  bwd {B}x{N}x{K} err={err:.2e} OK")
 
 
-def test_update():
-    """Triton update must equal the pure-torch reference update."""
-    N, K, B, th = 64, 64, 32, 8
-    Wf = torch.randn(N, K) * 0.1
-    Wp_a = pack_tensor(Wf, gamma=1.0).cuda()
-    Wp_b = Wp_a.clone()
-    counter_a = torch.zeros(N, K, dtype=torch.int16).cuda()
-    counter_b = torch.zeros(N, K, dtype=torch.int16).cuda()
-    X = torch.randn(B, K).half().cuda()
-    dY = torch.randn(B, N).half().cuda()
+def test_update_matches_torch():
+    """Bit-exact vs torch_impl.ternary_update after one step.
 
-    triton_impl.ternary_update(Wp_a, counter_a, X, dY, th, K)
-    ref_update(Wp_b, counter_b, X, dY, th, K)
+    K must be a multiple of 16: torch_impl re-packs via strided column slices
+    (packed_new[:, :] |= codes[:, i::16] << 2i) that broadcast-crash when the
+    last word is partial (i.e. K % 16 != 0).  Triton handles ragged K via masks.
+    """
+    # (N, K, B, threshold) — K % 16 == 0 for all
+    for (N, K, B, th) in [(64, 64, 32, 8), (128, 96, 64, 16), (32, 128, 16, 4)]:
+        Wf = torch.randn(N, K) * 0.1
+        Wp_a = pack_tensor(Wf, gamma=1.0).cuda()
+        Wp_b = Wp_a.clone()
+        # Start from a non-zero counter so both the add-sign path and the
+        # threshold edges (flip vs no-flip positions) are exercised.
+        counter_a = torch.randint(-8, 9, (N, K), dtype=torch.int16).cuda()
+        counter_b = counter_a.clone()
+        X = torch.randn(B, K).half().cuda()
+        dY = torch.randn(B, N).half().cuda()
 
-    assert torch.equal(Wp_a.cpu(), Wp_b.cpu()), "packed W mismatch"
-    assert torch.equal(counter_a.cpu(), counter_b.cpu()), "counter mismatch"
-    print("  update matches torch reference OK")
+        triton_impl.ternary_update(Wp_a, counter_a, X, dY, th, K)
+        ref_update(Wp_b, counter_b, X, dY, th, K)
+
+        assert torch.equal(Wp_a.cpu(), Wp_b.cpu()), f"packed W mismatch @ {N}x{K}"
+        assert torch.equal(counter_a.cpu(), counter_b.cpu()), f"counter mismatch @ {N}x{K}"
+        print(f"  update {N}x{K} B={B} th={th} matches torch reference OK")
+
+
+def test_fused_equals_separate():
+    """ternary_backward_update == backward_dx + update (dX from pre-update W)."""
+    for (B, N, K) in [(64, 64, 64), (32, 128, 128)]:
+        Wf = torch.randn(N, K) * 0.1
+        Wp_fus = pack_tensor(Wf, gamma=1.0).cuda()
+        Wp_sep = Wp_fus.clone()
+        cnt_fus = torch.zeros(N, K, dtype=torch.int16).cuda()
+        cnt_sep = torch.zeros(N, K, dtype=torch.int16).cuda()
+        X = torch.randn(B, K).half().cuda()
+        dY = torch.randn(B, N).half().cuda()
+        th = 8
+
+        dX_fus = triton_impl.ternary_backward_update(Wp_fus, cnt_fus, dY, X, th, K)
+        dX_sep = triton_impl.ternary_backward_dx(Wp_sep, dY, K)
+        triton_impl.ternary_update(Wp_sep, cnt_sep, X, dY, th, K)
+
+        assert torch.equal(dX_fus.cpu(), dX_sep.cpu()), "dX mismatch"
+        assert torch.equal(Wp_fus.cpu(), Wp_sep.cpu()), "W mismatch"
+        assert torch.equal(cnt_fus.cpu(), cnt_sep.cpu()), "counter mismatch"
+        print(f"  fused {B}x{N}x{K} OK")
 
 
 if __name__ == "__main__":
     test_fwd()
     test_bwd()
-    test_update()
+    test_update_matches_torch()
+    test_fused_equals_separate()
     print("ALL TRITON-IMPL TESTS PASSED")

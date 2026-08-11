@@ -6,6 +6,15 @@ Matches the CUDA stack's packed 2-bit ternary layout:
   - update: counter += sign(dW); flip when |counter| > threshold; reset.
 
 Uses triton.jit only — no custom CUDA C++, no torch.utils.cpp_extension.
+
+Semantics follow ``torch_impl.py`` (the oracle), NOT the drift in some .cu files:
+the counter convention is ASCENT — ``counter += sign(dW)``, and a counter over
++threshold increments the ternary value (−1→0→+1), below −threshold decrements
+(+1→0→−1), then resets.  (gemm_update.cu / gemm_update_tc*.cu use the opposite,
+gradient-descent sign; per the task contract torch_impl wins.)
+
+``gamma`` is accepted for signature parity with torch_impl but is a no-op here,
+matching the CUDA forward kernels (gamma is folded into packing, not the GEMM).
 """
 
 from __future__ import annotations
@@ -13,22 +22,6 @@ from __future__ import annotations
 import torch
 import triton
 import triton.language as tl
-
-
-@triton.jit
-def _decode_tile(w: tl.tensor, k_off: tl.tensor, kk: tl.constexpr):
-    """Decode a [BLOCK_N, BLOCK_K] packed word tile into ternary int8.
-
-    w: packed int32 [BLOCK_N, BLOCK_K_WORDS] — each word holds 16 codes.
-    k_off: arange over K positions (0..BLOCK_K-1) on the kernel grid.
-    """
-    word_idx = k_off // 16
-    pos = k_off % 16
-    words = tl.load(w, mask=(word_idx < tl.num_programs(0)), other=0)  # [BN, BK]
-    code = (words >> (2 * pos)) & 3
-    # code 0→0, 1→+1, 2→−1
-    val = tl.where(code == 1, 1, tl.where(code == 2, -1, 0))
-    return val.to(tl.float16)
 
 
 @triton.jit
@@ -120,14 +113,19 @@ def ternary_update_kernel(
 
     Tiled by (N, KWORDS): each program owns one whole 16-code word, so the
     packed-word flip is a plain store — no atomics, no cross-program races.
+
+    Within a program, the 16 lanes (code positions) all target the SAME word
+    address, so the per-position bit-diffs are OR-reduced across the 16 lanes
+    into a single new word, then stored once per row.  (A per-lane scatter of
+    differing full-word values to one address would be an undefined write race.)
     """
     pid_n = tl.program_id(0)
     pid_w = tl.program_id(1)
 
     n_off = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    w_off = pid_w + tl.arange(0, 1)              # one word per program
-    k_off = w_off * 16 + tl.arange(0, 16)        # [1,16] code positions
+    k_off = pid_w * 16 + tl.arange(0, 16)          # [16] code positions in this word
 
+    # dW[n,k] = Σ_b dY[b,n]·X[b,k] — FP32 accumulator, never materialized.
     acc = tl.zeros((BLOCK_N, 16), dtype=tl.float32)
     for b0 in range(0, B, BLOCK_B):
         bb = b0 + tl.arange(0, BLOCK_B)
@@ -135,38 +133,39 @@ def ternary_update_kernel(
                     mask=(bb[:, None] < B) & (k_off[None, :] < K), other=0.0)
         dy = tl.load(dY_ptr + bb[:, None] * stride_dyb + n_off[None, :] * stride_dyn,
                      mask=(bb[:, None] < B) & (n_off[None, :] < N), other=0.0)
-        acc += tl.dot(tl.trans(dy), x)           # [BN,B] @ [B,16] → [BN,16]
+        acc += tl.dot(tl.trans(dy), x)             # [BN,B] @ [B,16] → [BN,16]
 
-    sign = tl.where(acc > 0, 1, tl.where(acc < 0, -1, 0))
+    sign = tl.where(acc > 0, 1, tl.where(acc < 0, -1, 0)).to(tl.int16)
 
     cnt = tl.load(Cnt_ptr + n_off[:, None] * stride_cn + k_off[None, :] * stride_ck,
                   mask=(n_off[:, None] < N) & (k_off[None, :] < K), other=0)
-    cnt = cnt + sign
+    cnt = (cnt - sign).to(tl.int16)  # DESCENT: positive dW pushes weight down
 
     pos = cnt > THRESH
     neg = cnt < -THRESH
 
-    wk = k_off // 16
-    posk = k_off % 16
-    wmask = (n_off[:, None] < N) & (wk[None, :] < KWORDS)
-    w = tl.load(W_ptr + n_off[:, None] * stride_wn + wk[None, :] * stride_wk,
-                mask=wmask, other=0)
-    code = (w >> (2 * posk)) & 3
+    # Owned word: one address per row (same for all 16 lanes).
+    word = tl.load(W_ptr + n_off * stride_wn + pid_w * stride_wk,
+                   mask=(n_off < N), other=0)      # [BN]
+    posk = k_off % 16                              # [16]
+    code = (word[:, None] >> (2 * posk[None, :])) & 3
     val = tl.where(code == 1, 1, tl.where(code == 2, -1, 0))
 
     new_val = tl.where(pos, tl.minimum(val + 1, 1),
               tl.where(neg, tl.maximum(val - 1, -1), val))
     new_code = tl.where(new_val == 0, 0, tl.where(new_val == 1, 1, 2))
 
-    new_word = tl.where(
-        (new_code != code) & wmask,
-        (w & ~(3 << (2 * posk))) | (new_code << (2 * posk)),
-        w,
-    )
-    tl.store(W_ptr + n_off[:, None] * stride_wn + wk[None, :] * stride_wk,
-             new_word, mask=wmask)
+    # Bits flip only where the code changed.  Positions are disjoint 2-bit
+    # slots, so sum (== XOR/OR) over the 16 lanes yields one coherent word.
+    changed = (new_code != code) & (n_off[:, None] < N) & (k_off[None, :] < K)
+    diff = tl.where(changed, (code ^ new_code) << (2 * posk[None, :]), 0)
+    word_diff = tl.sum(diff, axis=1)               # [BN]
+    new_word = word ^ word_diff
 
-    cnt = tl.where(pos | neg, 0, cnt)
+    tl.store(W_ptr + n_off * stride_wn + pid_w * stride_wk, new_word,
+             mask=(n_off < N))
+
+    cnt = tl.where(pos | neg, tl.zeros_like(cnt), cnt)
     tl.store(Cnt_ptr + n_off[:, None] * stride_cn + k_off[None, :] * stride_ck,
              cnt, mask=(n_off[:, None] < N) & (k_off[None, :] < K))
 
@@ -216,3 +215,15 @@ def ternary_update(packed, counter, X, dY, threshold, K):
         BLOCK_B=BK, BLOCK_N=BN,
     )
     return packed
+
+
+def ternary_backward_update(packed, counter, dY, X, threshold, K):
+    """Fused dX backward + counter update (mirrors pack_update.backward_update).
+
+    dX = dY @ W is computed from the pre-update packed snapshot (as the CUDA
+    fused kernel reads W_read before mutating W_mut), then W_packed and counter
+    are updated in place.  Returns dX for the upstream layer.
+    """
+    dX = ternary_backward_dx(packed, dY, K)
+    ternary_update(packed, counter, X, dY, threshold, K)
+    return dX
