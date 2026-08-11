@@ -22,9 +22,9 @@ replacement (no CUDA C++, no Triton) from the CUDA code as spec.
 ## Ops to replicate (from gemm_update.cu + gemm_forward_tc.cu etc.)
 1. Forward:  `Y[b,n] = Σ_k X[b,k] * w[n,k]` where w is decoded ternary.
 2. Backward dX: `dX[b,k] = Σ_n dY[b,n] * w[n,k]`.
-3. Update (per weight r,c):
+3. Update (per weight r,c):  NOTE: CUDA is DESCENT
    - `dW[r,c] = Σ_b dY[b,r] * X[b,c]`  (never materialized in CUDA; compute in FP32)
-   - `counter[r,c] += sign(dW)`
+   - `counter[r,c] -= sign(dW)`  (gradient DESCENT — matches CUDA kernels)
    - if `counter[r,c] >  threshold`: ternary value += 1 (−1→0→+1), reset counter
    - if `counter[r,c] < −threshold`: ternary value −= 1 (+1→0→−1), reset counter
    - flip writes the 2-bit code back into the packed word in place.
