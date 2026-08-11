@@ -31,7 +31,7 @@ def unpack_ternary(packed: torch.Tensor, rows: int, cols: int,
     w = packed.to(torch.int64) & 0xFFFFFFFF  # treat as unsigned, keep 64-bit
     out = torch.empty(rows, cols, dtype=torch.int8, device=packed.device)
     for i in range(16):
-        code = ((w >> (2 * i)) & 0b11).to(torch.int8)
+        code = ((w >> (2 * i)) & 0b11).to(torch.long)  # index dtype for LUT
         out[:, i::16] = _LUT.to(device=packed.device)[code]
     return out
 
