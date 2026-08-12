@@ -223,6 +223,13 @@ class PackedTernaryLinearTorch(nn.Module):
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         if X.dtype != torch.float16:
             X = X.to(torch.float16)
+        # Hook PackedTernaryLinearTorchFn into the autograd graph even when
+        # the root X has no grad. Without this, apply() sees only buffers
+        # (W_packed/counter) + a non-grad X, so the Function is pruned and
+        # its backward (counter update) never runs — while bias alone still
+        # makes loss.backward() succeed, masking the bug.
+        if torch.is_grad_enabled() and not X.requires_grad:
+            X = X.detach().requires_grad_(True)
         Y = PackedTernaryLinearTorchFn.apply(
             X, self.W_packed, self.counter, self.in_features,
             self.threshold, self.gamma, self.descent,
