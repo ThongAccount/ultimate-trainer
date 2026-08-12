@@ -131,8 +131,8 @@ def test_update_semantics():
             c_ref.add_(-sgn)                        # descent, = CUDA
             pos = c_ref > th
             neg = c_ref < -th
-            tern[pos] = torch.clamp(tern[pos].to(torch.int16) + 1, -1, 1)
-            tern[neg] = torch.clamp(tern[neg].to(torch.int16) - 1, -1, 1)
+            tern[pos] = torch.clamp(tern[pos].to(torch.int16) + 1, -1, 1).to(torch.int8)
+            tern[neg] = torch.clamp(tern[neg].to(torch.int16) - 1, -1, 1).to(torch.int8)
             c_ref[pos | neg] = 0
             flipped |= (pos | neg)
 
