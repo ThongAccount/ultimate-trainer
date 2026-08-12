@@ -172,8 +172,8 @@ def test_update_ragged():
         pos = c_ref > th
         neg = c_ref < -th
         tern = w0.clone()
-        tern[pos] = torch.clamp(w0[pos].to(torch.int16) + 1, -1, 1)
-        tern[neg] = torch.clamp(w0[neg].to(torch.int16) - 1, -1, 1)
+        tern[pos] = torch.clamp(w0[pos].to(torch.int16) + 1, -1, 1).to(torch.int8)
+        tern[neg] = torch.clamp(w0[neg].to(torch.int16) - 1, -1, 1).to(torch.int8)
         assert torch.equal(w1, tern), f"flip mismatch (ragged) @ {device}"
         assert torch.equal(Wp, _repack(tern).to(device)), \
             f"re-pack mismatch (ragged) @ {device}"
