@@ -51,14 +51,14 @@ def test_bwd():
 
 
 def test_update_matches_torch():
-    """Bit-exact vs torch_impl.ternary_update after one step.
+    """Bit-exact vs torch_impl.ternary_update after one step (gradient DESCENT).
 
-    K must be a multiple of 16: torch_impl re-packs via strided column slices
-    (packed_new[:, :] |= codes[:, i::16] << 2i) that broadcast-crash when the
-    last word is partial (i.e. K % 16 != 0).  Triton handles ragged K via masks.
+    Includes ragged K=65 so the partial final word (1 valid col + 15 pad lanes)
+    is exercised against the torch reference's padded re-pack.
     """
-    # (N, K, B, threshold) — K % 16 == 0 for all
-    for (N, K, B, th) in [(64, 64, 32, 8), (128, 96, 64, 16), (32, 128, 16, 4)]:
+    # (N, K, B, threshold)
+    for (N, K, B, th) in [(64, 64, 32, 8), (128, 96, 64, 16), (32, 128, 16, 4),
+                          (33, 65, 16, 8)]:
         Wf = torch.randn(N, K) * 0.1
         Wp_a = pack_tensor(Wf, gamma=1.0).cuda()
         Wp_b = Wp_a.clone()
@@ -89,7 +89,7 @@ def test_fused_equals_separate():
         dY = torch.randn(B, N).half().cuda()
         th = 8
 
-        dX_fus = triton_impl.ternary_backward_update(Wp_fus, cnt_fus, dY, X, th, K)
+        dX_fus = triton_impl.ternary_backward_update(Wp_fus, cnt_fus, X, dY, th, K)
         dX_sep = triton_impl.ternary_backward_dx(Wp_sep, dY, K)
         triton_impl.ternary_update(Wp_sep, cnt_sep, X, dY, th, K)
 

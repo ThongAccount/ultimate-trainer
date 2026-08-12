@@ -3,15 +3,17 @@
 Matches the CUDA stack's packed 2-bit ternary layout:
   - W packed int32 [N, stride_words], 16 codes/word little-endian (0→0,1→+1,2→−1)
   - counter int16 [N, K]
-  - update: counter += sign(dW); flip when |counter| > threshold; reset.
+  - update: counter -= sign(dW); flip when |counter| > threshold; reset.
 
 Uses triton.jit only — no custom CUDA C++, no torch.utils.cpp_extension.
 
-Semantics follow ``torch_impl.py`` (the oracle), NOT the drift in some .cu files:
-the counter convention is ASCENT — ``counter += sign(dW)``, and a counter over
-+threshold increments the ternary value (−1→0→+1), below −threshold decrements
-(+1→0→−1), then resets.  (gemm_update.cu / gemm_update_tc*.cu use the opposite,
-gradient-descent sign; per the task contract torch_impl wins.)
+Semantics follow ``torch_impl.py`` (the oracle) and every CUDA update kernel:
+the counter convention is gradient DESCENT — ``counter -= sign(dW)``; a counter
+over +threshold increments the ternary value (−1→0→+1), below −threshold
+decrements (+1→0→−1), then resets.  (The original port brief described ascent
+``counter += sign(dW)``, but ``torch_impl.ternary_update``'s default
+``descent=True`` and all of gemm_update.cu / gemm_update_tc*.cu are descent —
+that is the bit-exact contract the update tests enforce.)
 
 ``gamma`` is accepted for signature parity with torch_impl but is a no-op here,
 matching the CUDA forward kernels (gamma is folded into packing, not the GEMM).
@@ -109,7 +111,7 @@ def ternary_update_kernel(
     B, K, N, KWORDS, THRESH,
     BLOCK_B: tl.constexpr, BLOCK_N: tl.constexpr,
 ):
-    """counter[N,K] += sign(Σ_b dY[b,n] X[b,k]); flip on |cnt| > THRESH.
+    """counter[N,K] -= sign(Σ_b dY[b,n] X[b,k]); flip on |cnt| > THRESH.
 
     Tiled by (N, KWORDS): each program owns one whole 16-code word, so the
     packed-word flip is a plain store — no atomics, no cross-program races.
@@ -217,7 +219,7 @@ def ternary_update(packed, counter, X, dY, threshold, K):
     return packed
 
 
-def ternary_backward_update(packed, counter, dY, X, threshold, K):
+def ternary_backward_update(packed, counter, X, dY, threshold, K):
     """Fused dX backward + counter update (mirrors pack_update.backward_update).
 
     dX = dY @ W is computed from the pre-update packed snapshot (as the CUDA
