@@ -125,7 +125,7 @@ def train_step_cudagraph(model, x, y):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--text", default="/home/debian/ultimate-ai-model/data/shakespeare.txt",
+    parser.add_argument("--text", default="/content/shakespeare.txt",
                         help="Path to training text")
     parser.add_argument("--vocab", default="gpt2", choices=["gpt2", "llama3"],
                         help="Tokenizer vocab")
