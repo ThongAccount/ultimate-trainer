@@ -9,3 +9,6 @@ setuptools>=68.0.0  # needed by load_inline on newer torch / isolated envs
 
 # Fused ternary matmul kernel (GPU only)
 triton>=3.0.0
+
+# Gigatoken
+gigatoken
