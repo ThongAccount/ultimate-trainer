@@ -14,7 +14,7 @@ tag = f"{cuda_version}-{flavor}-{operating_sys}"
 image = (
     modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.12")
     .uv_pip_install("uv", "torch", "ninja", "huggingface_hub")
-    .apt_install("git", "git-lfs", "cmake", "ninja")
+    .apt_install("git", "git-lfs", "cmake", "ninja-build")
     .run_commands("git lfs install && git lfs install --system")
 )
 
