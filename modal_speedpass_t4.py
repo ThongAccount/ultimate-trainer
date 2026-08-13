@@ -88,21 +88,22 @@ def speedpass_benchmark():
         "cuda": torch.version.cuda,
     }
 
-    # Run train_gigatoken.py
+    # Run train_gigatoken.py — stream output for live progress
     print("\n--- Running train_gigatoken.py (50 steps) ---")
-    result = subprocess.run(
+    proc = subprocess.Popen(
         ["python", "train_gigatoken.py", "--text", "shakespeare.txt"],
-        capture_output=True, text=True, timeout=600
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
-    print(result.stdout[-3000:] if len(result.stdout) > 3000 else result.stdout)
-    if result.stderr:
-        # Filter out JIT compilation noise
-        for line in result.stderr.split('\n')[-20:]:
-            if line.strip() and 'warning' not in line.lower():
-                print(f"  STDERR: {line}")
+    stdout_lines = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        print(f"  {line}", flush=True)
+        stdout_lines.append(line)
+    proc.wait()
+    stdout_full = '\n'.join(stdout_lines)
 
     # Parse results
-    for line in result.stdout.split('\n'):
+    for line in stdout_lines:
         if 'Avg:' in line:
             print(f"\n  BASELINE: {line.strip()}")
             results["baseline_line"] = line.strip()
@@ -115,6 +116,8 @@ def speedpass_benchmark():
                         results["baseline_tok_s"] = float(tok_str)
                     except:
                         pass
+        if 'final loss' in line.lower() or 'CONVERGENCE' in line:
+            results.setdefault("convergence", []).append(line.strip())
 
     # Save baseline results
     with open("/tmp/baseline_results.json", "w") as f:
