@@ -1,6 +1,5 @@
 # This file is a Modal Speedpass Benchmark file.
-# Customize the benchmark at def speedpass_benchmark.
-# To run it: modal run modal_speedpass_t4.py::speedpass_benchmark
+# Usage: modal run modal_speedpass_t4.py::speedpass_benchmark
 
 import modal
 
@@ -13,7 +12,7 @@ tag = f"{cuda_version}-{flavor}-{operating_sys}"
 
 image = (
     modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.12")
-    .uv_pip_install("uv", "torch", "ninja", "huggingface_hub")
+    .uv_pip_install("uv", "torch", "ninja", "huggingface_hub", "numpy", "setuptools")
     .apt_install("git", "git-lfs", "cmake", "ninja-build")
     .run_commands("git lfs install && git lfs install --system")
 )
@@ -23,23 +22,26 @@ image = (
     image=image,
     gpu="T4",
     cpu=2,
-    memory=4 * 1024, 
+    memory=4 * 1024,
+    timeout=1800,
 )
 def speedpass_benchmark():
-    # Write your own benchmark here.
-    # Below is an example:
     import os
     import subprocess
     import torch
+    import json
+    import time
 
-    # Clone repo if needed, else just comment it.
-    result = subprocess.run(["git", "clone", "https://github.com/ThongAccount/ultimate-trainer.git"], capture_output=True, text=True)
-    print(result.stdout)
+    REPO_URL = "https://github.com/ThongAccount/ultimate-trainer.git"
+    REPO_DIR = "ultimate-trainer"
+    BRANCH = "chore/speedpass"
 
-    print("=" * 60)
-    print("MODAL T4 SPEEDPASS SANITY CHECK")
-    print("=" * 60)
+    print("=" * 70)
+    print("MODAL T4 SPEEDPASS BENCHMARK")
+    print("=" * 70)
 
+    # ── Environment info ──
+    print("\n--- Environment ---")
     print("GPU:", torch.cuda.get_device_name(0))
     print("Compute capability:", torch.cuda.get_device_capability(0))
     print("VRAM:", round(torch.cuda.get_device_properties(0).total_memory / 2**30, 2), "GiB")
@@ -47,34 +49,94 @@ def speedpass_benchmark():
     print("CUDA:", torch.version.cuda)
     print("CUDA available:", torch.cuda.is_available())
 
-    print("\n--- CUDA smoke test ---")
+    subprocess.run(["nvidia-smi"], capture_output=False)
 
-    x = torch.randn(4096, 4096, device="cuda", dtype=torch.float16)
-    y = torch.randn(4096, 4096, device="cuda", dtype=torch.float16)
+    # ── Clone or pull repo ──
+    if not os.path.exists(REPO_DIR):
+        print(f"\n--- Cloning {REPO_URL} ---")
+        subprocess.run(["git", "clone", REPO_URL], check=True)
+    else:
+        print(f"\n--- Repo exists, pulling ---")
 
-    # Warmup
-    for _ in range(10):
-        torch.mm(x, y)
+    os.chdir(REPO_DIR)
+    subprocess.run(["git", "fetch", "origin"], check=True)
+    subprocess.run(["git", "checkout", BRANCH], check=True)
+    subprocess.run(["git", "pull", "origin", BRANCH], check=True)
 
-    torch.cuda.synchronize()
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+    print(f"Git commit: {commit}")
 
-    import time
-    start = time.perf_counter()
+    # ── Download shakespeare.txt ──
+    if not os.path.exists("shakespeare.txt"):
+        import urllib.request
+        url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
+        urllib.request.urlretrieve(url, "shakespeare.txt")
+        print("Downloaded shakespeare.txt")
 
-    for _ in range(100):
-        torch.mm(x, y)
+    # ── Install gigatoken ──
+    subprocess.run(["pip", "install", "gigatoken"], capture_output=True)
 
-    torch.cuda.synchronize()
-    elapsed = time.perf_counter() - start
+    # ── Run baseline benchmark ──
+    print("\n" + "=" * 70)
+    print("PHASE 2: BASELINE BENCHMARK")
+    print("=" * 70)
 
-    print(f"100x 4096x4096 FP16 matmul: {elapsed:.3f}s")
-    print(f"Average: {elapsed / 100 * 1000:.3f} ms")
+    results = {
+        "commit": commit,
+        "gpu": torch.cuda.get_device_name(0),
+        "pytorch": torch.__version__,
+        "cuda": torch.version.cuda,
+    }
 
-    print("\n--- Environment ---")
-    subprocess.run(["nvidia-smi"])
+    # Run train_gigatoken.py
+    print("\n--- Running train_gigatoken.py (50 steps) ---")
+    result = subprocess.run(
+        ["python", "train_gigatoken.py", "--text", "shakespeare.txt"],
+        capture_output=True, text=True, timeout=600
+    )
+    print(result.stdout[-3000:] if len(result.stdout) > 3000 else result.stdout)
+    if result.stderr:
+        # Filter out JIT compilation noise
+        for line in result.stderr.split('\n')[-20:]:
+            if line.strip() and 'warning' not in line.lower():
+                print(f"  STDERR: {line}")
 
-    print("=" * 60)
-    print("T4 SANITY CHECK PASSED")
-    print("=" * 60)
+    # Parse results
+    for line in result.stdout.split('\n'):
+        if 'Avg:' in line:
+            print(f"\n  BASELINE: {line.strip()}")
+            results["baseline_line"] = line.strip()
+            # Extract tok/s
+            parts = line.split()
+            for i, p in enumerate(parts):
+                if 'tok/s' in p and i > 0:
+                    tok_str = parts[i-1].replace(',', '')
+                    try:
+                        results["baseline_tok_s"] = float(tok_str)
+                    except:
+                        pass
 
-    
+    # Save baseline results
+    with open("/tmp/baseline_results.json", "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nBaseline results saved: {json.dumps(results, indent=2)}")
+
+    # ── Run bench_parity.py if it exists ──
+    if os.path.exists("bench_parity.py"):
+        print("\n--- Running bench_parity.py ---")
+        try:
+            result = subprocess.run(
+                ["python", "bench_parity.py"],
+                capture_output=True, text=True, timeout=120
+            )
+            print(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
+            results["bench_parity"] = result.stdout
+        except Exception as e:
+            print(f"  bench_parity failed: {e}")
+
+    print("\n" + "=" * 70)
+    print("BASELINE BENCHMARK COMPLETE")
+    print(f"Results: {json.dumps(results, indent=2)}")
+    print("=" * 70)
+
+    return results
