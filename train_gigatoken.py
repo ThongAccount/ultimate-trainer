@@ -78,49 +78,65 @@ def tokenize_file(path: str, vocab: str = "gpt2"):
     return t  # GPU tensor [B, SEQ]
 
 
-def train_step_cudagraph(model, x, y):
-    """One training step with granular per-op timing."""
-    e = [torch.cuda.Event(enable_timing=True) for _ in range(8)]
+def train_step_cudagraph(model, x, y, profile=False):
+    """One training step.
 
-    # Phase 1: Norm + fc1 + gelu + fc2 for each layer
-    e[0].record()
+    When profile=True, uses CUDA events for per-phase timing and
+    synchronizes after. When profile=False (default), runs async
+    with no sync and returns a detached loss tensor (caller must
+    .item() at log intervals).
+    """
     B, T = x.shape
     scale = K ** -0.5
+
+    if profile:
+        e = [torch.cuda.Event(enable_timing=True) for _ in range(8)]
+        e[0].record()
+
+    # Phase 1: Norm + fc1 + gelu + fc2 for each layer
     h = model.embed(x).half().view(B * T, K)
     for i in range(N_LAYERS):
         h = model.norms[i](h.float()).half()
         h = model.fc1s[i](h) * scale
         h = torch.nn.functional.gelu(h)
         h = model.fc2s[i](h) * scale
-    e[1].record()
+
+    if profile:
+        e[1].record()
+        e[2].record()
 
     # Phase 2: Head
-    e[2].record()
     h = model.head(h) * scale
-    e[3].record()
+
+    if profile:
+        e[3].record()
+        e[4].record()
 
     # Phase 3: Reshape + loss
     logits = h.view(B, T, VOCAB)
-    print(f"  DEBUG: logits.shape={logits.shape}, y.shape={y.shape}", flush=True)
-    e[4].record()
     loss = torch.nn.functional.cross_entropy(
         logits.view(-1, VOCAB), y[:, 1:].contiguous().view(-1),
         reduction='mean')
-    e[5].record()
+
+    if profile:
+        e[5].record()
+        e[6].record()
 
     # Phase 4: Backward
-    e[6].record()
     loss.backward()
-    e[7].record()
 
-    torch.cuda.synchronize()
-    layers_ms = e[0].elapsed_time(e[1])
-    head_fwd_ms = e[2].elapsed_time(e[3])
-    loss_ms = e[4].elapsed_time(e[5])
-    bwd_ms = e[6].elapsed_time(e[7])
-    total_ms = layers_ms + head_fwd_ms + loss_ms + bwd_ms
-    print(f"  [TIME] layers={layers_ms:.0f}ms  head={head_fwd_ms:.0f}ms  loss={loss_ms:.0f}ms  bwd={bwd_ms:.0f}ms  total={total_ms:.0f}ms", flush=True)
-    return loss.item()
+    if profile:
+        e[7].record()
+        torch.cuda.synchronize()
+        layers_ms = e[0].elapsed_time(e[1])
+        head_fwd_ms = e[2].elapsed_time(e[3])
+        loss_ms = e[4].elapsed_time(e[5])
+        bwd_ms = e[6].elapsed_time(e[7])
+        total_ms = layers_ms + head_fwd_ms + loss_ms + bwd_ms
+        print(f"  [TIME] layers={layers_ms:.0f}ms  head={head_fwd_ms:.0f}ms  loss={loss_ms:.0f}ms  bwd={bwd_ms:.0f}ms  total={total_ms:.0f}ms", flush=True)
+        return loss.item()
+
+    return loss.detach()
 
 
 def main():
@@ -159,23 +175,33 @@ def main():
     print(f"  {'─'*37}")
 
     times = []
+    PROFILE_INTERVAL = 10  # profile every N steps
     for step in range(STEPS):
-        # Memory at start
-        mem_alloc = torch.cuda.memory_allocated() / 1024**2
-        mem_resv  = torch.cuda.memory_reserved() / 1024**2
+        profile = (step % PROFILE_INTERVAL == 0) or (step < WARMUP)
 
-        # Timing with CUDA events
-        start = torch.cuda.Event(enable_timing=True)
-        end   = torch.cuda.Event(enable_timing=True)
-        start.record()
-        loss = train_step_cudagraph(model, x, y)
-        end.record()
-        torch.cuda.synchronize()
-        elapsed_ms = start.elapsed_time(end)
-        elapsed = elapsed_ms / 1000
-        times.append(elapsed)
+        # Use CUDA event timing only on profiled steps
+        if profile:
+            start = torch.cuda.Event(enable_timing=True)
+            end   = torch.cuda.Event(enable_timing=True)
+            start.record()
+            loss = train_step_cudagraph(model, x, y, profile=True)
+            end.record()
+            torch.cuda.synchronize()
+            elapsed_ms = start.elapsed_time(end)
+            elapsed = elapsed_ms / 1000
+            times.append(elapsed)
+            loss_val = loss
+        else:
+            # No-sync path: no CUDA event timing, no .item() per step
+            start_wall = time.perf_counter()
+            loss_det = train_step_cudagraph(model, x, y, profile=False)
+            torch.cuda.synchronize()
+            end_wall = time.perf_counter()
+            elapsed_ms = (end_wall - start_wall) * 1000
+            elapsed = elapsed_ms / 1000
+            times.append(elapsed)
+            loss_val = loss_det.item()
 
-        # After each layer's first clean JIT compilation, compilers finish
         if step <= 2:
             import glob as _glob
             cache_dirs = _glob.glob("/root/.cache/torch_extensions/*")
@@ -183,7 +209,12 @@ def main():
 
         tok_per_sec = (B * SEQ) / elapsed
         tag = "warmup" if step < WARMUP else ""
-        print(f"  {step:>5} {loss:>10.4f} {tok_per_sec:>12,.0f} {elapsed_ms:>6.1f}ms  mem={mem_alloc:.0f}M/{mem_resv:.0f}M {tag}")
+        mem_str = ""
+        if profile or step == STEPS - 1:
+            mem_alloc = torch.cuda.memory_allocated() / 1024**2
+            mem_resv  = torch.cuda.memory_reserved() / 1024**2
+            mem_str = f"  mem={mem_alloc:.0f}M/{mem_resv:.0f}M"
+        print(f"  {step:>5} {loss_val:>10.4f} {tok_per_sec:>12,.0f} {elapsed_ms:>6.1f}ms{mem_str} {tag}")
 
     # Summary
     stable = times[WARMUP:]
