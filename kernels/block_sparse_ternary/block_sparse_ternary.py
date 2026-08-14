@@ -32,7 +32,8 @@ try:
         int M, int N, int K, int BM, int BN, int BK, int num_k_tiles) {
 
         dim3 grid((M + BM - 1) / BM, (N + BN - 1) / BN);
-        block_sparse_ternary_kernel<<<grid, 256>>>(
+        dim3 block(TILE, TILE);
+        block_sparse_ternary_kernel<<<grid, block>>>(
             reinterpret_cast<const half*>(x_f32),
             w,
             reinterpret_cast<half*>(y_f32),
@@ -116,13 +117,13 @@ def compute_block_mask(top_idx, n_sel, block_size, num_n_tiles, num_k_tiles):
     return mask
 
 
-def _block_sparse_ternary_eager(x, weight, gamma, block_mask, BM=64, BN=64):
+def _block_sparse_ternary_eager(x, weight, gamma, block_mask, BM=16, BN=16):
     """PyTorch reference with block mask."""
     w_q = torch.clamp(torch.round(weight / gamma), -1, 1)
     y = F.linear(x.float(), w_q.float())
     N = weight.size(0)
     num_n_tiles = (N + BN - 1) // BN
-    num_k_tiles = (x.size(1) + 63) // 64
+    num_k_tiles = (x.size(1) + 15) // 16
     for tn in range(num_n_tiles):
         for tk in range(num_k_tiles):
             bit = tn * num_k_tiles + tk
@@ -135,7 +136,7 @@ class BlockSparseTernaryFn(torch.autograd.Function):
     """Block-sparse ternary matmul with STE backward."""
 
     @staticmethod
-    def forward(ctx, x, weight, gamma, block_mask, BM=64, BN=64, BK=32):
+    def forward(ctx, x, weight, gamma, block_mask, BM=16, BN=16, BK=16):
         ctx.save_for_backward(x, weight, gamma, block_mask)
         ctx.BM = BM
         ctx.BN = BN
@@ -166,7 +167,7 @@ class BlockSparseTernaryFn(torch.autograd.Function):
         return dx, dw, None, None, None, None, None
 
 
-def block_sparse_ternary_matmul(x, weight, gamma, block_mask, BM=64, BN=64, BK=32):
+def block_sparse_ternary_matmul(x, weight, gamma, block_mask, BM=16, BN=16, BK=16):
     """Block-sparse ternary matmul.
 
     Args:

@@ -70,9 +70,9 @@ def main():
     o_proj_weight = torch.randn(D_out, D_out, device=dev, dtype=dtype) * 0.05
     gamma = 0.1
 
-    # Block mask (dense-ish: top 3 of 4 N-tiles)
-    # NOTE: num_k_tiles must match the kernel's BK (default 32), not BN.
-    BK = 32
+    # Block mask (dense-ish: top 3 of 8 N-tiles)
+    # NOTE: num_k_tiles must match the kernel's BK (default 16).
+    BK = 16
     num_n_tiles = (D_out + BN - 1) // BN
     num_k_tiles = (D_out + BK - 1) // BK
     top_idx = torch.tensor([[0, 1, 2]], device=dev)
@@ -121,7 +121,7 @@ def main():
 
     o_flat = torch.randn(B * T, D_out, device=dev, dtype=dtype)
     fn = lambda: block_sparse_ternary_matmul(
-        o_flat, o_proj_weight, gamma, block_mask, BM=32, BN=32, BK=32,
+        o_flat, o_proj_weight, gamma, block_mask,
     )
     t = bench(fn, args.iters, args.warmup)
     y = fn()
