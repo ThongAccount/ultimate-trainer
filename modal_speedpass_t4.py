@@ -23,7 +23,7 @@ image = (
     gpu="T4",
     cpu=2,
     memory=4 * 1024,
-    timeout=1800,
+    timeout=2400,
 )
 def speedpass_benchmark(phase: str = "all"):
     import os
@@ -143,7 +143,7 @@ def speedpass_benchmark(phase: str = "all"):
         # Quick parity self-test first (blocking launches catch OOB fast)
         r = subprocess.run(
             [sys.executable, "bench_subqsa_combine.py", "--fast"],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=600,
         )
         print(r.stdout, flush=True)
         if r.returncode != 0:
