@@ -31,10 +31,10 @@ def tensors():
         "o_cmp": torch.randn(B, H, T, D, device="cuda"),
         "o_slc": torch.randn(B, H, T, D, device="cuda"),
         "o_win": torch.randn(B, H, T, D, device="cuda"),
-        "gw1": torch.randn(64, DO, device="cuda") * 0.1,
-        "gw2": torch.randn(3 * H, 64, device="cuda") * 0.1,
-        "onw": torch.randn(DO, device="cuda"),
-        "opw": torch.randn(DO, DO, device="cuda") * 0.05,
+        "gate_w1": torch.randn(64, DO, device="cuda") * 0.1,
+        "gate_w2": torch.randn(3 * H, 64, device="cuda") * 0.1,
+        "out_norm_weight": torch.randn(DO, device="cuda"),
+        "o_proj_weight": torch.randn(DO, DO, device="cuda") * 0.05,
         "gamma": 0.1,
     }
 
@@ -45,7 +45,8 @@ def test_fused_combine_kernel_parity(tensors):
     if not _HAS_SUBQSA_COMBINE:
         pytest.skip("subqsa_combine CUDA extension unavailable")
     kw = {k: tensors[k] for k in
-          ("x", "o_cmp", "o_slc", "o_win", "gw1", "gw2", "onw", "opw", "gamma")}
+          ("x", "o_cmp", "o_slc", "o_win", "gate_w1", "gate_w2",
+           "out_norm_weight", "o_proj_weight", "gamma")}
     ref = _subqsa_combine_eager(**kw, block_mask=None)
     y = SubQSACombineFn.apply(**kw, block_mask=None)
     torch.cuda.synchronize()
@@ -59,7 +60,7 @@ def test_sparse_ternary_kernel_parity(tensors):
     if not _HAS_CUDA:
         pytest.skip("block_sparse_ternary CUDA extension unavailable")
     DO = tensors["DO"]
-    opw = tensors["opw"]
+    opw = tensors["o_proj_weight"]
     gamma = tensors["gamma"]
 
     num_n = (DO + 63) // 64

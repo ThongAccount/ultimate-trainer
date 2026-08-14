@@ -34,9 +34,9 @@ try:
         dim3 grid((M + BM - 1) / BM, (N + BN - 1) / BN);
         dim3 block(TILE, TILE);
         block_sparse_ternary_kernel<<<grid, block>>>(
-            reinterpret_cast<const half*>(x_f32),
+            x_f32,
             w,
-            reinterpret_cast<half*>(y_f32),
+            y_f32,
             block_mask, gamma, M, N, K, BM, BN, BK, num_k_tiles);
     }
     """
@@ -64,6 +64,7 @@ try:
             TORCH_CHECK(x.is_cuda() && w.is_cuda(), "Inputs must be CUDA tensors");
             TORCH_CHECK(x.is_contiguous() && w.is_contiguous(), "Inputs must be contiguous");
             TORCH_CHECK(w.dtype() == torch::kFloat32, "w must be float32");
+            TORCH_CHECK(x.dtype() == torch::kFloat32, "x must be float32");
 
             int num_k_tiles = (K + BK - 1) / BK;
             auto y = torch::empty({M, N}, torch::TensorOptions()

@@ -7,7 +7,7 @@
 // Block: 16x16 threads (BM=BN=16), one output element per thread.
 // Shared: x_tile[16][16], w_tile[16][16] loaded per K-chunk of BK=16.
 //
-// Output y is half; x input is half; weights fp32 (master).
+// Output y is fp32; x input is fp32 (wrapper converts); weights fp32 (master).
 
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
@@ -16,9 +16,9 @@
 #define TILE 16
 
 __global__ void block_sparse_ternary_kernel(
-    const half* __restrict__ x_ptr,
+    const float* __restrict__ x_ptr,
     const float* __restrict__ w_ptr,
-    half* __restrict__ y_ptr,
+    float* __restrict__ y_ptr,
     const uint64_t* __restrict__ block_mask,
     float gamma,
     int M, int N, int K,
@@ -54,7 +54,7 @@ __global__ void block_sparse_ternary_kernel(
             const int k = tk * BK + kk;
             if (k < K) {
                 // x: x[row][k] -> x_tile[kk][ty]
-                if (row < M) x_tile[kk][ty] = __half2float(x_ptr[(long)row * K + k]);
+                if (row < M) x_tile[kk][ty] = x_ptr[(long)row * K + k];
                 // w: w[col][k] -> w_tile[kk][tx]
                 if (col < N) w_tile[kk][tx] = w_ptr[(long)col * K + k];
             }
@@ -73,6 +73,6 @@ __global__ void block_sparse_ternary_kernel(
     }
 
     if (row < M && col < N) {
-        y_ptr[(long)row * N + col] = __float2half(acc);
+        y_ptr[(long)row * N + col] = acc;
     }
 }
