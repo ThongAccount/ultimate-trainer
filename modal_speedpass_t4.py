@@ -140,11 +140,25 @@ def speedpass_benchmark(phase: str = "all"):
         print("PHASE: SUBQSA COMBINE BENCHMARK")
         print("=" * 70)
 
+        # Quick parity self-test first (blocking launches catch OOB fast)
         r = subprocess.run(
-            [sys.executable, "bench_subqsa_combine.py", "--iters", "30"],
+            [sys.executable, "bench_subqsa_combine.py", "--fast"],
+            capture_output=True, text=True, timeout=300,
+        )
+        print(r.stdout, flush=True)
+        if r.returncode != 0:
+            print("  SELFTEST FAILED, stderr:", flush=True)
+            print(r.stderr[-2000:], flush=True)
+            results["subqsa_combine_status"] = "SELFTEST_FAIL"
+        else:
+            results["subqsa_selftest"] = "PASS"
+
+        # Timed benchmark
+        r = subprocess.run(
+            [sys.executable, "bench_subqsa_combine.py", "--iters", "15", "--warmup", "5"],
             capture_output=True, text=True, timeout=900,
         )
-        print(r.stdout)
+        print(r.stdout, flush=True)
         bench_lines = []
         for line in r.stdout.split('\n'):
             if 'eager' in line or 'fused' in line:
