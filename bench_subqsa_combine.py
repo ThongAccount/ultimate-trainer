@@ -89,10 +89,6 @@ def main():
         x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
         out_norm_weight, o_proj_weight, gamma, block_mask=None,
     )
-    ref_sparse = _subqsa_combine_eager(
-        x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
-        out_norm_weight, o_proj_weight, gamma, block_mask=block_mask,
-    )
 
     results = {}
 
@@ -107,21 +103,42 @@ def main():
     results["eager_dense"] = t
     print(f"eager dense:    {t*1e3:8.2f} ms  (parity err {err:.2e})")
 
-    # 2. Eager block-sparse
-    if _HAS_SUBQSA_COMBINE or True:
-        fn = lambda: _subqsa_combine_eager(
-            x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
-            out_norm_weight, o_proj_weight, gamma, block_mask=block_mask,
-        )
-        t = bench(fn, args.iters, args.warmup)
-        y = fn()
-        err = (y - ref_sparse).abs().max().item()
-        results["eager_sparse"] = t
-        print(f"eager sparse:   {t*1e3:8.2f} ms  (parity err {err:.2e})")
+    # 2. Block-sparse matmul (CUDA kernel, kernel-safe tiles only: shared mem is 32x32)
+    # NOTE: _subqsa_combine_eager's block_mask path uses defaults (BM=64,BN=64,BK=32)
+    #       which OOB the fixed 32x32 shared buffers — instrument here directly.
+    # Reference: sparse output computed via masked dense eager.
+    ref_sparse = _subqsa_combine_eager(
+        x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
+        out_norm_weight, o_proj_weight, gamma, block_mask=None,
+    )
+    w_q = torch.clamp(torch.round(o_proj_weight / gamma), -1, 1)
+    tile_n = 8  # N-tiles with BN=64
+    for tn in range(tile_n):
+        for tk in range(num_k_tiles):
+            bit = tn * num_k_tiles + tk
+            if not (block_mask[bit // 64] & (1 << (bit % 64))):
+                ref_sparse[:, :, tn * 64:(tn + 1) * 64] = 0.0
+
+    o_flat = torch.randn(B * T, D_out, device=dev, dtype=dtype)
+    fn = lambda: block_sparse_ternary_matmul(
+        o_flat, o_proj_weight, gamma, block_mask, BM=32, BN=32, BK=32,
+    )
+    t = bench(fn, args.iters, args.warmup)
+    y = fn()
+    # sparse path multiplies by gamma internally (Q in {-1,0,1} * gamma)
+    ref_mm = (o_flat @ (w_q * gamma).t()).float()
+    for tn in range(tile_n):
+        for tk in range(num_k_tiles):
+            bit = tn * num_k_tiles + tk
+            if not (block_mask[bit // 64] & (1 << (bit % 64))):
+                ref_mm[:, tn * 64:(tn + 1) * 64] = 0.0
+    err = (y.float() - ref_mm).abs().max().item()
+    results["eager_sparse"] = t
+    print(f"sparse CUDA:    {t*1e3:8.2f} ms  (parity err {err:.2e})")
 
     # 3. Fused CUDA kernel (dense only — block_mask=None)
     if _HAS_SUBQSA_COMBINE:
-        fn = lambda: _subqsa_combine_eager.__self__ if False else _fused_call(
+        fn = lambda: _fused_call(
             x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
             out_norm_weight, o_proj_weight, gamma,
         )
