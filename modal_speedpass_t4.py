@@ -1,5 +1,5 @@
 # This file is a Modal Speedpass Benchmark file.
-# Usage: modal run modal_speedpass_t4.py::speedpass_benchmark
+# Usage: modal run modal_speedpass_t4.py::speedpass_benchmark [--phase gigatoken|subqsa|all]
 
 import modal
 
@@ -12,7 +12,7 @@ tag = f"{cuda_version}-{flavor}-{operating_sys}"
 
 image = (
     modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.12")
-    .uv_pip_install("uv", "torch", "ninja", "huggingface_hub", "numpy", "setuptools")
+    .uv_pip_install("uv", "torch", "ninja", "huggingface_hub", "numpy", "setuptools", "pytest")
     .apt_install("git", "git-lfs", "cmake", "ninja-build")
     .run_commands("git lfs install && git lfs install --system")
 )
@@ -25,12 +25,12 @@ image = (
     memory=4 * 1024,
     timeout=1800,
 )
-def speedpass_benchmark():
+def speedpass_benchmark(phase: str = "all"):
     import os
     import subprocess
     import torch
     import json
-    import time
+    import sys
 
     REPO_URL = "https://github.com/ThongAccount/ultimate-trainer.git"
     REPO_DIR = "ultimate-trainer"
@@ -49,15 +49,11 @@ def speedpass_benchmark():
     print("CUDA:", torch.version.cuda)
     print("CUDA available:", torch.cuda.is_available())
 
-    subprocess.run(["nvidia-smi"], capture_output=False)
-
     # ── Clone or pull repo ──
+    os.chdir("/tmp")
     if not os.path.exists(REPO_DIR):
         print(f"\n--- Cloning {REPO_URL} ---")
         subprocess.run(["git", "clone", REPO_URL], check=True)
-    else:
-        print(f"\n--- Repo exists, pulling ---")
-
     os.chdir(REPO_DIR)
     subprocess.run(["git", "fetch", "origin"], check=True)
     subprocess.run(["git", "checkout", BRANCH], check=True)
@@ -66,6 +62,14 @@ def speedpass_benchmark():
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
     print(f"Git commit: {commit}")
 
+    results = {
+        "commit": commit,
+        "gpu": torch.cuda.get_device_name(0),
+        "pytorch": torch.__version__,
+        "cuda": torch.version.cuda,
+        "phase": phase,
+    }
+
     # ── Download shakespeare.txt ──
     if not os.path.exists("shakespeare.txt"):
         import urllib.request
@@ -73,73 +77,91 @@ def speedpass_benchmark():
         urllib.request.urlretrieve(url, "shakespeare.txt")
         print("Downloaded shakespeare.txt")
 
-    # ── Install gigatoken ──
-    subprocess.run(["pip", "install", "gigatoken"], capture_output=True)
+    # ── Phase: gigatoken training benchmark ──
+    if phase in ("all", "gigatoken"):
+        print("\n" + "=" * 70)
+        print("PHASE: GIGATOKEN TRAINING BENCHMARK")
+        print("=" * 70)
 
-    # ── Run baseline benchmark ──
+        proc = subprocess.Popen(
+            [sys.executable, "train_gigatoken.py", "--text", "shakespeare.txt"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        stdout_lines = []
+        for line in proc.stdout:
+            line = line.rstrip()
+            print(f"  {line}", flush=True)
+            stdout_lines.append(line)
+        proc.wait()
+        print(f"train_gigatoken exit code: {proc.returncode}")
+
+        for line in stdout_lines:
+            if 'Avg:' in line:
+                results["gigatoken_avg"] = line.strip()
+                parts = line.split()
+                for i, p in enumerate(parts):
+                    if 'tok/s' in p and i > 0:
+                        try:
+                            results["gigatoken_tok_s"] = float(parts[i - 1].replace(',', ''))
+                        except ValueError:
+                            pass
+            if '[TIME]' in line:
+                results.setdefault("gigatoken_profile", []).append(line.strip())
+
+    # ── Phase: SubQSA correctness tests ──
+    if phase in ("all", "subqsa"):
+        print("\n" + "=" * 70)
+        print("PHASE: SUBQSA CORRECTNESS TESTS")
+        print("=" * 70)
+
+        r = subprocess.run(
+            [sys.executable, "-m", "pytest",
+             "tests/test_subqsa_comprehensive.py",
+             "tests/test_subqsa_cuda_integration.py",
+             "tests/test_subqsa_selection.py",
+             "tests/test_subqsa_window.py",
+             "-q"],
+            capture_output=True, text=True, timeout=900,
+        )
+        # Count pass/fail summary line (pytest -q prints "N passed, M failed")
+        summary = [l for l in r.stdout.split('\n') if 'passed' in l or 'failed' in l]
+        for s in summary[-3:]:
+            print(f"  {s}")
+            results.setdefault("subqsa_tests", []).append(s.strip())
+        if r.returncode != 0:
+            results["subqsa_tests_status"] = "FAIL"
+            print("  TEST STDERR tail:")
+            print(r.stderr[-2000:])
+        else:
+            results["subqsa_tests_status"] = "PASS"
+
+        # ── Phase: SubQSA combine benchmark ──
+        print("\n" + "=" * 70)
+        print("PHASE: SUBQSA COMBINE BENCHMARK")
+        print("=" * 70)
+
+        r = subprocess.run(
+            [sys.executable, "bench_subqsa_combine.py", "--iters", "30"],
+            capture_output=True, text=True, timeout=600,
+        )
+        print(r.stdout)
+        bench_lines = []
+        for line in r.stdout.split('\n'):
+            if 'eager' in line or 'fused' in line:
+                bench_lines.append(line.strip())
+                results.setdefault("subqsa_combine", []).append(line.strip())
+        if r.returncode != 0:
+            print("  BENCH STDERR tail:", r.stderr[-2000:])
+            results["subqsa_combine_status"] = "FAIL"
+        else:
+            results["subqsa_combine_status"] = "PASS"
+
     print("\n" + "=" * 70)
-    print("PHASE 2: BASELINE BENCHMARK")
+    print("BENCHMARK COMPLETE — SUMMARY")
     print("=" * 70)
+    print(json.dumps(results, indent=2))
 
-    results = {
-        "commit": commit,
-        "gpu": torch.cuda.get_device_name(0),
-        "pytorch": torch.__version__,
-        "cuda": torch.version.cuda,
-    }
-
-    # Run train_gigatoken.py — stream output for live progress
-    print("\n--- Running train_gigatoken.py (50 steps) ---")
-    proc = subprocess.Popen(
-        ["python", "train_gigatoken.py", "--text", "shakespeare.txt"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-    )
-    stdout_lines = []
-    for line in proc.stdout:
-        line = line.rstrip()
-        print(f"  {line}", flush=True)
-        stdout_lines.append(line)
-    proc.wait()
-    stdout_full = '\n'.join(stdout_lines)
-
-    # Parse results
-    for line in stdout_lines:
-        if 'Avg:' in line:
-            print(f"\n  BASELINE: {line.strip()}")
-            results["baseline_line"] = line.strip()
-            # Extract tok/s
-            parts = line.split()
-            for i, p in enumerate(parts):
-                if 'tok/s' in p and i > 0:
-                    tok_str = parts[i-1].replace(',', '')
-                    try:
-                        results["baseline_tok_s"] = float(tok_str)
-                    except:
-                        pass
-        if 'final loss' in line.lower() or 'CONVERGENCE' in line:
-            results.setdefault("convergence", []).append(line.strip())
-
-    # Save baseline results
-    with open("/tmp/baseline_results.json", "w") as f:
+    with open("/tmp/speedpass_results.json", "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nBaseline results saved: {json.dumps(results, indent=2)}")
-
-    # ── Run bench_parity.py if it exists ──
-    if os.path.exists("bench_parity.py"):
-        print("\n--- Running bench_parity.py ---")
-        try:
-            result = subprocess.run(
-                ["python", "bench_parity.py"],
-                capture_output=True, text=True, timeout=120
-            )
-            print(result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout)
-            results["bench_parity"] = result.stdout
-        except Exception as e:
-            print(f"  bench_parity failed: {e}")
-
-    print("\n" + "=" * 70)
-    print("BASELINE BENCHMARK COMPLETE")
-    print(f"Results: {json.dumps(results, indent=2)}")
-    print("=" * 70)
 
     return results
