@@ -182,7 +182,8 @@ print("SMOKE OK", flush=True)
         print("PHASE: SUBQSA CORRECTNESS TESTS")
         print("=" * 70)
 
-        r = subprocess.run(
+        pytest_log = open("/tmp/pytest_out.log", "w")
+        p = subprocess.Popen(
             [sys.executable, "-m", "pytest",
              "tests/test_subqsa_comprehensive.py",
              "tests/test_subqsa_cuda_integration.py",
@@ -190,18 +191,33 @@ print("SMOKE OK", flush=True)
              "tests/test_subqsa_window.py",
              "tests/test_speedpass_kernels.py",
              "-q"],
-            capture_output=True, text=True, timeout=1200,
+            stdout=pytest_log, stderr=subprocess.STDOUT, text=True,
         )
+        try:
+            p.wait(timeout=1200)
+            rc = p.returncode
+            pytest_log.flush()
+            r_stdout = open("/tmp/pytest_out.log").read()
+        except subprocess.TimeoutExpired:
+            p.kill()
+            pytest_log.flush()
+            r_stdout = open("/tmp/pytest_out.log").read()
+            print("  PYTEST TIMEOUT — tail of output so far:", flush=True)
+            print(r_stdout[-4000:], flush=True)
+            raise RuntimeError("pytest timed out (1200s). See tail above.")
+        finally:
+            pytest_log.close()
+        rc = p.returncode
         # Count pass/fail summary line (pytest -q prints "N passed, M failed")
-        summary = [l for l in r.stdout.split('\n') if 'passed' in l or 'failed' in l]
+        summary = [l for l in r_stdout.split('\n') if 'passed' in l or 'failed' in l]
         for s in summary[-3:]:
-            print(f"  {s}")
+            print(f"  {s}", flush=True)
             results.setdefault("subqsa_tests", []).append(s.strip())
-        if r.returncode != 0:
+        if rc != 0:
             results["subqsa_tests_status"] = "FAIL"
             # Full pytest output on failure (short tracebacks, no capture)
             print("  PYTEST STDOUT (failures):", flush=True)
-            for line in r.stdout.split('\n'):
+            for line in r_stdout.split('\n'):
                 if line.strip() and ("_ test" in line or "Error" in line or
                                      "assert" in line or "FAILED" in line or
                                      "raise" in line or "line " in line):
