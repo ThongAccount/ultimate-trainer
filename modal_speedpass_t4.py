@@ -20,7 +20,7 @@ image = (
 # Don't modify @app.function imports, especially GPU, CPU and Memory
 @app.function(
     image=image,
-    gpu=None,  # CPU-only default — saves Modal credits when running pytest
+    gpu="T4",
     cpu=2,
     memory=4 * 1024,
     timeout=2400,
