@@ -188,8 +188,9 @@ print("SMOKE OK", flush=True)
              "tests/test_subqsa_cuda_integration.py",
              "tests/test_subqsa_selection.py",
              "tests/test_subqsa_window.py",
+             "tests/test_speedpass_kernels.py",
              "-q"],
-            capture_output=True, text=True, timeout=900,
+            capture_output=True, text=True, timeout=1200,
         )
         # Count pass/fail summary line (pytest -q prints "N passed, M failed")
         summary = [l for l in r.stdout.split('\n') if 'passed' in l or 'failed' in l]
