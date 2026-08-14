@@ -194,7 +194,7 @@ print("SMOKE OK", flush=True)
             stdout=pytest_log, stderr=subprocess.STDOUT, text=True,
         )
         try:
-            p.wait(timeout=1200)
+            p.wait(timeout=600)
             rc = p.returncode
             pytest_log.flush()
             r_stdout = open("/tmp/pytest_out.log").read()
@@ -204,7 +204,7 @@ print("SMOKE OK", flush=True)
             r_stdout = open("/tmp/pytest_out.log").read()
             print("  PYTEST TIMEOUT — tail of output so far:", flush=True)
             print(r_stdout[-4000:], flush=True)
-            raise RuntimeError("pytest timed out (1200s). See tail above.")
+            raise RuntimeError("pytest timed out (600s). See tail above.")
         finally:
             pytest_log.close()
         rc = p.returncode
