@@ -20,12 +20,12 @@ image = (
 # Don't modify @app.function imports, especially GPU, CPU and Memory
 @app.function(
     image=image,
-    gpu="T4",
+    gpu=None,  # CPU-only default — saves Modal credits when running pytest
     cpu=2,
     memory=4 * 1024,
     timeout=2400,
 )
-def speedpass_benchmark(phase: str = "all"):
+def speedpass_benchmark(phase: str = "all", use_gpu: bool = False):
     import os
     import subprocess
     import torch
@@ -40,14 +40,19 @@ def speedpass_benchmark(phase: str = "all"):
     print("MODAL T4 SPEEDPASS BENCHMARK")
     print("=" * 70)
 
+    _has_gpu = torch.cuda.is_available()
+
     # ── Environment info ──
     print("\n--- Environment ---")
-    print("GPU:", torch.cuda.get_device_name(0))
-    print("Compute capability:", torch.cuda.get_device_capability(0))
-    print("VRAM:", round(torch.cuda.get_device_properties(0).total_memory / 2**30, 2), "GiB")
+    if _has_gpu:
+        print("GPU:", torch.cuda.get_device_name(0))
+        print("Compute capability:", torch.cuda.get_device_capability(0))
+        print("VRAM:", round(torch.cuda.get_device_properties(0).total_memory / 2**30, 2), "GiB")
+    else:
+        print("GPU: none (CPU-only)")
     print("PyTorch:", torch.__version__)
     print("CUDA:", torch.version.cuda)
-    print("CUDA available:", torch.cuda.is_available())
+    print("CUDA available:", _has_gpu)
 
     # ── Clone or pull repo ──
     os.chdir("/tmp")
@@ -64,7 +69,7 @@ def speedpass_benchmark(phase: str = "all"):
 
     results = {
         "commit": commit,
-        "gpu": torch.cuda.get_device_name(0),
+        "gpu": torch.cuda.get_device_name(0) if _has_gpu else "none",
         "pytorch": torch.__version__,
         "cuda": torch.version.cuda,
         "phase": phase,
@@ -182,15 +187,18 @@ print("SMOKE OK", flush=True)
         print("PHASE: SUBQSA CORRECTNESS TESTS")
         print("=" * 70)
 
+        test_files = [
+            "tests/test_subqsa_comprehensive.py",
+            "tests/test_subqsa_cuda_integration.py",
+            "tests/test_subqsa_selection.py",
+            "tests/test_subqsa_window.py",
+        ]
+        if _has_gpu:
+            test_files.append("tests/test_speedpass_kernels.py")
+        pytest_args = [sys.executable, "-m", "pytest"] + test_files + ["-q"]
         pytest_log = open("/tmp/pytest_out.log", "w")
         p = subprocess.Popen(
-            [sys.executable, "-m", "pytest",
-             "tests/test_subqsa_comprehensive.py",
-             "tests/test_subqsa_cuda_integration.py",
-             "tests/test_subqsa_selection.py",
-             "tests/test_subqsa_window.py",
-             "tests/test_speedpass_kernels.py",
-             "-q"],
+            pytest_args,
             stdout=pytest_log, stderr=subprocess.STDOUT, text=True,
         )
         try:

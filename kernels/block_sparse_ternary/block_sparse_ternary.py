@@ -120,7 +120,7 @@ def compute_block_mask(top_idx, n_sel, block_size, num_n_tiles, num_k_tiles):
 
 def _block_sparse_ternary_eager(x, weight, gamma, block_mask, BM=16, BN=16):
     """PyTorch reference with block mask."""
-    w_q = torch.clamp(torch.round(weight / gamma), -1, 1)
+    w_q = torch.clamp(torch.round(weight / gamma), -1, 1) * gamma
     y = F.linear(x.float(), w_q.float())
     N = weight.size(0)
     num_n_tiles = (N + BN - 1) // BN
