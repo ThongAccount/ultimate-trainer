@@ -74,7 +74,7 @@ def main():
     num_n_tiles = (D_out + BN - 1) // BN
     num_k_tiles = (D_out + BN - 1) // BN
     top_idx = torch.tensor([[0, 1, 2]], device=dev)
-    block_mask = compute_block_mask(top_idx, num_n_tiles, num_k_tiles)
+    block_mask = compute_block_mask(top_idx, num_n_tiles, num_k_tiles, num_n_tiles, num_k_tiles)
 
     print(f"SubQSA combine bench: B={B} T={T} H={H} D={D} D_out={D_out}")
     print(f"fused CUDA kernel: {'YES' if _HAS_SUBQSA_COMBINE else 'NO (eager only)'}")
