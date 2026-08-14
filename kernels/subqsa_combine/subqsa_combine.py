@@ -26,13 +26,14 @@ _CXX_WRAPPER = r"""
 #include <torch/extension.h>
 #include <vector>
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 extern "C" {
 void launch_subqsa_combine_forward(
-    const float* x, const float* o_cmp, const float* o_slc, const float* o_win,
-    const float* gate_w1, const float* gate_w2,
-    const float* out_norm_weight, const float* o_proj_weight,
-    float* y, float gamma,
+    const half* x, const half* o_cmp, const half* o_slc, const half* o_win,
+    const half* gate_w1, const half* gate_w2,
+    const half* out_norm_weight, const float* o_proj_weight,
+    half* y, float gamma,
     int B, int T, int H, int D,
     cudaStream_t stream);
 }
@@ -60,26 +61,35 @@ at::Tensor forward_wrapper(
     TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
     TORCH_CHECK(o_cmp.is_contiguous(), "o_cmp must be contiguous");
 
-    auto y = at::empty_like(x);
+    auto yh = at::empty_like(xh);
 
     cudaStream_t stream = nullptr;
 
+    // Kernel computes in half precision; inputs arrive as float.
+    auto xh = x.to(at::kHalf);
+    auto o_cmph = o_cmp.to(at::kHalf);
+    auto o_slch = o_slc.to(at::kHalf);
+    auto o_winh = o_win.to(at::kHalf);
+    auto gw1h = gate_w1.to(at::kHalf);
+    auto gw2h = gate_w2.to(at::kHalf);
+    auto onwh = out_norm_weight.to(at::kHalf);
+
     launch_subqsa_combine_forward(
-        reinterpret_cast<const float*>(x.data_ptr<float>()),
-        reinterpret_cast<const float*>(o_cmp.data_ptr<float>()),
-        reinterpret_cast<const float*>(o_slc.data_ptr<float>()),
-        reinterpret_cast<const float*>(o_win.data_ptr<float>()),
-        reinterpret_cast<const float*>(gate_w1.data_ptr<float>()),
-        reinterpret_cast<const float*>(gate_w2.data_ptr<float>()),
-        reinterpret_cast<const float*>(out_norm_weight.data_ptr<float>()),
+        reinterpret_cast<const half*>(xh.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(o_cmph.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(o_slch.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(o_winh.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(gw1h.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(gw2h.data_ptr<at::Half>()),
+        reinterpret_cast<const half*>(onwh.data_ptr<at::Half>()),
         reinterpret_cast<const float*>(o_proj_weight.data_ptr<float>()),
-        reinterpret_cast<float*>(y.data_ptr<float>()),
+        reinterpret_cast<half*>(yh.data_ptr<at::Half>()),
         static_cast<float>(gamma),
         B, T, H, D,
         stream
     );
 
-    return y;
+    return yh.to(at::kFloat);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
