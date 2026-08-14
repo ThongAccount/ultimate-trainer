@@ -142,7 +142,7 @@ def speedpass_benchmark(phase: str = "all"):
 
         r = subprocess.run(
             [sys.executable, "bench_subqsa_combine.py", "--iters", "30"],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True, timeout=900,
         )
         print(r.stdout)
         bench_lines = []

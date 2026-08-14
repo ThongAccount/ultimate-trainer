@@ -49,8 +49,14 @@ def main():
     ap.add_argument("--B", type=int, default=8)
     ap.add_argument("--T", type=int, default=512)
     ap.add_argument("--H", type=int, default=8)
-    ap.add_argument("--D", type=int, default=64)  # head dim
+    ap.add_argument("--fast", action="store_true", help="quick self-test: small dims, blocking launches, hard parity assert")
     args = ap.parse_args()
+
+    if args.fast:
+        # Small-dims self-test with blocking launches: surfaces OOB fast.
+        import os
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+        args.B, args.T, args.H, args.D, args.iters, args.warmup = 2, 64, 2, 32, 2, 1
 
     B, T, H, D = args.B, args.T, args.H, args.D
     D_out = H * D  # O projection dim
@@ -78,10 +84,10 @@ def main():
     top_idx = torch.tensor([[0, 1, 2]], device=dev)
     block_mask = compute_block_mask(top_idx, 3, BN, num_n_tiles, num_k_tiles)
 
-    print(f"SubQSA combine bench: B={B} T={T} H={H} D={D} D_out={D_out}")
-    print(f"fused CUDA kernel: {'YES' if _HAS_SUBQSA_COMBINE else 'NO (eager only)'}")
-    print(f"block-sparse path: {'YES' if block_mask is not None else 'NO'}")
-    print(f"iters={args.iters} warmup={args.warmup}")
+    print(f"SubQSA combine bench: B={B} T={T} H={H} D={D} D_out={D_out}", flush=True)
+    print(f"fused CUDA kernel: {'YES' if _HAS_SUBQSA_COMBINE else 'NO (eager only)'}", flush=True)
+    print(f"block-sparse path: {'YES' if block_mask is not None else 'NO'}", flush=True)
+    print(f"iters={args.iters} warmup={args.warmup}", flush=True)
     print()
 
     # Reference output (block_mask=None dense eager) for parity check
@@ -101,7 +107,7 @@ def main():
     y = fn()
     err = (y - ref).abs().max().item()
     results["eager_dense"] = t
-    print(f"eager dense:    {t*1e3:8.2f} ms  (parity err {err:.2e})")
+    print(f"eager dense:    {t*1e3:8.2f} ms  (parity err {err:.2e})", flush=True)
 
     # 2. Block-sparse matmul (CUDA kernel, kernel-safe tiles only: shared mem is 32x32)
     # NOTE: _subqsa_combine_eager's block_mask path uses defaults (BM=64,BN=64,BK=32)
@@ -134,7 +140,7 @@ def main():
                 ref_mm[:, tn * 64:(tn + 1) * 64] = 0.0
     err = (y.float() - ref_mm).abs().max().item()
     results["eager_sparse"] = t
-    print(f"sparse CUDA:    {t*1e3:8.2f} ms  (parity err {err:.2e})")
+    print(f"sparse CUDA:    {t*1e3:8.2f} ms  (parity err {err:.2e})", flush=True)
 
     # 3. Fused CUDA kernel (dense only — block_mask=None)
     if _HAS_SUBQSA_COMBINE:
@@ -146,10 +152,28 @@ def main():
         y = fn()
         err = (y - ref).abs().max().item()
         results["fused_dense"] = t
-        print(f"fused CUDA:     {t*1e3:8.2f} ms  (parity err {err:.2e})")
+        print(f"fused CUDA:     {t*1e3:8.2f} ms  (parity err {err:.2e})", flush=True)
+
+    if args.fast:
+        # Hard correctness gate (blocking mode + small dims)
+        if _HAS_SUBQSA_COMBINE:
+            y_fused = _fused_call(
+                x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
+                out_norm_weight, o_proj_weight, gamma,
+            )
+            assert (y_fused - ref).abs().max().item() < 1e-3, "fused kernel parity FAILED"
+        y_sparse = block_sparse_ternary_matmul(o_flat, o_proj_weight, gamma, block_mask)
+        ref_mm = (o_flat @ (torch.clamp(torch.round(o_proj_weight / gamma), -1, 1) * gamma).t()).float()
+        for tn in range((D_out + BN - 1) // BN):
+            for tk in range(num_k_tiles):
+                bit = tn * num_k_tiles + tk
+                if not (block_mask[bit // 64] & (1 << (bit % 64))):
+                    ref_mm[:, tn * BN:(tn + 1) * BN] = 0.0
+        assert (y_sparse.float() - ref_mm).abs().max().item() < 1e-3, "sparse kernel parity FAILED"
+        print("SELFTEST: fused + sparse parity PASSED", flush=True)
 
     print()
-    print("RAW:", results)
+    print("RAW:", results, flush=True)
 
 
 def _fused_call(x, o_cmp, o_slc, o_win, gate_w1, gate_w2, out_norm_weight, o_proj_weight, gamma):
