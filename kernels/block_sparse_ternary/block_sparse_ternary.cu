@@ -50,13 +50,18 @@ __global__ void block_sparse_ternary_kernel(
         if (!active) continue;  // whole K-chunk masked out
 
         // Cooperative load of the K-chunk (BK rows).
-        for (int kk = tid; kk < BK; kk += total) {
+        // Column index ty/tx maps directly to the tile column, kk strides
+        // by TILE so every (kk, ty) / (kk, tx) cell is written exactly once.
+        for (int kk = ty; kk < BK; kk += TILE) {
             const int k = tk * BK + kk;
-            if (k < K) {
-                // x: x[row][k] -> x_tile[kk][ty]
-                if (row < M) x_tile[kk][ty] = x_ptr[(long)row * K + k];
-                // w: w[col][k] -> w_tile[kk][tx]
-                if (col < N) w_tile[kk][tx] = w_ptr[(long)col * K + k];
+            if (k < K && row < M) {
+                x_tile[kk][ty] = x_ptr[(long)row * K + k];
+            }
+        }
+        for (int kk = tx; kk < BK; kk += TILE) {
+            const int k = tk * BK + kk;
+            if (k < K && col < N) {
+                w_tile[kk][tx] = w_ptr[(long)col * K + k];
             }
         }
         __syncthreads();
