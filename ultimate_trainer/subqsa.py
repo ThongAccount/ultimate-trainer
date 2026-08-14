@@ -316,9 +316,6 @@ class SubQSAAttention(nn.Module):
             scores_cmp = torch.einsum(
                 "bhrtd,bhld->bhrtl", q_re.float(), k_cmp.float()
             ) / math.sqrt(self.head_dim)
-            p_cmp = F.softmax(scores_cmp, dim=-1).reshape(
-                B, self.num_heads, T, n_cmp
-            )
             k_cmp_exp = (
                 k_cmp[:, :, None]
                 .expand(-1, -1, n_reps, -1, -1)
@@ -337,13 +334,12 @@ class SubQSAAttention(nn.Module):
             scores_cmp = torch.einsum(
                 "bhtd,bhld->bhtl", q.float(), k_cmp.float()
             ) / math.sqrt(self.head_dim)
-            p_cmp = F.softmax(scores_cmp, dim=-1)
             o_cmp = F.scaled_dot_product_attention(
                 q, k_cmp, v_cmp,
                 dropout_p=self.dropout if self.training else 0.0,
             )
         else:
-            p_cmp = torch.zeros(B, self.num_heads, T, 1, device=x.device)
+            scores_cmp = torch.zeros(B, self.num_kv_heads, n_reps, T, 1, device=x.device)
             o_cmp = torch.zeros_like(q)
 
         # Expand KV to num_heads for selection and sliding-window branches
@@ -469,17 +465,12 @@ class SubQSAAttention(nn.Module):
             # Split 20 Q heads into n_reps=4 groups of 5, each attending to the
             # corresponding KV head's compressed representation.
             n_cmp = k_cmp.shape[2]
-            # Compute p_cmp ONCE at KV-head resolution via single einsum/softmax.
-            # q: (B, num_heads, T, D) → (B, num_kv_heads, n_reps, T, D)
-            # einsum w/ k_cmp (B, num_kv_heads, n_cmp, D) → (B, num_kv_heads, n_reps, T, n_cmp)
+            # Compute scores_cmp at KV-head resolution for routing/selection.
+            # p_cmp (softmax of scores) is NOT needed — SDPA computes its own softmax.
             q_re = q.reshape(B, self.num_kv_heads, n_reps, T, self.head_dim)
             scores_cmp = torch.einsum(
                 "bhrtd,bhld->bhrtl", q_re.float(), k_cmp.float()
             ) / math.sqrt(self.head_dim)
-            p_cmp = F.softmax(scores_cmp, dim=-1)  # (B, num_kv_heads, n_reps, T, n_cmp)
-            p_cmp = p_cmp.reshape(
-                B, self.num_heads, T, n_cmp
-            )  # (B, num_heads, T, n_cmp)
 
             # GQA-aware SDPA: expand compressed KV once and use a single call.
             # k_cmp/v_cmp: (B, num_kv_heads, n_cmp, D) → (B, num_heads, n_cmp, D)
@@ -504,12 +495,11 @@ class SubQSAAttention(nn.Module):
             scores_cmp = torch.einsum(
                 "bhtd,bhld->bhtl", q.float(), k_cmp.float()
             ) / math.sqrt(self.head_dim)
-            p_cmp = F.softmax(scores_cmp, dim=-1)
             o_cmp = F.scaled_dot_product_attention(
                 q, k_cmp, v_cmp, dropout_p=self.dropout if self.training else 0.0
             )
         else:
-            p_cmp = torch.zeros(B, self.num_heads, T, 1, device=x.device)
+            scores_cmp = torch.zeros(B, self.num_heads, T, 1, device=x.device)
             o_cmp = torch.zeros_like(q)
 
         n_cmp = k_cmp.shape[2]
