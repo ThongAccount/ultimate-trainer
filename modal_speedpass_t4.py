@@ -108,7 +108,75 @@ def speedpass_benchmark(phase: str = "all"):
             if '[TIME]' in line:
                 results.setdefault("gigatoken_profile", []).append(line.strip())
 
-    # ── Phase: SubQSA correctness tests ──
+    # ── Phase: SubQSA kernel smoke (isolated, streaming; no pytest) ──
+    if phase in ("kernel-smoke",):
+        print("\n" + "=" * 70)
+        print("PHASE: KERNEL SMOKE (fused + sparse parity, streaming)")
+        print("=" * 70)
+        code = r'''
+import torch, sys, os
+sys.path.insert(0, "/tmp/ultimate-trainer")
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+print("importing kernels...", flush=True)
+torch.manual_seed(0)
+
+# 1) Fused combine kernel (dense)
+from kernels.subqsa_combine.subqsa_combine import _HAS_SUBQSA_COMBINE, SubQSACombineFn
+print("fused available:", _HAS_SUBQSA_COMBINE, flush=True)
+B, T, H, D = 2, 64, 2, 32
+DO = H * D
+x = torch.randn(B, T, DO, device="cuda")
+o_cmp = torch.randn(B, H, T, D, device="cuda")
+o_slc = torch.randn(B, H, T, D, device="cuda")
+o_win = torch.randn(B, H, T, D, device="cuda")
+gw1 = torch.randn(64, DO, device="cuda") * 0.1
+gw2 = torch.randn(3 * H, 64, device="cuda") * 0.1
+onw = torch.randn(DO, device="cuda")
+opw = torch.randn(DO, DO, device="cuda") * 0.05
+gamma = 0.1
+
+from kernels.subqsa_combine.subqsa_combine import _subqsa_combine_eager
+ref = _subqsa_combine_eager(x, o_cmp, o_slc, o_win, gw1, gw2, onw, opw, gamma, None)
+print("eager ref done", ref.shape, flush=True)
+if _HAS_SUBQSA_COMBINE:
+    y = SubQSACombineFn.apply(x, o_cmp, o_slc, o_win, gw1, gw2, onw, opw, gamma, None)
+    torch.cuda.synchronize()
+    err = (y - ref).abs().max().item()
+    print("fused parity err:", err, flush=True)
+
+# 2) Sparse ternary matmul kernel
+from kernels.block_sparse_ternary.block_sparse_ternary import block_sparse_ternary_matmul, compute_block_mask, _HAS_CUDA
+print("sparse _HAS_CUDA:", _HAS_CUDA, flush=True)
+K = DO
+num_n = (DO + 63) // 64
+num_k = (K + 15) // 16
+mask = compute_block_mask(torch.tensor([[0, 1]], device="cuda"), 2, 64, num_n, num_k)
+print("mask:", mask.tolist(), "num_n", num_n, "num_k", num_k, flush=True)
+xm = torch.randn(B * T, DO, device="cuda")
+y_sp = block_sparse_ternary_matmul(xm, opw, gamma, mask)
+torch.cuda.synchronize()
+wq = torch.clamp(torch.round(opw / gamma), -1, 1) * gamma
+ref_mm = xm @ wq.t()
+for tn in range(num_n):
+    for tk in range(num_k):
+        bit = tn * num_k + tk
+        if not (mask[bit // 64] & (1 << (bit % 64))):
+            ref_mm[:, tn * 64:(tn + 1) * 64] = 0.0
+print("sparse parity err:", (y_sp - ref_mm).abs().max().item(), flush=True)
+print("SMOKE OK", flush=True)
+'''
+        r = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True, text=True, timeout=900,
+        )
+        print(r.stdout, flush=True)
+        if r.returncode == 0:
+            results["kernel_smoke"] = "PASS"
+            print("KERNEL SMOKE PASSED", flush=True)
+        else:
+            results["kernel_smoke"] = "FAIL"
+            print("KERNEL SMOKE FAILED stderr:", flush=True)
+            print(r.stderr[-3000:], flush=True)
     if phase in ("all", "subqsa"):
         print("\n" + "=" * 70)
         print("PHASE: SUBQSA CORRECTNESS TESTS")
