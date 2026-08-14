@@ -73,6 +73,6 @@ __global__ void block_sparse_ternary_kernel(
     }
 
     if (row < M && col < N) {
-        y_ptr[(long)row * N + col] = acc;
+        y_ptr[(long)row * N + col] = acc * gamma;
     }
 }

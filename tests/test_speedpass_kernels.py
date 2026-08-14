@@ -48,7 +48,11 @@ def test_fused_combine_kernel_parity(tensors):
           ("x", "o_cmp", "o_slc", "o_win", "gate_w1", "gate_w2",
            "out_norm_weight", "o_proj_weight", "gamma")}
     ref = _subqsa_combine_eager(**kw, block_mask=None)
-    y = SubQSACombineFn.apply(**kw, block_mask=None)
+    y = SubQSACombineFn.apply(
+        kw["x"], kw["o_cmp"], kw["o_slc"], kw["o_win"],
+        kw["gate_w1"], kw["gate_w2"], kw["out_norm_weight"],
+        kw["o_proj_weight"], kw["gamma"], None,
+    )
     torch.cuda.synchronize()
     err = (y - ref).abs().max().item()
     assert err < 1e-3, f"fused kernel parity err {err}"
