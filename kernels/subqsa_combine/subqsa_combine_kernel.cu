@@ -156,11 +156,12 @@ __global__ void subqsa_combine_kernel(
 
     if (tid < THREADS / WARP_SIZE) {
         sum_sq = s_reduce[tid];
-        for (int offset = (THREADS / WARP_SIZE) / 2; offset > 0; offset /= 2) {
-            sum_sq += __shfl_xor_sync(0xFFFFFFFF, sum_sq, offset);
-        }
+        // NOTE: can't __shfl_xor_sync here with a full mask — only 8 of
+        // warp 0's 32 lanes are active → UB/deadlock on Volta+. Serial reduce.
         if (tid == 0) {
-            s_reduce[0] = sum_sq / D;
+            float total = 0.0f;
+            for (int i = 0; i < THREADS / WARP_SIZE; i++) total += s_reduce[i];
+            s_reduce[0] = total / D;
         }
     }
     __syncthreads();
