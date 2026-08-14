@@ -199,8 +199,15 @@ print("SMOKE OK", flush=True)
             results.setdefault("subqsa_tests", []).append(s.strip())
         if r.returncode != 0:
             results["subqsa_tests_status"] = "FAIL"
-            print("  TEST STDERR tail:")
-            print(r.stderr[-2000:])
+            # Full pytest output on failure (short tracebacks, no capture)
+            print("  PYTEST STDOUT (failures):", flush=True)
+            for line in r.stdout.split('\n'):
+                if line.strip() and ("_ test" in line or "Error" in line or
+                                     "assert" in line or "FAILED" in line or
+                                     "raise" in line or "line " in line):
+                    print(f"    {line}", flush=True)
+            print("  TEST STDERR tail:", flush=True)
+            print(r.stderr[-2000:], flush=True)
         else:
             results["subqsa_tests_status"] = "PASS"
 
