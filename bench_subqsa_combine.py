@@ -49,6 +49,7 @@ def main():
     ap.add_argument("--B", type=int, default=8)
     ap.add_argument("--T", type=int, default=512)
     ap.add_argument("--H", type=int, default=8)
+    ap.add_argument("--D", type=int, default=64)  # head dim
     ap.add_argument("--fast", action="store_true", help="quick self-test: small dims, blocking launches, hard parity assert")
     args = ap.parse_args()
 
