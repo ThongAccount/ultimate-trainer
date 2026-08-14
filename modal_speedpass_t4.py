@@ -88,30 +88,34 @@ def speedpass_benchmark(phase: str = "all", use_gpu: bool = False):
         print("PHASE: GIGATOKEN TRAINING BENCHMARK")
         print("=" * 70)
 
-        proc = subprocess.Popen(
-            [sys.executable, "train_gigatoken.py", "--text", "shakespeare.txt"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
-        stdout_lines = []
-        for line in proc.stdout:
-            line = line.rstrip()
-            print(f"  {line}", flush=True)
-            stdout_lines.append(line)
-        proc.wait()
-        print(f"train_gigatoken exit code: {proc.returncode}")
+        if not _has_gpu:
+            print("  SKIP — no GPU available (CPU-only mode)")
+            results["gigatoken_status"] = "SKIP_NO_GPU"
+        else:
+            proc = subprocess.Popen(
+                [sys.executable, "train_gigatoken.py", "--text", "shakespeare.txt"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            stdout_lines = []
+            for line in proc.stdout:
+                line = line.rstrip()
+                print(f"  {line}", flush=True)
+                stdout_lines.append(line)
+            proc.wait()
+            print(f"train_gigatoken exit code: {proc.returncode}")
 
-        for line in stdout_lines:
-            if 'Avg:' in line:
-                results["gigatoken_avg"] = line.strip()
-                parts = line.split()
-                for i, p in enumerate(parts):
-                    if 'tok/s' in p and i > 0:
-                        try:
-                            results["gigatoken_tok_s"] = float(parts[i - 1].replace(',', ''))
-                        except ValueError:
-                            pass
-            if '[TIME]' in line:
-                results.setdefault("gigatoken_profile", []).append(line.strip())
+            for line in stdout_lines:
+                if 'Avg:' in line:
+                    results["gigatoken_avg"] = line.strip()
+                    parts = line.split()
+                    for i, p in enumerate(parts):
+                        if 'tok/s' in p and i > 0:
+                            try:
+                                results["gigatoken_tok_s"] = float(parts[i - 1].replace(',', ''))
+                            except ValueError:
+                                pass
+                if '[TIME]' in line:
+                    results.setdefault("gigatoken_profile", []).append(line.strip())
 
     # ── Phase: SubQSA kernel smoke (isolated, streaming; no pytest) ──
     if phase in ("kernel-smoke",):
@@ -230,8 +234,8 @@ print("SMOKE OK", flush=True)
                                      "assert" in line or "FAILED" in line or
                                      "raise" in line or "line " in line):
                     print(f"    {line}", flush=True)
-            print("  TEST STDERR tail:", flush=True)
-            print(r.stderr[-2000:], flush=True)
+            print("  TEST STDERR (from combined stdout+stderr log):", flush=True)
+            print(r_stdout[-2000:], flush=True)
         else:
             results["subqsa_tests_status"] = "PASS"
 
@@ -240,35 +244,39 @@ print("SMOKE OK", flush=True)
         print("PHASE: SUBQSA COMBINE BENCHMARK")
         print("=" * 70)
 
-        # Quick parity self-test first (blocking launches catch OOB fast)
-        r = subprocess.run(
-            [sys.executable, "bench_subqsa_combine.py", "--fast"],
-            capture_output=True, text=True, timeout=600,
-        )
-        print(r.stdout, flush=True)
-        if r.returncode != 0:
-            print("  SELFTEST FAILED, stderr:", flush=True)
-            print(r.stderr[-2000:], flush=True)
-            results["subqsa_combine_status"] = "SELFTEST_FAIL"
+        if not _has_gpu:
+            print("  SKIP — no GPU available (CPU-only mode)")
+            results["subqsa_combine_status"] = "SKIP_NO_GPU"
         else:
-            results["subqsa_selftest"] = "PASS"
+            # Quick parity self-test first (blocking launches catch OOB fast)
+            r = subprocess.run(
+                [sys.executable, "bench_subqsa_combine.py", "--fast"],
+                capture_output=True, text=True, timeout=600,
+            )
+            print(r.stdout, flush=True)
+            if r.returncode != 0:
+                print("  SELFTEST FAILED, stderr:", flush=True)
+                print(r.stderr[-2000:], flush=True)
+                results["subqsa_combine_status"] = "SELFTEST_FAIL"
+            else:
+                results["subqsa_selftest"] = "PASS"
 
-        # Timed benchmark
-        r = subprocess.run(
-            [sys.executable, "bench_subqsa_combine.py", "--iters", "15", "--warmup", "5"],
-            capture_output=True, text=True, timeout=900,
-        )
-        print(r.stdout, flush=True)
-        bench_lines = []
-        for line in r.stdout.split('\n'):
-            if 'eager' in line or 'fused' in line:
-                bench_lines.append(line.strip())
-                results.setdefault("subqsa_combine", []).append(line.strip())
-        if r.returncode != 0:
-            print("  BENCH STDERR tail:", r.stderr[-2000:])
-            results["subqsa_combine_status"] = "FAIL"
-        else:
-            results["subqsa_combine_status"] = "PASS"
+            # Timed benchmark
+            r = subprocess.run(
+                [sys.executable, "bench_subqsa_combine.py", "--iters", "15", "--warmup", "5"],
+                capture_output=True, text=True, timeout=900,
+            )
+            print(r.stdout, flush=True)
+            bench_lines = []
+            for line in r.stdout.split('\n'):
+                if 'eager' in line or 'fused' in line:
+                    bench_lines.append(line.strip())
+                    results.setdefault("subqsa_combine", []).append(line.strip())
+            if r.returncode != 0:
+                print("  BENCH STDERR tail:", r.stderr[-2000:])
+                results["subqsa_combine_status"] = "FAIL"
+            else:
+                results["subqsa_combine_status"] = "PASS"
 
     print("\n" + "=" * 70)
     print("BENCHMARK COMPLETE — SUMMARY")
@@ -278,4 +286,6 @@ print("SMOKE OK", flush=True)
     with open("/tmp/speedpass_results.json", "w") as f:
         json.dump(results, f, indent=2)
 
-    return results
+    # Don't return results — Modal's local deserialization requires torch.
+    # The JSON dump + stdout is the source of truth.
+    return
