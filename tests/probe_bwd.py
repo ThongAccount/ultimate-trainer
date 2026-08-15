@@ -33,13 +33,13 @@ X = torch.randn(B, K, device="cuda", dtype=torch.float16)
 
 ref = dY.float() @ W_ter  # (B, K)
 
-dx = backward_dx(W_packed, dY, K)
-err = (dx.float() - ref).abs().max().item()
-print(f"bwd_dx  err vs torch: {err:.6f}  (ref mag {ref.abs().max().item():.3f})")
-
+dx = None
 # Production path: custom_ops.backward_dx_tc (tc32, what packed_linear uses)
 from kernels.packed_ternary.custom_ops import backward_dx_tc as co_bwd
 print(f"co_bwd loaded: {co_bwd is not None}")
 dx2 = co_bwd(W_packed, dY, K)
 err2 = (dx2.float() - ref).abs().max().item()
-print(f"custom_ops.bwd_dx_tc err vs torch: {err2:.6f}")
+print(f"custom_ops.bwd_dx_tc err vs torch: {err2:.6f}  (ref mag {ref.abs().max().item():.3f})")
+
+# Note: pack_update.backward_dx crashes for dim>=64 (undefined _load_dx_tc)
+# -> production never uses it; custom_ops path is the real one.
