@@ -7,10 +7,10 @@
  *
  * Shared memory layout:
  *   [0 .. D*sizeof(half))              : s_x (half[D])       -- phase 1
- *   [D*sizeof(half) .. D*half+GATE_HIDDEN*4) : s_hidden (float[64]) -- phases 2-3
- *   [D*half+GATE_HIDDEN*4 .. +3*H*4)   : s_gate (float[3*H]) -- phases 3-5
+ *   [D*half .. D*half+GATE_HIDDEN*4)   : s_hidden (float[64]) -- phases 2-3
  *   [0 .. D*sizeof(float))             : s_blended (float[D]) -- phases 5-8 (reuses s_x)
- *   [D*sizeof(float) .. +8*4)          : s_reduce            -- phase 6 (reuses s_hidden)
+ *   [G .. G+3*H*4)  G=max(D*4, D*2+256): s_gate (float[3*H])  -- phases 3-5
+ *   [G+3*H*4 .. +8*4)                  : s_reduce             -- phase 6
  *
  * Computation per token:
  *   1. gate MLP:     Linear(D -> 64) -> SiLU -> Linear(64 -> 3*H)
@@ -91,11 +91,13 @@ __global__ void subqsa_combine_kernel(
     __syncthreads();
 
     // ── Phase 3: Gate MLP Layer 2: Linear(64 -> 3*H) ────────────────
-    // s_gate placed AFTER s_hidden (byte D*half + GATE_HIDDEN*4) — the old
-    // offset D*float overlapped s_hidden[32..63] and raced with phase 3's
-    // read loop (write s_gate[i] clobbers s_hidden[32+i] while other threads
-    // still read it) -> nondeterministic gates, parity err ~1.4.
-    float* s_gate = reinterpret_cast<float*>(shared_mem + D * sizeof(half) + GATE_HIDDEN * sizeof(float));
+    // s_gate placed above BOTH s_blended (D*4) and s_hidden (D*2+256):
+    // - P3 reads s_hidden while writing s_gate  -> s_gate must not touch s_hidden
+    // - P5 writes s_blended while reading s_gate -> s_gate must not touch s_blended
+    // Earlier layouts violated one of these -> nondeterministic races.
+    size_t gate_off_bytes = (D * sizeof(float) > D * sizeof(half) + GATE_HIDDEN * sizeof(float))
+        ? D * sizeof(float) : (D * sizeof(half) + GATE_HIDDEN * sizeof(float));
+    float* s_gate = reinterpret_cast<float*>(shared_mem + gate_off_bytes);
     int gate_size = 3 * H;
     for (int i = tid; i < gate_size; i += THREADS) {
         float sum = 0.0f;
@@ -153,8 +155,8 @@ __global__ void subqsa_combine_kernel(
         sum_sq += __shfl_xor_sync(0xFFFFFFFF, sum_sq, offset);
     }
 
-    // Reuse s_gate space for reduction buffer (safe: s_gate consumed)
-    float* s_reduce = reinterpret_cast<float*>(shared_mem + D * sizeof(float));
+    // s_reduce after s_gate (s_gate lives until end of P5).
+    float* s_reduce = reinterpret_cast<float*>(shared_mem + gate_off_bytes + (3 * H) * sizeof(float));
     if (tid % WARP_SIZE == 0) {
         s_reduce[tid / WARP_SIZE] = sum_sq;
     }
@@ -220,12 +222,13 @@ void launch_subqsa_combine_forward(
     cudaStream_t stream)
 {
     // Shared memory: max of
-    //   phases 1-5: s_x(D*half) + s_hidden(64*float) + s_gate(3*H*float)
-    //             = 2*D + 256 + 12*H
-    //   phases 5-8: s_blended(D*float) + s_reduce(8*float) = 4*D + 32
-    // s_reduce at D*4 reuses s_hidden space (consumed by phase 3).
-    size_t phase1_size = (size_t)D * sizeof(half) + GATE_HIDDEN * sizeof(float) + (size_t)(3 * H) * sizeof(float);
-    size_t phase5_size = (size_t)D * sizeof(float) + (THREADS / WARP_SIZE) * sizeof(float);
+    //   phases 1-4: s_x(D*half) + s_hidden(64*float) = 2*D + 256
+    //   phases 3-8: max(4*D, 2*D+256) + s_gate(3*H*float) + s_reduce(8*float)
+    //   (gate offset = max(D*float, D*half + GATE_HIDDEN*float) per kernel)
+    size_t gate_off = (size_t)D * sizeof(float) > (size_t)D * sizeof(half) + GATE_HIDDEN * sizeof(float)
+        ? (size_t)D * sizeof(float) : (size_t)D * sizeof(half) + GATE_HIDDEN * sizeof(float);
+    size_t phase1_size = (size_t)D * sizeof(half) + GATE_HIDDEN * sizeof(float);
+    size_t phase5_size = gate_off + (size_t)(3 * H) * sizeof(float) + (THREADS / WARP_SIZE) * sizeof(float);
     size_t shared_mem = phase1_size > phase5_size ? phase1_size : phase5_size;
 
     // Guard against exceeding the 48 KB default dynamic-shared limit on
