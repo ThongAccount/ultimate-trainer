@@ -107,8 +107,10 @@ try:
         verbose=False,
     )
     _HAS_SUBQSA_COMBINE = True
-except Exception:
+except Exception as _e:
     _HAS_SUBQSA_COMBINE = False
+    # Surface load failure (don't hide — parity tests need to know why)
+    print(f"[subqsa_combine] CUDA extension load failed: {_e}", flush=True)
 
 # Block-sparse ternary matmul for sparse O projection
 try:

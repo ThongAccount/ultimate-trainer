@@ -43,7 +43,7 @@ def tensors():
 def test_fused_combine_kernel_parity(tensors):
     """Fused CUDA combine kernel matches eager reference exactly."""
     if not _HAS_SUBQSA_COMBINE:
-        pytest.skip("subqsa_combine CUDA extension unavailable")
+        pytest.fail("subqsa_combine CUDA extension failed to load")
     kw = {k: tensors[k] for k in
           ("x", "o_cmp", "o_slc", "o_win", "gate_w1", "gate_w2",
            "out_norm_weight", "o_proj_weight", "gamma")}
