@@ -55,3 +55,4 @@ temp/
 
 # ── Session handoff (never commit) ───────────────────────────────
 HANDOFF.md
+diag_*.py
