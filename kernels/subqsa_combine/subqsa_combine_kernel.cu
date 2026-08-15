@@ -123,9 +123,9 @@ __global__ void subqsa_combine_kernel(
         int h = i / D_head;
         int d_head = i % D_head;
 
-        long o_base = (long)b * T * H * D_head
-                    + (long)t * H * D_head
-                    + (long)h * D_head
+        long o_base = (long)b * H * T * D_head
+                    + (long)h * T * D_head
+                    + (long)t * D_head
                     + d_head;
 
         float v_cmp = __half2float(__ldg(&o_cmp[o_base]));
@@ -166,11 +166,12 @@ __global__ void subqsa_combine_kernel(
     }
     __syncthreads();
 
-    float rms = sqrtf(s_reduce[0] + 1e-5f);
+    float rms = sqrtf(s_reduce[0]);
+    float rms_scale = 1.0f / (rms + 1e-5f);
 
     // ── Phase 7: RMSNorm scaling ─────────────────────────────────────
     for (int i = tid; i < D; i += THREADS) {
-        s_blended[i] = s_blended[i] / rms * __half2float(__ldg(&out_norm_weight[i]));
+        s_blended[i] = s_blended[i] * rms_scale * __half2float(__ldg(&out_norm_weight[i]));
     }
     __syncthreads();
 
