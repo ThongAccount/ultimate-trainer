@@ -64,8 +64,7 @@ print(f"top columns: {md.topk(5).indices.tolist()}", flush=True)
 print(f"bottom columns: {md.topk(5, largest=False).indices.tolist()}", flush=True)
 # check per-token structure
 mt = d.mean(dim=(0, 2))
-print(f"mean|diff| per t: min={mt.min().item():.5f} max={mt.max().item():.5f}", flush=True)
-# check head structure: group output cols by head
+print(f"mean|diff| per t: min={mt.min().item():.5f} max={mt.max().item():.5f}", flush=True)# check head structure: group output cols by head
 for h in range(H):
     seg = d[:, :, h * D:(h + 1) * D]
     print(f"head {h}: mean|diff|={seg.mean().item():.5f} max={seg.max().item():.5f}", flush=True)
@@ -79,3 +78,23 @@ for b in range(B):
         # blend row norm (after rms) and gate row
         seg = d[b, t].mean().item()
         print(f"  b={b} t={t}: mean|d|={seg:.5f} kern[0]={y_kern[b,t,0].item():.4f} ref[0]={y_ref[b,t,0].item():.4f}", flush=True)
+
+
+# ── Rerun determinism check ──
+y_kern2 = SubQSACombineFn.apply(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
+                                out_norm_weight, o_proj_weight, gamma, None)
+torch.cuda.synchronize()
+d2 = (y_kern2 - y_ref).abs()
+mt3 = d2.mean(dim=2)
+bad1 = set()
+for b in range(B):
+    for t in range(T):
+        if mt2[b, t].item() > 0.1:
+            bad1.add((b, t))
+bad2 = set()
+for b in range(B):
+    for t in range(T):
+        if mt3[b, t].item() > 0.1:
+            bad2.add((b, t))
+print(f"run1 bad tokens: {len(bad1)}, run2 bad tokens: {len(bad2)}", flush=True)
+print(f"overlap: {len(bad1 & bad2)}  diff: {len(bad1 ^ bad2)}", flush=True)
