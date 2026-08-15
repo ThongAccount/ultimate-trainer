@@ -54,9 +54,8 @@ __global__ void subqsa_combine_kernel(
     const half* __restrict__ gate_w1,
     const half* __restrict__ gate_w2,
     const half* __restrict__ out_norm_weight,
-    const float* __restrict__ o_proj_weight,
+    const float* __restrict__ o_proj_q,   // pre-quantized: clamp(round(w/gamma),-1,1)*gamma
     half* __restrict__ y,
-    float gamma,
     int B, int T, int H, int D)
 {
     int b = blockIdx.x;
@@ -183,18 +182,15 @@ __global__ void subqsa_combine_kernel(
     }
     __syncthreads();
 
-    // ── Phase 8: Ternary O projection ────────────────────────────────
-    // y[out] = sum_{in} blended[in] * qweight[out,in]
-    // where qweight = clamp(round(o_proj_weight / gamma), -1, 1) * gamma
+    // ── Phase 8: Ternary O projection (pre-quantized weights) ───────
+    // y[out] = sum_{in} blended[in] * o_proj_q[out,in]  (pure FMA)
     long y_base = (long)b * T * D + (long)t * D;
     for (int out_idx = tid; out_idx < D; out_idx += THREADS) {
         float sum = 0.0f;
+        const float* wq_row = o_proj_q + (long)out_idx * D;
+        #pragma unroll 4
         for (int in_idx = 0; in_idx < D; in_idx++) {
-            float w = __ldg(&o_proj_weight[(long)out_idx * D + in_idx]);
-            float w_q = roundf(w / gamma);
-            w_q = fminf(fmaxf(w_q, -1.0f), 1.0f);
-            w_q = w_q * gamma;
-            sum += s_blended[in_idx] * w_q;
+            sum += s_blended[in_idx] * __ldg(&wq_row[in_idx]);
         }
         y[y_base + out_idx] = __float2half(sum);
     }
@@ -202,10 +198,41 @@ __global__ void subqsa_combine_kernel(
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  Quantize O-proj weights once per forward (P0b)
+//  wq[i] = clamp(roundf(w[i] / gamma), -1, 1) * gamma
+// ═══════════════════════════════════════════════════════════════════════════
+__global__ void quantize_o_proj_kernel(
+    const float* __restrict__ w,
+    float* __restrict__ wq,
+    float gamma,
+    int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        float w_q = roundf(w[i] / gamma);
+        w_q = fminf(fmaxf(w_q, -1.0f), 1.0f);
+        wq[i] = w_q * gamma;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Host launch functions (extern "C" for PyTorch JIT / ctypes)
 // ═══════════════════════════════════════════════════════════════════════════
 
 extern "C" {
+
+void launch_quantize_o_proj(
+    const float* w,
+    float* wq,
+    float gamma,
+    int n,
+    cudaStream_t stream)
+{
+    int threads = 256;
+    int blocks = (n + threads - 1) / threads;
+    quantize_o_proj_kernel<<<blocks, threads, 0, stream>>>(w, wq, gamma, n);
+    CUDA_CHECK(cudaGetLastError());
+}
 
 void launch_subqsa_combine_forward(
     const half* x,
@@ -215,9 +242,8 @@ void launch_subqsa_combine_forward(
     const half* gate_w1,
     const half* gate_w2,
     const half* out_norm_weight,
-    const float* o_proj_weight,
+    const float* o_proj_q,       // pre-quantized
     half* y,
-    float gamma,
     int B, int T, int H, int D,
     cudaStream_t stream)
 {
@@ -244,9 +270,8 @@ void launch_subqsa_combine_forward(
     subqsa_combine_kernel<<<grid, THREADS, shared_mem, stream>>>(
         x, o_cmp, o_slc, o_win,
         gate_w1, gate_w2,
-        out_norm_weight, o_proj_weight,
-        y, gamma,
-        B, T, H, D);
+        out_norm_weight, o_proj_q,
+        y, B, T, H, D);
 
     CUDA_CHECK(cudaGetLastError());
 }

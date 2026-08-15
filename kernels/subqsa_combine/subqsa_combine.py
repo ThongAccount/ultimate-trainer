@@ -29,11 +29,13 @@ _CXX_WRAPPER = r"""
 #include <cuda_fp16.h>
 
 extern "C" {
+void launch_quantize_o_proj(
+    const float* w, float* wq, float gamma, int n, cudaStream_t stream);
 void launch_subqsa_combine_forward(
     const half* x, const half* o_cmp, const half* o_slc, const half* o_win,
     const half* gate_w1, const half* gate_w2,
-    const half* out_norm_weight, const float* o_proj_weight,
-    half* y, float gamma,
+    const half* out_norm_weight, const float* o_proj_q,
+    half* y,
     int B, int T, int H, int D,
     cudaStream_t stream);
 }
@@ -74,6 +76,16 @@ at::Tensor forward_wrapper(
 
     cudaStream_t stream = nullptr;
 
+    // P0b: pre-quantize O-proj weights once per forward (pure FMA in kernel)
+    auto opw = o_proj_weight.contiguous().float();
+    auto wq = at::empty_like(opw);
+    launch_quantize_o_proj(
+        reinterpret_cast<const float*>(opw.data_ptr<float>()),
+        reinterpret_cast<float*>(wq.data_ptr<float>()),
+        static_cast<float>(gamma),
+        static_cast<int>(opw.numel()),
+        stream);
+
     launch_subqsa_combine_forward(
         reinterpret_cast<const half*>(xh.data_ptr<at::Half>()),
         reinterpret_cast<const half*>(o_cmph.data_ptr<at::Half>()),
@@ -82,9 +94,8 @@ at::Tensor forward_wrapper(
         reinterpret_cast<const half*>(gw1h.data_ptr<at::Half>()),
         reinterpret_cast<const half*>(gw2h.data_ptr<at::Half>()),
         reinterpret_cast<const half*>(onwh.data_ptr<at::Half>()),
-        reinterpret_cast<const float*>(o_proj_weight.data_ptr<float>()),
+        reinterpret_cast<const float*>(wq.data_ptr<float>()),
         reinterpret_cast<half*>(yh.data_ptr<at::Half>()),
-        static_cast<float>(gamma),
         B, T, H, D,
         stream
     );
