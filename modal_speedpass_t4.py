@@ -299,6 +299,27 @@ print("SMOKE OK", flush=True)
             else:
                 results["profile_status"] = "PASS"
 
+    # ── Phase: bwd_dx correctness probe ──
+    if phase in ("all", "bwdprobe"):
+        print("\n" + "=" * 70)
+        print("PHASE: BWD_DX CORRECTNESS PROBE")
+        print("=" * 70)
+        if not _has_gpu:
+            print("  SKIP — no GPU available")
+            results["bwdprobe_status"] = "SKIP_NO_GPU"
+        else:
+            r = subprocess.run(
+                [sys.executable, "tests/probe_bwd.py"],
+                capture_output=True, text=True, timeout=600,
+            )
+            print(r.stdout, flush=True)
+            if r.returncode != 0:
+                print("  PROBE STDERR:", flush=True)
+                print(r.stderr[-1500:], flush=True)
+                results["bwdprobe_status"] = "FAIL"
+            else:
+                results["bwdprobe_status"] = "PASS"
+
     print("\n" + "=" * 70)
     print("BENCHMARK COMPLETE — SUMMARY")
     print("=" * 70)
