@@ -61,7 +61,7 @@ def main():
 
     B, T, H, D = args.B, args.T, args.H, args.D
     D_out = H * D  # O projection dim
-    BN = 64
+    BN = 16  # must match kernel TILE / block_sparse_ternary_matmul default
 
     dev = "cuda"
     dtype = torch.float32
@@ -118,13 +118,13 @@ def main():
         x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
         out_norm_weight, o_proj_weight, gamma, block_mask=None,
     )
-    w_q = torch.clamp(torch.round(o_proj_weight / gamma), -1, 1)
-    tile_n = 8  # N-tiles with BN=64
+    w_q = torch.clamp(torch.round(o_proj_weight / gamma), -1, 1) * gamma
+    tile_n = (D_out + BN - 1) // BN  # N-tiles with BN=16
     for tn in range(tile_n):
         for tk in range(num_k_tiles):
             bit = tn * num_k_tiles + tk
             if not (block_mask[bit // 64] & (1 << (bit % 64))):
-                ref_sparse[:, :, tn * 64:(tn + 1) * 64] = 0.0
+                ref_sparse[:, :, tn * BN:(tn + 1) * BN] = 0.0
 
     o_flat = torch.randn(B * T, D_out, device=dev, dtype=dtype)
     fn = lambda: block_sparse_ternary_matmul(
@@ -132,13 +132,13 @@ def main():
     )
     t = bench(fn, args.iters, args.warmup)
     y = fn()
-    # sparse path multiplies by gamma internally (Q in {-1,0,1} * gamma)
-    ref_mm = (o_flat @ (w_q * gamma).t()).float()
+    # kernel scales by gamma internally; ref must match
+    ref_mm = (o_flat @ w_q.t()).float()
     for tn in range(tile_n):
         for tk in range(num_k_tiles):
             bit = tn * num_k_tiles + tk
             if not (block_mask[bit // 64] & (1 << (bit % 64))):
-                ref_mm[:, tn * 64:(tn + 1) * 64] = 0.0
+                ref_mm[:, tn * BN:(tn + 1) * BN] = 0.0
     err = (y.float() - ref_mm).abs().max().item()
     results["eager_sparse"] = t
     print(f"sparse CUDA:    {t*1e3:8.2f} ms  (parity err {err:.2e})", flush=True)
