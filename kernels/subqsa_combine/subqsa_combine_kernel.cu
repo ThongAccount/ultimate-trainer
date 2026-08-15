@@ -123,9 +123,9 @@ __global__ void subqsa_combine_kernel(
         int h = i / D_head;
         int d_head = i % D_head;
 
-        long o_base = (long)b * H * T * D_head
-                    + (long)h * T * D_head
-                    + (long)t * D_head
+        long o_base = (long)b * T * H * D_head
+                    + (long)t * H * D_head
+                    + (long)h * D_head
                     + d_head;
 
         float v_cmp = __half2float(__ldg(&o_cmp[o_base]));
