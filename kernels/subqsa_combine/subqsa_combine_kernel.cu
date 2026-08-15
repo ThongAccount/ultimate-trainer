@@ -6,11 +6,11 @@
  * Shared mem (dynamic): D * sizeof(float) + max(12*H, THREADS/WARP_SIZE*4) bytes.
  *
  * Shared memory layout:
- *   [0 .. D*sizeof(float))        : s_blended (float[D]) -- phases 5-8
- *     sub-range [0 .. D*sizeof(half))   : s_x (half[D])     -- phase 1
- *     sub-range [D*sizeof(half) .. D*sizeof(half)+GATE_HIDDEN*4) : s_hidden -- phase 2-3
- *   [D*sizeof(float) .. end]      : s_gate (float[3*H])  -- phases 3-5
- *                                    / s_reduce           -- phase 6
+ *   [0 .. D*sizeof(half))              : s_x (half[D])       -- phase 1
+ *   [D*sizeof(half) .. D*half+GATE_HIDDEN*4) : s_hidden (float[64]) -- phases 2-3
+ *   [D*half+GATE_HIDDEN*4 .. +3*H*4)   : s_gate (float[3*H]) -- phases 3-5
+ *   [0 .. D*sizeof(float))             : s_blended (float[D]) -- phases 5-8 (reuses s_x)
+ *   [D*sizeof(float) .. +8*4)          : s_reduce            -- phase 6 (reuses s_hidden)
  *
  * Computation per token:
  *   1. gate MLP:     Linear(D -> 64) -> SiLU -> Linear(64 -> 3*H)
@@ -91,7 +91,11 @@ __global__ void subqsa_combine_kernel(
     __syncthreads();
 
     // ── Phase 3: Gate MLP Layer 2: Linear(64 -> 3*H) ────────────────
-    float* s_gate = reinterpret_cast<float*>(shared_mem + D * sizeof(float));
+    // s_gate placed AFTER s_hidden (byte D*half + GATE_HIDDEN*4) — the old
+    // offset D*float overlapped s_hidden[32..63] and raced with phase 3's
+    // read loop (write s_gate[i] clobbers s_hidden[32+i] while other threads
+    // still read it) -> nondeterministic gates, parity err ~1.4.
+    float* s_gate = reinterpret_cast<float*>(shared_mem + D * sizeof(half) + GATE_HIDDEN * sizeof(float));
     int gate_size = 3 * H;
     for (int i = tid; i < gate_size; i += THREADS) {
         float sum = 0.0f;
@@ -214,8 +218,10 @@ void launch_subqsa_combine_forward(
     cudaStream_t stream)
 {
     // Shared memory: max of
-    //   phase 1-4: D*half + 64*float + 3*H*float = 2*D + 256 + 12*H
-    //   phase 5-8: D*float + 8*float               = 4*D + 32
+    //   phases 1-5: s_x(D*half) + s_hidden(64*float) + s_gate(3*H*float)
+    //             = 2*D + 256 + 12*H
+    //   phases 5-8: s_blended(D*float) + s_reduce(8*float) = 4*D + 32
+    // s_reduce at D*4 reuses s_hidden space (consumed by phase 3).
     size_t phase1_size = (size_t)D * sizeof(half) + GATE_HIDDEN * sizeof(float) + (size_t)(3 * H) * sizeof(float);
     size_t phase5_size = (size_t)D * sizeof(float) + (THREADS / WARP_SIZE) * sizeof(float);
     size_t shared_mem = phase1_size > phase5_size ? phase1_size : phase5_size;
