@@ -77,7 +77,7 @@ at::Tensor forward_wrapper(
     cudaStream_t stream = nullptr;
 
     // P0b: pre-quantize O-proj weights once per forward (pure FMA in kernel)
-    auto opw = o_proj_weight.contiguous().float();
+    auto opw = o_proj_weight.contiguous().to(at::kFloat);
     auto wq = at::empty_like(opw);
     launch_quantize_o_proj(
         reinterpret_cast<const float*>(opw.data_ptr<float>()),
