@@ -248,18 +248,6 @@ print("SMOKE OK", flush=True)
             print("  SKIP — no GPU available (CPU-only mode)")
             results["subqsa_combine_status"] = "SKIP_NO_GPU"
         else:
-            # Sparse kernel diagnostics (compile cached from pytest, 600s)
-            r = subprocess.run(
-                [sys.executable, "tests/test_sparse_debug.py"],
-                capture_output=True, text=True, timeout=600,
-                env={**os.environ, "PYTHONPATH": "."},
-            )
-            print("  SPARSE DEBUG:", flush=True)
-            print(r.stdout, flush=True)
-            if r.returncode != 0:
-                print("  SPARSE DEBUG stderr:", flush=True)
-                print(r.stderr[-2000:], flush=True)
-
             # Quick parity self-test first (blocking launches catch OOB fast)
             r = subprocess.run(
                 [sys.executable, "bench_subqsa_combine.py", "--fast"],
