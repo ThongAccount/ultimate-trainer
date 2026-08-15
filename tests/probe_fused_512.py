@@ -69,3 +69,13 @@ print(f"mean|diff| per t: min={mt.min().item():.5f} max={mt.max().item():.5f}", 
 for h in range(H):
     seg = d[:, :, h * D:(h + 1) * D]
     print(f"head {h}: mean|diff|={seg.mean().item():.5f} max={seg.max().item():.5f}", flush=True)
+
+# per-token correlation: print diff and blend norm for a few bad tokens
+mt2 = d.mean(dim=2)  # (B,T)
+for b in range(B):
+    bad = mt2[b].topk(3).indices.tolist()
+    good = mt2[b].topk(3, largest=False).indices.tolist()
+    for t in bad + good:
+        # blend row norm (after rms) and gate row
+        seg = d[b, t].mean().item()
+        print(f"  b={b} t={t}: mean|d|={seg:.5f} kern[0]={y_kern[b,t,0].item():.4f} ref[0]={y_ref[b,t,0].item():.4f}", flush=True)
