@@ -139,20 +139,25 @@ def _subqsa_combine_eager(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
     rms = o.pow(2).mean(-1, keepdim=True).sqrt()
     o = o / (rms + 1e-5) * out_norm_weight
 
-    # Sparse ternary O projection when block_mask is provided
-    # NOTE: block_sparse_ternary_matmul returns x @ Q with Q in {-1, 0, 1}
-    # (no gamma rescale), so multiply by gamma to match the standard
-    # ternary path below (w_q = clamp(round(w/gamma), -1, 1) * gamma).
-    if block_mask is not None and _HAS_BLOCK_SPARSE and o.is_cuda:
-        d_out = o_proj_weight.shape[0]
-        o_flat = o.reshape(-1, d_out)
-        y = block_sparse_ternary_matmul(o_flat, o_proj_weight, gamma, block_mask,
-                                        BM=64, BN=64, BK=32).reshape(B, T, -1)
-        return (y * gamma).to(dtype=o.dtype)
-
-    # Standard gamma-scaled ternary O projection
+    # Sparse ternary O projection when block_mask is provided.
+    # The block_sparse CUDA kernel only handles BM=BN=BK=16 (shared mem
+    # is fixed 16x16). Production calls it with BN=64 -> OOB/garbage.
+    # Until the kernel supports larger tiles, fall back to the same
+    # dense gamma-scaled ternary matmul then zero masked N-tiles.
     w_q = torch.clamp(torch.round(o_proj_weight / gamma), -1, 1) * gamma
-    return F.linear(o.float(), w_q).to(dtype=o.dtype)
+    y = F.linear(o.float(), w_q).to(dtype=o.dtype)
+    if block_mask is not None:
+        d_out = o_proj_weight.shape[0]
+        BN = 64  # N-tile size used by compute_block_mask in production
+        num_n_tiles = (d_out + BN - 1) // BN
+        num_k_tiles = (d_out + 15) // 16  # BK=16 for K-tile granularity
+        y2d = y.view(-1, d_out)
+        for tn in range(num_n_tiles):
+            for tk in range(num_k_tiles):
+                bit = tn * num_k_tiles + tk
+                if not (block_mask[bit // 64] & (1 << (bit % 64))):
+                    y2d[:, tn * BN:(tn + 1) * BN] = 0.0
+    return y
 
 
 class SubQSACombineFn(torch.autograd.Function):

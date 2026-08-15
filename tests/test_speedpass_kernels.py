@@ -67,9 +67,10 @@ def test_sparse_ternary_kernel_parity(tensors):
     opw = tensors["o_proj_weight"]
     gamma = tensors["gamma"]
 
-    num_n = (DO + 63) // 64
+    BN = 16  # must match kernel's TILE / BN default
+    num_n = (DO + BN - 1) // BN
     num_k = (DO + 15) // 16
-    mask = compute_block_mask(torch.tensor([[0, 1]], device="cuda"), 2, 64, num_n, num_k)
+    mask = compute_block_mask(torch.tensor([[0, 1]], device="cuda"), 2, BN, num_n, num_k)
 
     xm = torch.randn(tensors["B"] * tensors["T"], DO, device="cuda")
     y = block_sparse_ternary_matmul(xm, opw, gamma, mask)
@@ -81,6 +82,6 @@ def test_sparse_ternary_kernel_parity(tensors):
         for tk in range(num_k):
             bit = tn * num_k + tk
             if not (mask[bit // 64] & (1 << (bit % 64))):
-                ref[:, tn * 64:(tn + 1) * 64] = 0.0
+                ref[:, tn * BN:(tn + 1) * BN] = 0.0
     err = (y - ref).abs().max().item()
     assert err < 1e-3, f"sparse kernel parity err {err}"
