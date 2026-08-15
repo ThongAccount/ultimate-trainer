@@ -49,3 +49,23 @@ print(f"max at b={bb} t={rr} o={cc}: kern={y_kern.flatten()[idx].item():.5f} ref
 print(f"gates[0,0,0,:] = {g[0,0,0,:].tolist()}", flush=True)
 print(f"gates[0,0,1,:] = {g[0,0,1,:].tolist()}", flush=True)
 print(f"gates[0,0,2,:] = {g[0,0,2,:].tolist()}", flush=True)
+
+# Reconstruct kernel blend (half inputs, eager gates) and compare with kernel output
+# via O-proj: if blend correct but final wrong -> phase 8 bug; else blend bug.
+blend = (g[..., 0:1] * oc + g[..., 1:2] * os + g[..., 2:3] * ow).transpose(1, 2).reshape(B, T, -1)
+# kernel blend should equal this. We can't read kernel shared mem, but we CAN
+# test phase 8 in isolation: feed a known blend through the kernel? Not directly.
+# Instead compare: y_ref = F.linear(normalized blend, w_q). If kernel's O-proj
+# used a DIFFERENT blend, the diff pattern would be column-structured.
+# Check column structure: mean |diff| per output column
+md = d.mean(dim=(0, 1))  # (D_out,)
+print(f"mean|diff| per column: min={md.min().item():.5f} max={md.max().item():.5f}", flush=True)
+print(f"top columns: {md.topk(5).indices.tolist()}", flush=True)
+print(f"bottom columns: {md.topk(5, largest=False).indices.tolist()}", flush=True)
+# check per-token structure
+mt = d.mean(dim=(0, 2))
+print(f"mean|diff| per t: min={mt.min().item():.5f} max={mt.max().item():.5f}", flush=True)
+# check head structure: group output cols by head
+for h in range(H):
+    seg = d[:, :, h * D:(h + 1) * D]
+    print(f"head {h}: mean|diff|={seg.mean().item():.5f} max={seg.max().item():.5f}", flush=True)
