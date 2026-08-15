@@ -278,6 +278,27 @@ print("SMOKE OK", flush=True)
             else:
                 results["subqsa_combine_status"] = "PASS"
 
+    # ── Phase: per-kernel backward profile ──
+    if phase in ("all", "profile"):
+        print("\n" + "=" * 70)
+        print("PHASE: GIGATOKEN BACKWARD PROFILE")
+        print("=" * 70)
+        if not _has_gpu:
+            print("  SKIP — no GPU available")
+            results["profile_status"] = "SKIP_NO_GPU"
+        else:
+            r = subprocess.run(
+                [sys.executable, "tests/profile_gigatoken.py"],
+                capture_output=True, text=True, timeout=900,
+            )
+            print(r.stdout, flush=True)
+            if r.returncode != 0:
+                print("  PROFILE STDERR:", flush=True)
+                print(r.stderr[-2000:], flush=True)
+                results["profile_status"] = "FAIL"
+            else:
+                results["profile_status"] = "PASS"
+
     print("\n" + "=" * 70)
     print("BENCHMARK COMPLETE — SUMMARY")
     print("=" * 70)
