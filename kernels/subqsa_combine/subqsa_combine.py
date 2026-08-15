@@ -61,10 +61,6 @@ at::Tensor forward_wrapper(
     TORCH_CHECK(x.is_contiguous(), "x must be contiguous");
     TORCH_CHECK(o_cmp.is_contiguous(), "o_cmp must be contiguous");
 
-    auto yh = at::empty_like(xh);
-
-    cudaStream_t stream = nullptr;
-
     // Kernel computes in half precision; inputs arrive as float.
     auto xh = x.to(at::kHalf);
     auto o_cmph = o_cmp.to(at::kHalf);
@@ -73,6 +69,10 @@ at::Tensor forward_wrapper(
     auto gw1h = gate_w1.to(at::kHalf);
     auto gw2h = gate_w2.to(at::kHalf);
     auto onwh = out_norm_weight.to(at::kHalf);
+
+    auto yh = at::empty_like(xh);
+
+    cudaStream_t stream = nullptr;
 
     launch_subqsa_combine_forward(
         reinterpret_cast<const half*>(xh.data_ptr<at::Half>()),

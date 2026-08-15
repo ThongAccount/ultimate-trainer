@@ -38,8 +38,6 @@ __global__ void block_sparse_ternary_kernel(
     __shared__ float w_tile[TILE][TILE];  // [k][n]
 
     float acc = 0.0f;
-    const int tid = ty * TILE + tx;
-    const int total = TILE * TILE;
 
     for (int tk = 0; tk < num_k_tiles; tk++) {
         const int block_bit = (pid_n / BN) * num_k_tiles + tk;
