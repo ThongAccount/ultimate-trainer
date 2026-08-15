@@ -248,18 +248,6 @@ print("SMOKE OK", flush=True)
             print("  SKIP — no GPU available (CPU-only mode)")
             results["subqsa_combine_status"] = "SKIP_NO_GPU"
         else:
-            # Probe: kernel vs half-eager at full config (debug)
-            r = subprocess.run(
-                [sys.executable, "tests/probe_fused_512.py"],
-                capture_output=True, text=True, timeout=600,
-                env={**os.environ, "PYTHONPATH": "."},
-            )
-            print("  PROBE 512:", flush=True)
-            print(r.stdout, flush=True)
-            if r.returncode != 0:
-                print("  PROBE stderr:", flush=True)
-                print(r.stderr[-1500:], flush=True)
-
             # Quick parity self-test first (blocking launches catch OOB fast)
             r = subprocess.run(
                 [sys.executable, "bench_subqsa_combine.py", "--fast"],
