@@ -108,14 +108,16 @@ __global__ void subqsa_combine_kernel(
     __syncthreads();
 
     // ── Phase 4: Per-head sigmoid + L1 normalise across 3 branches ──
+    // Eager layout: F.linear(g, gate_w2).view(B,T,3,H) -> k = branch*H + head
+    // so gate[branch*H + h] is branch `branch` of head `h`.
     for (int h = tid; h < H; h += THREADS) {
-        float g0 = 1.0f / (1.0f + expf(-s_gate[h * 3 + 0]));
-        float g1 = 1.0f / (1.0f + expf(-s_gate[h * 3 + 1]));
-        float g2 = 1.0f / (1.0f + expf(-s_gate[h * 3 + 2]));
+        float g0 = 1.0f / (1.0f + expf(-s_gate[0 * H + h]));
+        float g1 = 1.0f / (1.0f + expf(-s_gate[1 * H + h]));
+        float g2 = 1.0f / (1.0f + expf(-s_gate[2 * H + h]));
         float sum = g0 + g1 + g2 + 1e-8f;
-        s_gate[h * 3 + 0] = g0 / sum;
-        s_gate[h * 3 + 1] = g1 / sum;
-        s_gate[h * 3 + 2] = g2 / sum;
+        s_gate[0 * H + h] = g0 / sum;
+        s_gate[1 * H + h] = g1 / sum;
+        s_gate[2 * H + h] = g2 / sum;
     }
     __syncthreads();
 
@@ -136,9 +138,9 @@ __global__ void subqsa_combine_kernel(
         float v_slc = __half2float(__ldg(&o_slc[o_base]));
         float v_win = __half2float(__ldg(&o_win[o_base]));
 
-        float g_cmp_val = s_gate[h * 3 + 0];
-        float g_slc_val = s_gate[h * 3 + 1];
-        float g_win_val = s_gate[h * 3 + 2];
+        float g_cmp_val = s_gate[0 * H + h];
+        float g_slc_val = s_gate[1 * H + h];
+        float g_win_val = s_gate[2 * H + h];
 
         float blended = g_cmp_val * v_cmp + g_slc_val * v_slc + g_win_val * v_win;
         s_blended[i] = blended;
