@@ -200,7 +200,8 @@ print("SMOKE OK", flush=True)
         if _has_gpu:
             # Run debug first to print diagnostics
             subprocess.run([sys.executable, "tests/test_sparse_debug.py"],
-                           text=True, timeout=120, cwd=os.getcwd())
+                           text=True, timeout=120, cwd=os.getcwd(),
+                           env={**os.environ, "PYTHONPATH": "."})
             test_files.append("tests/test_speedpass_kernels.py")
         pytest_args = [sys.executable, "-m", "pytest"] + test_files + ["-q"]
         pytest_log = open("/tmp/pytest_out.log", "w")
