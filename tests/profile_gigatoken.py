@@ -9,7 +9,35 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.getcwd())
 import torch
 
-from train_gigatoken import TernaryTransformer, N_LAYERS, K, VOCAB, B, SEQ
+from train_gigatoken import N_LAYERS, K, VOCAB
+from kernels.packed_ternary import PackedTernaryLinear
+
+B = 32
+SEQ = 512
+THRESHOLD = 32
+
+class TernaryTransformer(torch.nn.Module):
+    """Mirror of train_gigatoken's model (defined inside main() there)."""
+    def __init__(self):
+        super().__init__()
+        self.embed = torch.nn.Embedding(VOCAB, K)
+        self.norms = torch.nn.ModuleList([torch.nn.LayerNorm(K) for _ in range(N_LAYERS)])
+        self.fc1s = torch.nn.ModuleList([PackedTernaryLinear(K, 4 * K, threshold=THRESHOLD) for _ in range(N_LAYERS)])
+        self.fc2s = torch.nn.ModuleList([PackedTernaryLinear(4 * K, K, threshold=THRESHOLD) for _ in range(N_LAYERS)])
+        self.head = PackedTernaryLinear(K, VOCAB, threshold=THRESHOLD)
+
+    def forward(self, x):
+        Bt, T = x.shape
+        scale = K ** -0.5
+        h = self.embed(x).half().view(Bt * T, K)
+        for i in range(N_LAYERS):
+            h = self.norms[i](h.float()).half()
+            h = self.fc1s[i](h) * scale
+            h = torch.nn.functional.gelu(h)
+            h = self.fc2s[i](h) * scale
+        h = self.head(h) * scale
+        return h.view(Bt, T, VOCAB)
+
 
 torch.manual_seed(0)
 model = TernaryTransformer().cuda()
