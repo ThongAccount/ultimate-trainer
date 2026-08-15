@@ -49,19 +49,19 @@ __global__ void block_sparse_ternary_kernel(
 
         if (!active) continue;  // whole K-chunk masked out
 
-        // Cooperative load of the K-chunk (BK rows).
-        // Column index ty/tx maps directly to the tile column, kk strides
-        // by TILE so every (kk, ty) / (kk, tx) cell is written exactly once.
-        for (int kk = ty; kk < BK; kk += TILE) {
-            const int k = tk * BK + kk;
-            if (k < K && row < M) {
-                x_tile[kk][ty] = x_ptr[(long)row * K + k];
+        // Cooperative load of the K-chunk: one element per thread.
+        // x_tile[k_local][m_local]: thread (tx, ty) has row=pid_m+ty,
+        //   k = tk*BK + tx  ->  x_tile[tx][ty] = x[row][k]
+        // w_tile[k_local][n_local]: thread (tx, ty) has col=pid_n+tx,
+        //   k = tk*BK + ty  ->  w_tile[ty][tx] = w[col][k]
+        {
+            const int kx = tk * BK + tx;
+            if (kx < K && row < M) {
+                x_tile[tx][ty] = x_ptr[(long)row * K + kx];
             }
-        }
-        for (int kk = tx; kk < BK; kk += TILE) {
-            const int k = tk * BK + kk;
-            if (k < K && col < N) {
-                w_tile[kk][tx] = w_ptr[(long)col * K + k];
+            const int kw = tk * BK + ty;
+            if (kw < K && col < N) {
+                w_tile[ty][tx] = w_ptr[(long)col * K + kw];
             }
         }
         __syncthreads();
