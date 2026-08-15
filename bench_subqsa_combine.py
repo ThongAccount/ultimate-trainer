@@ -152,6 +152,12 @@ def main():
         t = bench(fn, args.iters, args.warmup)
         y = fn()
         err = (y - ref).abs().max().item()
+        if err > 1e-3:
+            d = (y - ref).abs()
+            idx = d.argmax().item()
+            bb = idx // (T * D_out); rr = (idx % (T * D_out)) // D_out; cc = idx % D_out
+            print(f"    FUSED max err at b={bb} t={rr} o={cc}: y={y.flatten()[idx].item():.5f} ref={ref.flatten()[idx].item():.5f}", flush=True)
+            print(f"    diff>0.1 count: {(d > 0.1).sum().item()} / {d.numel()}", flush=True)
         results["fused_dense"] = t
         print(f"fused CUDA:     {t*1e3:8.2f} ms  (parity err {err:.2e})", flush=True)
 
