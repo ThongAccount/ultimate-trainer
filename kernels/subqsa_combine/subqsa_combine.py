@@ -187,15 +187,20 @@ class SubQSACombineFn(torch.autograd.Function):
         else:
             ctx.block_mask = None
 
-        if x.is_cuda and _HAS_SUBQSA_COMBINE and block_mask is None:
-            # Fused CUDA kernel (no block mask support yet)
+        # Detect dense mask: all bits set → no blocks masked
+        is_dense_mask = False
+        if block_mask is not None and block_mask.dtype == torch.int64:
+            is_dense_mask = torch.all(block_mask == -1).item()
+        
+        if x.is_cuda and _HAS_SUBQSA_COMBINE and (block_mask is None or is_dense_mask):
+            # Fused CUDA kernel (dense or no mask)
             return _combine_lib.forward(
                 x.contiguous().float(), o_cmp.contiguous().float(), o_slc.contiguous(),
                 o_win.contiguous(), gate_w1.contiguous(), gate_w2.contiguous().float(),
                 out_norm_weight.contiguous().float(), o_proj_weight.contiguous(),
                 gamma
             )
-        # Eager path with optional block mask
+        # Eager path with sparse block mask
         return _subqsa_combine_eager(x, o_cmp, o_slc, o_win, gate_w1, gate_w2,
                                      out_norm_weight, o_proj_weight, gamma,
                                      block_mask)
