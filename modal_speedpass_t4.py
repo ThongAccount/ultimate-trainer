@@ -320,6 +320,27 @@ print("SMOKE OK", flush=True)
             else:
                 results["bwdprobe_status"] = "PASS"
 
+    # ── Phase: update_tc_v2 dimensional bug test ──
+    if phase in ("all", "updatebug"):
+        print("\n" + "=" * 70)
+        print("PHASE: UPDATE_TC_V2 DIMENSIONAL BUG TEST")
+        print("=" * 70)
+        if not _has_gpu:
+            print("  SKIP — no GPU available")
+            results["updatebug_status"] = "SKIP_NO_GPU"
+        else:
+            r = subprocess.run(
+                [sys.executable, "tests/test_update_dimensional_bug.py"],
+                capture_output=True, text=True, timeout=600,
+            )
+            print(r.stdout, flush=True)
+            if r.returncode != 0:
+                print("  TEST STDERR:", flush=True)
+                print(r.stderr[-1500:], flush=True)
+                results["updatebug_status"] = "FAIL"
+            else:
+                results["updatebug_status"] = "PASS"
+
     print("\n" + "=" * 70)
     print("BENCHMARK COMPLETE — SUMMARY")
     print("=" * 70)
