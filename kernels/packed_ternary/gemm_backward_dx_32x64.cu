@@ -13,7 +13,7 @@
  *
  * SMEM (5 KB):
  *   dY_smem[32][16]  — 1 KB
- *   W_smem[64][16]   — 2 KB
+ *   W_smem[16][64]   — 2 KB (CORRECTED: reduction × in_features)
  *   spill[2][16][16] — 2 KB (FP32, reused per fragment)
  * Total: 5 KB (fits T4 comfortably)
  *
@@ -50,7 +50,7 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_32x64_kernel(
     int warp_k_off = (warp_id % 2) * 32;  // 0 or 32
 
     __shared__ half dY_smem[kSuperM][kWMMA_K];  // [32][16]
-    __shared__ half W_smem[kSuperN][kWMMA_K];   // [64][16]
+    __shared__ half W_smem[kWMMA_K][kSuperN];   // [16][64] — CORRECTED
     __shared__ float spill[kFragsPerWarp][kWMMA_M][kWMMA_N];
 
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K,
@@ -84,15 +84,17 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_32x64_kernel(
             }
         }
 
-        // Load W[r0:r0+16, super_k0:super_k0+64] (transposed: stored as [64][16])
+        // Load W[r0:r0+16, super_k0:super_k0+64] → W_smem[16][64]
+        // W is [out_features, in_features] but we need W^T for WMMA
+        // Store as [reduction_dim][in_features] = [16][64]
         {
-            int n_total = kSuperN * kWMMA_K;
+            int n_total = kWMMA_K * kSuperN;
             for (int tid = threadIdx.x; tid < n_total; tid += 128) {
-                int r = tid / kWMMA_K;
-                int c = tid % kWMMA_K;
-                int gn = r0 + c;  // W row = out_feature index
-                int gk = super_k0 + r;  // W col = in_feature index
-                if (gn < N && gk < K && c < tile_r) {
+                int r = tid / kSuperN;  // reduction index (0..15)
+                int c = tid % kSuperN;  // in_feature index (0..63)
+                int gn = r0 + r;        // W row = out_feature index
+                int gk = super_k0 + c;  // W col = in_feature index
+                if (gn < N && gk < K && r < tile_r) {
                     int wi = gk / kWeightsPerWord;
                     int pos = gk % kWeightsPerWord;
                     uint32_t word = W[gn * stride_words + wi];
@@ -112,10 +114,10 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_32x64_kernel(
             int b_base = warp_b_off;
             int k_base = warp_k_off + frag_k_off;
 
-            // a_frag = dY[b_base:b_base+15, 0:15]  (row_major)
-            // b_frag = W[k_base:k_base+15, 0:15]   (row_major)
+            // a_frag = dY[b_base:b_base+16, 0:16]  (row_major, leading dim 16)
+            // b_frag = W[0:16, k_base:k_base+16]   (row_major, leading dim 64)
             wmma::load_matrix_sync(a_frag, &dY_smem[b_base][0], kWMMA_K);
-            wmma::load_matrix_sync(b_frag, &W_smem[k_base][0], kWMMA_K);
+            wmma::load_matrix_sync(b_frag, &W_smem[0][k_base], kSuperN);  // leading dim is 64
             wmma::mma_sync(c_frag[fi], a_frag, b_frag, c_frag[fi]);
         }
 
