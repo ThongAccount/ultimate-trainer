@@ -320,6 +320,27 @@ print("SMOKE OK", flush=True)
             else:
                 results["bwdprobe_status"] = "PASS"
 
+    # ── Phase: 32x64 backward_dx correctness test ──
+    if phase in ("all", "test32x64"):
+        print("\n" + "=" * 70)
+        print("PHASE: 32×64 BACKWARD_DX CORRECTNESS TEST")
+        print("=" * 70)
+        if not _has_gpu:
+            print("  SKIP — no GPU available")
+            results["test32x64_status"] = "SKIP_NO_GPU"
+        else:
+            r = subprocess.run(
+                [sys.executable, "tests/test_32x64_correctness.py"],
+                capture_output=True, text=True, timeout=600,
+            )
+            print(r.stdout, flush=True)
+            if r.returncode != 0:
+                print("  TEST STDERR:", flush=True)
+                print(r.stderr[-1500:], flush=True)
+                results["test32x64_status"] = "FAIL"
+            else:
+                results["test32x64_status"] = "PASS"
+
     print("\n" + "=" * 70)
     print("BENCHMARK COMPLETE — SUMMARY")
     print("=" * 70)
