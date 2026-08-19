@@ -34,7 +34,7 @@ def speedpass_benchmark(phase: str = "all", use_gpu: bool = False):
 
     REPO_URL = "https://github.com/ThongAccount/ultimate-trainer.git"
     REPO_DIR = "ultimate-trainer"
-    BRANCH = "chore/speedpass"
+    BRANCH = "experiment/32x64-tile"
 
     print("=" * 70)
     print("MODAL T4 SPEEDPASS BENCHMARK")
