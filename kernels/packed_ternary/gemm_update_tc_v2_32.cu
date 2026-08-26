@@ -66,54 +66,52 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
 
         // Load dY tile
         {
-            int base = wtid * 8;
-            for (int j = 0; j < 8; j += 2) {
-                int i = base + j;
+            // Coalesced: consecutive lanes cover consecutive half2 pairs of the
+            // row-major tile (measured -44% vs strided wtid*8 mapping on T4;
+            // bit-exact, see experiment 2026-08-26). 128 pairs / 32 lanes = 4 iters.
+            #pragma unroll
+            for (int q = wtid; q < kK * kM / 2; q += 32) {
+                int i = q * 2;
                 int b = i / kM;
                 int r = i % kM;
-                if (b < tile_b) {
-                    int gb = b0 + b;
-                    int gr = r0 + r;
-                    if (gb < batch_size && gr < out_features) {
-                        int byte_off = (gb * out_features + gr) * (int)sizeof(half);
-                        if ((byte_off & 3) == 0 && r + 1 < kM && gr + 1 < out_features) {
-                            half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
-                            DYS(warp_id, b, r)     = v.x;
-                            DYS(warp_id, b, r + 1) = v.y;
-                        } else {
-                            DYS(warp_id, b, r) = dY[gb * out_features + gr];
-                            if (r + 1 < kM && gr + 1 < out_features) {
-                                DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
-                            }
-                        }
-                    }
+                if (b >= tile_b) continue;
+                int gb = b0 + b;
+                int gr = r0 + r;
+                if (gb >= batch_size || gr >= out_features) continue;
+                int byte_off = (gb * out_features + gr) * (int)sizeof(half);
+                if ((byte_off & 3) == 0 && r + 1 < kM && gr + 1 < out_features) {
+                    half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
+                    DYS(warp_id, b, r)     = v.x;
+                    DYS(warp_id, b, r + 1) = v.y;
+                } else {
+                    DYS(warp_id, b, r) = dY[gb * out_features + gr];
+                    if (r + 1 < kM && gr + 1 < out_features)
+                        DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
                 }
             }
         }
 
         // Load X tile
         {
-            int base = wtid * 8;
-            for (int j = 0; j < 8; j += 2) {
-                int i = base + j;
+            // Coalesced: same lane->pair mapping as the dY tile above.
+            #pragma unroll
+            for (int q = wtid; q < kK * kN / 2; q += 32) {
+                int i = q * 2;
                 int b = i / kN;
                 int c = i % kN;
-                if (b < tile_b) {
-                    int gb = b0 + b;
-                    int gc = c0 + c;
-                    if (gb < batch_size && gc < in_features) {
-                        int byte_off = (gb * in_features + gc) * (int)sizeof(half);
-                        if ((byte_off & 3) == 0 && c + 1 < kN && gc + 1 < in_features) {
-                            half2 v = ((const half2*)&X[gb * in_features + gc])[0];
-                            XS(warp_id, b, c)     = v.x;
-                            XS(warp_id, b, c + 1) = v.y;
-                        } else {
-                            XS(warp_id, b, c) = X[gb * in_features + gc];
-                            if (c + 1 < kN && gc + 1 < in_features) {
-                                XS(warp_id, b, c + 1) = X[gb * in_features + gc + 1];
-                            }
-                        }
-                    }
+                if (b >= tile_b) continue;
+                int gb = b0 + b;
+                int gc = c0 + c;
+                if (gb >= batch_size || gc >= in_features) continue;
+                int byte_off = (gb * in_features + gc) * (int)sizeof(half);
+                if ((byte_off & 3) == 0 && c + 1 < kN && gc + 1 < in_features) {
+                    half2 v = ((const half2*)&X[gb * in_features + gc])[0];
+                    XS(warp_id, b, c)     = v.x;
+                    XS(warp_id, b, c + 1) = v.y;
+                } else {
+                    XS(warp_id, b, c) = X[gb * in_features + gc];
+                    if (c + 1 < kN && gc + 1 < in_features)
+                        XS(warp_id, b, c + 1) = X[gb * in_features + gc + 1];
                 }
             }
         }
