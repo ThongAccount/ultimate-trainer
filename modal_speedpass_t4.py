@@ -25,7 +25,7 @@ image = (
     memory=4 * 1024,
     timeout=2400,
 )
-def speedpass_benchmark(phase: str = "all", use_gpu: bool = False):
+def speedpass_benchmark(phase: str = "all", use_gpu: bool = False, rev: str = ""):
     import os
     import subprocess
     import torch
@@ -63,6 +63,10 @@ def speedpass_benchmark(phase: str = "all", use_gpu: bool = False):
     subprocess.run(["git", "fetch", "origin"], check=True)
     subprocess.run(["git", "checkout", BRANCH], check=True)
     subprocess.run(["git", "pull", "origin", BRANCH], check=True)
+    if rev:
+        # A/B mode: pin an exact commit (e.g. baseline 8ebcd50 vs patched c7bc4ed)
+        subprocess.run(["git", "checkout", rev], check=True)
+        subprocess.run(["git", "clean", "-fdxq"], check=True)
 
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
     print(f"Git commit: {commit}")

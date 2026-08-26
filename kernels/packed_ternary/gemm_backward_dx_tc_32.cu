@@ -73,29 +73,31 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_kernel(
     for (int r0 = 0; r0 < out_features; r0 += kK) {
         int tile_r = min(kK, out_features - r0);
 
-        // ── Load dY tile → dY_smem (half2, block fill) ───────────────
+        // ── Load dY tile → dY_smem (coalesced consecutive-pair mapping) ──
+        // Lane q covers smem elements (2q, 2q+1) in row-major (b, r) order:
+        // consecutive lanes read consecutive half2 pairs from dY rows, giving
+        // 4-byte-strided fully-coalesced global access. Same elements as the
+        // old wtid*8+j strided mapping (lanes 16 B apart, ~50% wasted sectors),
+        // so accumulation order and results are bit-identical.
         {
-            int base = wtid * 8;
-            for (int j = 0; j < 8; j += 2) {
-                int i = base + j;
+            #pragma unroll
+            for (int q = wtid; q < kM * kK / 2; q += 32) {
+                int i = q * 2;
                 int b = i / kK;
                 int r = i % kK;
-                if (b < kM && r < tile_r) {
-                    int gb = b0 + b;
-                    int gr = r0 + r;
-                    if (gb < batch_size && gr < out_features) {
-                        int byte_off = (gb * out_features + gr) * (int)sizeof(half);
-                        if ((byte_off & 3) == 0 && r + 1 < tile_r && gr + 1 < out_features) {
-                            half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
-                            DYS(warp_id, b, r)     = v.x;
-                            DYS(warp_id, b, r + 1) = v.y;
-                        } else {
-                            DYS(warp_id, b, r) = dY[gb * out_features + gr];
-                            if (r + 1 < tile_r && gr + 1 < out_features) {
-                                DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
-                            }
-                        }
-                    }
+                if (b >= kM || r >= tile_r) continue;
+                int gb = b0 + b;
+                int gr = r0 + r;
+                if (gb >= batch_size || gr >= out_features) continue;
+                int byte_off = (gb * out_features + gr) * (int)sizeof(half);
+                if ((byte_off & 3) == 0 && r + 1 < tile_r && gr + 1 < out_features) {
+                    half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
+                    DYS(warp_id, b, r)     = v.x;
+                    DYS(warp_id, b, r + 1) = v.y;
+                } else {
+                    DYS(warp_id, b, r) = dY[gb * out_features + gr];
+                    if (r + 1 < tile_r && gr + 1 < out_features)
+                        DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
                 }
             }
         }
