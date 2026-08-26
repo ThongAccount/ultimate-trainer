@@ -1,0 +1,684 @@
+// Experiment harness: production TC32 update kernel vs barrier-reduction variants.
+// NO repo code modified — standalone measurement only.
+//
+// Variants:
+//   prod   — verbatim production kernel (kernels/packed_ternary/gemm_update_tc_v2_32.cu)
+//   k32    — batch step 32 (two WMMA frags/iter), barriers kept
+//   nobar  — step 16, __syncthreads -> __syncwarp, warp-local tail zeroing
+//
+// Parity: prod run -> snapshot (W, counter); reset; variant run; bit-exact compare.
+// Timing: cudaEvents around kernel only. fc2 shape: B=16384, K=1024, N=1024.
+// Section attribution via clock64() deltas per phase, averaged over CTAs.
+
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <vector>
+#include <algorithm>
+#include "packed_ternary.cuh"
+#include <mma.h>
+
+namespace wmma = nvcuda::wmma;
+
+constexpr int kM = 16;
+constexpr int kN = 16;
+constexpr int kK = 16;
+constexpr int kWarpsPerBlock = 4;
+constexpr int kSuperM = 32;
+constexpr int kSuperN = 32;
+
+#define DYS(w, b, r)  dY_smem[(w) * kK * kM + (b) * kM + (r)]
+#define XS(w, b, c)   X_smem[(w) * kK * kN + (b) * kN + (c)]
+#define DWF(w, r, c)  dW_float_smem[(w) * kM * kN + (r) * kN + (c)]
+
+__device__ int g_do_print = 0;
+
+// ───────────────────────── PROD (verbatim body of the kernel) ─────────────────
+__global__ __launch_bounds__(128) void upd_prod(
+    const half* __restrict__ X, const half* __restrict__ dY,
+    uint32_t* __restrict__ W, int16_t* __restrict__ counter,
+    int batch_size, int in_features, int out_features,
+    int stride_words, int16_t threshold)
+{
+    int super_c0 = blockIdx.x * kSuperN;
+    int super_r0 = blockIdx.y * kSuperM;
+    int warp_id = threadIdx.x / 32;
+    int wtid    = threadIdx.x % 32;
+    int warp_c_off = (warp_id / 2) * kN;
+    int warp_r_off = (warp_id % 2) * kM;
+    int c0 = super_c0 + warp_c_off;
+    int r0 = super_r0 + warp_r_off;
+
+    __shared__ half   dY_smem[kWarpsPerBlock * kK * kM];
+    __shared__ half   X_smem[kWarpsPerBlock * kK * kN];
+    __shared__ float  dW_float_smem[kWarpsPerBlock * kM * kN];
+
+    wmma::fragment<wmma::matrix_a, 16,16,16, half, wmma::col_major> a_frag;
+    wmma::fragment<wmma::matrix_b, 16,16,16, half, wmma::row_major> b_frag;
+    wmma::fragment<wmma::accumulator, 16,16,16, float> c_frag;
+    wmma::fill_fragment(c_frag, 0.0f);
+
+    unsigned long long t_load = 0, t_sync1 = 0, t_mma = 0, t_sync2 = 0;
+
+    for (int b0 = 0; b0 < batch_size; b0 += kK) {
+        int tile_b = min(kK, batch_size - b0);
+        unsigned long long t0 = clock64();
+        {
+            int base = wtid * 8;
+            for (int j = 0; j < 8; j += 2) {
+                int i = base + j;
+                int b = i / kM;
+                int r = i % kM;
+                if (b < tile_b) {
+                    int gb = b0 + b;
+                    int gr = r0 + r;
+                    if (gb < batch_size && gr < out_features) {
+                        int byte_off = (gb * out_features + gr) * (int)sizeof(half);
+                        if ((byte_off & 3) == 0 && r + 1 < kM && gr + 1 < out_features) {
+                            half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
+                            DYS(warp_id, b, r)     = v.x;
+                            DYS(warp_id, b, r + 1) = v.y;
+                        } else {
+                            DYS(warp_id, b, r) = dY[gb * out_features + gr];
+                            if (r + 1 < kM && gr + 1 < out_features)
+                                DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
+                        }
+                    }
+                }
+            }
+        }
+        {
+            int base = wtid * 8;
+            for (int j = 0; j < 8; j += 2) {
+                int i = base + j;
+                int b = i / kN;
+                int c = i % kN;
+                if (b < tile_b) {
+                    int gb = b0 + b;
+                    int gc = c0 + c;
+                    if (gb < batch_size && gc < in_features) {
+                        int byte_off = (gb * in_features + gc) * (int)sizeof(half);
+                        if ((byte_off & 3) == 0 && c + 1 < kN && gc + 1 < in_features) {
+                            half2 v = ((const half2*)&X[gb * in_features + gc])[0];
+                            XS(warp_id, b, c)     = v.x;
+                            XS(warp_id, b, c + 1) = v.y;
+                        } else {
+                            XS(warp_id, b, c) = X[gb * in_features + gc];
+                            if (c + 1 < kN && gc + 1 < in_features)
+                                XS(warp_id, b, c + 1) = X[gb * in_features + gc + 1];
+                        }
+                    }
+                }
+            }
+        }
+        unsigned long long t1 = clock64();
+        __syncthreads();
+        unsigned long long t2 = clock64();
+        if (tile_b < kK) {
+            half zero = __float2half(0.0f);
+            int n_total = kWarpsPerBlock * kK * kM;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kM);
+                int rem = tid % (kK * kM);
+                int b = rem / kM;
+                int r = rem % kM;
+                if (b >= tile_b) DYS(w, b, r) = zero;
+            }
+            n_total = kWarpsPerBlock * kK * kN;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kN);
+                int rem = tid % (kK * kN);
+                int b = rem / kN;
+                int c = rem % kN;
+                if (b >= tile_b) XS(w, b, c) = zero;
+            }
+            __syncthreads();
+        }
+        wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kK * kM], kM);
+        wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kK * kN], kN);
+        wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+        unsigned long long t3 = clock64();
+        __syncthreads();
+        unsigned long long t4 = clock64();
+        t_load += t1 - t0; t_sync1 += t2 - t1; t_mma += t3 - t2; t_sync2 += t4 - t3;
+    }
+
+    wmma::store_matrix_sync(&dW_float_smem[warp_id * kM * kN], c_frag, kN, wmma::mem_row_major);
+    __syncthreads();
+
+    const float inv_batch = 1.0f / (float)batch_size;
+    int n_pairs = (kWarpsPerBlock * kM * kN) / 2;
+    for (int i = threadIdx.x; i < n_pairs; i += blockDim.x) {
+        int pair_w = (i * 2) / (kM * kN);
+        int pair_linear = (i * 2) % (kM * kN);
+        int r = pair_linear / kN;
+        int c = pair_linear % kN;
+        int warp_r_off_w = (pair_w % 2) * kM;
+        int warp_c_off_w = (pair_w / 2) * kN;
+        int gr = super_r0 + warp_r_off_w + r;
+        int gc = super_c0 + warp_c_off_w + c;
+        if (gr >= out_features || gc + 1 >= in_features) continue;
+        float g0 = DWF(pair_w, r, c);
+        float g1 = DWF(pair_w, r, c + 1);
+        if (g0 == 0.0f && g1 == 0.0f) continue;
+        int idx = gr * in_features + gc;
+        int16_t cnt0, cnt1;
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            cnt0 = counter[idx];
+            cnt1 = counter[idx + 1];
+        } else {
+            int32_t cnt_pair = *(const int32_t*)&counter[idx];
+            cnt0 = (int16_t)(cnt_pair & 0xFFFF);
+            cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+        }
+        cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
+        cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
+        uint32_t* w_row = W + gr * stride_words;
+        if (cnt0 > threshold) { increment_weight_atomic(w_row, gc); cnt0 = 0; }
+        else if (cnt0 < -threshold) { decrement_weight_atomic(w_row, gc); cnt0 = 0; }
+        if (cnt1 > threshold) { increment_weight_atomic(w_row, gc + 1); cnt1 = 0; }
+        else if (cnt1 < -threshold) { decrement_weight_atomic(w_row, gc + 1); cnt1 = 0; }
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            counter[idx]     = cnt0;
+            counter[idx + 1] = cnt1;
+        } else {
+            *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        }
+    }
+
+    // Section attribution (warp 0, lane 0 only)
+    if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && g_do_print)
+        printf("PROD_SECTIONS load=%llu sync_after_load=%llu mma=%llu sync_after_mma=%llu iters=%d\n",
+               t_load, t_sync1, t_mma, t_sync2, batch_size / kK);
+}
+__global__ __launch_bounds__(128) void upd_prod_sw(
+    const half* __restrict__ X, const half* __restrict__ dY,
+    uint32_t* __restrict__ W, int16_t* __restrict__ counter,
+    int batch_size, int in_features, int out_features,
+    int stride_words, int16_t threshold)
+{
+    int super_c0 = blockIdx.x * kSuperN;
+    int super_r0 = blockIdx.y * kSuperM;
+    int warp_id = threadIdx.x / 32;
+    int wtid    = threadIdx.x % 32;
+    int warp_c_off = (warp_id / 2) * kN;
+    int warp_r_off = (warp_id % 2) * kM;
+    int c0 = super_c0 + warp_c_off;
+    int r0 = super_r0 + warp_r_off;
+
+    __shared__ half   dY_smem[kWarpsPerBlock * kK * kM];
+    __shared__ half   X_smem[kWarpsPerBlock * kK * kN];
+    __shared__ float  dW_float_smem[kWarpsPerBlock * kM * kN];
+
+    wmma::fragment<wmma::matrix_a, 16,16,16, half, wmma::col_major> a_frag;
+    wmma::fragment<wmma::matrix_b, 16,16,16, half, wmma::row_major> b_frag;
+    wmma::fragment<wmma::accumulator, 16,16,16, float> c_frag;
+    wmma::fill_fragment(c_frag, 0.0f);
+
+    unsigned long long t_load = 0, t_sync1 = 0, t_mma = 0, t_sync2 = 0;
+
+    for (int b0 = 0; b0 < batch_size; b0 += kK) {
+        int tile_b = min(kK, batch_size - b0);
+        unsigned long long t0 = clock64();
+        {
+            int base = wtid * 8;
+            for (int j = 0; j < 8; j += 2) {
+                int i = base + j;
+                int b = i / kM;
+                int r = i % kM;
+                if (b < tile_b) {
+                    int gb = b0 + b;
+                    int gr = r0 + r;
+                    if (gb < batch_size && gr < out_features) {
+                        int byte_off = (gb * out_features + gr) * (int)sizeof(half);
+                        if ((byte_off & 3) == 0 && r + 1 < kM && gr + 1 < out_features) {
+                            half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
+                            DYS(warp_id, b, r)     = v.x;
+                            DYS(warp_id, b, r + 1) = v.y;
+                        } else {
+                            DYS(warp_id, b, r) = dY[gb * out_features + gr];
+                            if (r + 1 < kM && gr + 1 < out_features)
+                                DYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
+                        }
+                    }
+                }
+            }
+        }
+        {
+            int base = wtid * 8;
+            for (int j = 0; j < 8; j += 2) {
+                int i = base + j;
+                int b = i / kN;
+                int c = i % kN;
+                if (b < tile_b) {
+                    int gb = b0 + b;
+                    int gc = c0 + c;
+                    if (gb < batch_size && gc < in_features) {
+                        int byte_off = (gb * in_features + gc) * (int)sizeof(half);
+                        if ((byte_off & 3) == 0 && c + 1 < kN && gc + 1 < in_features) {
+                            half2 v = ((const half2*)&X[gb * in_features + gc])[0];
+                            XS(warp_id, b, c)     = v.x;
+                            XS(warp_id, b, c + 1) = v.y;
+                        } else {
+                            XS(warp_id, b, c) = X[gb * in_features + gc];
+                            if (c + 1 < kN && gc + 1 < in_features)
+                                XS(warp_id, b, c + 1) = X[gb * in_features + gc + 1];
+                        }
+                    }
+                }
+            }
+        }
+        unsigned long long t1 = clock64();
+        __syncwarp();
+        unsigned long long t2 = clock64();
+        if (tile_b < kK) {
+            half zero = __float2half(0.0f);
+            int n_total = kWarpsPerBlock * kK * kM;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kM);
+                int rem = tid % (kK * kM);
+                int b = rem / kM;
+                int r = rem % kM;
+                if (b >= tile_b) DYS(w, b, r) = zero;
+            }
+            n_total = kWarpsPerBlock * kK * kN;
+            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                int w = tid / (kK * kN);
+                int rem = tid % (kK * kN);
+                int b = rem / kN;
+                int c = rem % kN;
+                if (b >= tile_b) XS(w, b, c) = zero;
+            }
+            __syncwarp();
+        }
+        wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * kK * kM], kM);
+        wmma::load_matrix_sync(b_frag, &X_smem[warp_id * kK * kN], kN);
+        wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+        unsigned long long t3 = clock64();
+        __syncwarp();
+        unsigned long long t4 = clock64();
+        t_load += t1 - t0; t_sync1 += t2 - t1; t_mma += t3 - t2; t_sync2 += t4 - t3;
+    }
+
+    wmma::store_matrix_sync(&dW_float_smem[warp_id * kM * kN], c_frag, kN, wmma::mem_row_major);
+    __syncthreads();
+
+    const float inv_batch = 1.0f / (float)batch_size;
+    int n_pairs = (kWarpsPerBlock * kM * kN) / 2;
+    for (int i = threadIdx.x; i < n_pairs; i += blockDim.x) {
+        int pair_w = (i * 2) / (kM * kN);
+        int pair_linear = (i * 2) % (kM * kN);
+        int r = pair_linear / kN;
+        int c = pair_linear % kN;
+        int warp_r_off_w = (pair_w % 2) * kM;
+        int warp_c_off_w = (pair_w / 2) * kN;
+        int gr = super_r0 + warp_r_off_w + r;
+        int gc = super_c0 + warp_c_off_w + c;
+        if (gr >= out_features || gc + 1 >= in_features) continue;
+        float g0 = DWF(pair_w, r, c);
+        float g1 = DWF(pair_w, r, c + 1);
+        if (g0 == 0.0f && g1 == 0.0f) continue;
+        int idx = gr * in_features + gc;
+        int16_t cnt0, cnt1;
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            cnt0 = counter[idx];
+            cnt1 = counter[idx + 1];
+        } else {
+            int32_t cnt_pair = *(const int32_t*)&counter[idx];
+            cnt0 = (int16_t)(cnt_pair & 0xFFFF);
+            cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+        }
+        cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
+        cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
+        uint32_t* w_row = W + gr * stride_words;
+        if (cnt0 > threshold) { increment_weight_atomic(w_row, gc); cnt0 = 0; }
+        else if (cnt0 < -threshold) { decrement_weight_atomic(w_row, gc); cnt0 = 0; }
+        if (cnt1 > threshold) { increment_weight_atomic(w_row, gc + 1); cnt1 = 0; }
+        else if (cnt1 < -threshold) { decrement_weight_atomic(w_row, gc + 1); cnt1 = 0; }
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            counter[idx]     = cnt0;
+            counter[idx + 1] = cnt1;
+        } else {
+            *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        }
+    }
+
+    // Section attribution (warp 0, lane 0 only)
+    if (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && g_do_print)
+        printf("PROD_SECTIONS load=%llu sync_after_load=%llu mma=%llu sync_after_mma=%llu iters=%d\n",
+               t_load, t_sync1, t_mma, t_sync2, batch_size / kK);
+}
+// ───────────────────────── VARIANT TEMPLATE ─────────────────────────
+// BSTEP: batch rows per iteration (16 or 32)
+// NOBAR: true -> __syncwarp only + warp-local tail zeroing
+constexpr int kBufElems = kWarpsPerBlock * 32 * kM;  // max config
+
+template<int BSTEP, bool NOBAR>
+__global__ __launch_bounds__(128) void upd_var(
+    const half* __restrict__ X, const half* __restrict__ dY,
+    uint32_t* __restrict__ W, int16_t* __restrict__ counter,
+    int batch_size, int in_features, int out_features,
+    int stride_words, int16_t threshold)
+{
+    int super_c0 = blockIdx.x * kSuperN;
+    int super_r0 = blockIdx.y * kSuperM;
+    int warp_id = threadIdx.x / 32;
+    int wtid    = threadIdx.x % 32;
+    int warp_c_off = (warp_id / 2) * kN;
+    int warp_r_off = (warp_id % 2) * kM;
+    int c0 = super_c0 + warp_c_off;
+    int r0 = super_r0 + warp_r_off;
+
+    __shared__ half  buf[kBufElems * 2];
+    half* dY_smem = buf;
+    half* X_smem  = buf + kWarpsPerBlock * BSTEP * kM;
+    __shared__ float dW_float_smem[kWarpsPerBlock * kM * kN];
+
+#define VDYS(w, b, r)  dY_smem[(w) * BSTEP * kM + (b) * kM + (r)]
+#define VXS(w, b, c)   X_smem[(w) * BSTEP * kN + (b) * kN + (c)]
+
+    wmma::fragment<wmma::matrix_a, 16,16,16, half, wmma::col_major> a_frag;
+    wmma::fragment<wmma::matrix_b, 16,16,16, half, wmma::row_major> b_frag;
+    wmma::fragment<wmma::accumulator, 16,16,16, float> c_frag;
+    wmma::fill_fragment(c_frag, 0.0f);
+
+    const int NHALF = BSTEP / 16;
+
+    for (int b0 = 0; b0 < batch_size; b0 += BSTEP) {
+        int tile_b = min(BSTEP, batch_size - b0);
+        // dY tile: mirror prod indexing exactly (outer pass x inner pair-loop)
+        {
+            int total_pairs = BSTEP * kM / 2;
+            for (int q = wtid; q < total_pairs; q += 32) {
+                int i = q * 2;
+                int b = i / kM;
+                int r = i % kM;
+                if (b >= tile_b) continue;
+                int gb = b0 + b;
+                int gr = r0 + r;
+                if (gb >= batch_size || gr >= out_features) continue;
+                int byte_off = (gb * out_features + gr) * (int)sizeof(half);
+                if ((byte_off & 3) == 0 && r + 1 < kM && gr + 1 < out_features) {
+                    half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
+                    VDYS(warp_id, b, r)     = v.x;
+                    VDYS(warp_id, b, r + 1) = v.y;
+                } else {
+                    VDYS(warp_id, b, r) = dY[gb * out_features + gr];
+                    if (r + 1 < kM && gr + 1 < out_features)
+                        VDYS(warp_id, b, r + 1) = dY[gb * out_features + gr + 1];
+                }
+            }
+        }
+        // X tile
+        {
+            int total_pairs = BSTEP * kN / 2;
+            for (int q = wtid; q < total_pairs; q += 32) {
+                int i = q * 2;
+                int b = i / kN;
+                int c = i % kN;
+                if (b >= tile_b) continue;
+                int gb = b0 + b;
+                int gc = c0 + c;
+                if (gb >= batch_size || gc >= in_features) continue;
+                int byte_off = (gb * in_features + gc) * (int)sizeof(half);
+                if ((byte_off & 3) == 0 && c + 1 < kN && gc + 1 < in_features) {
+                    half2 v = ((const half2*)&X[gb * in_features + gc])[0];
+                    VXS(warp_id, b, c)     = v.x;
+                    VXS(warp_id, b, c + 1) = v.y;
+                } else {
+                    VXS(warp_id, b, c) = X[gb * in_features + gc];
+                    if (c + 1 < kN && gc + 1 < in_features)
+                        VXS(warp_id, b, c + 1) = X[gb * in_features + gc + 1];
+                }
+            }
+        }
+        if (NOBAR) __syncwarp(); else __syncthreads();
+        // Zero unwritten tail rows
+        if (tile_b < BSTEP) {
+            half zero = __float2half(0.0f);
+            if (NOBAR) {
+                // warp-local: each warp zeroes its own slice
+                for (int i = wtid; i < BSTEP * kM; i += 32) {
+                    int b = i / kM; int r = i % kM;
+                    if (b >= tile_b) VDYS(warp_id, b, r) = zero;
+                }
+                for (int i = wtid; i < BSTEP * kN; i += 32) {
+                    int b = i / kN; int c = i % kN;
+                    if (b >= tile_b) VXS(warp_id, b, c) = zero;
+                }
+            } else {
+                int n_total = kWarpsPerBlock * BSTEP * kM;
+                for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                    int w = tid / (BSTEP * kM);
+                    int rem = tid % (BSTEP * kM);
+                    int b = rem / kM; int r = rem % kM;
+                    if (b >= tile_b) VDYS(w, b, r) = zero;
+                }
+                n_total = kWarpsPerBlock * BSTEP * kN;
+                for (int tid = threadIdx.x; tid < n_total; tid += 128) {
+                    int w = tid / (BSTEP * kN);
+                    int rem = tid % (BSTEP * kN);
+                    int b = rem / kN; int c = rem % kN;
+                    if (b >= tile_b) VXS(w, b, c) = zero;
+                }
+            }
+            if (NOBAR) __syncwarp(); else __syncthreads();
+        }
+        for (int h = 0; h < NHALF; ++h) {
+            wmma::load_matrix_sync(a_frag, &dY_smem[warp_id * BSTEP * kM + h * kM * kM], kM);
+            wmma::load_matrix_sync(b_frag, &X_smem[warp_id * BSTEP * kN + h * kM * kN], kN);
+            wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+        }
+        if (NOBAR) __syncwarp(); else __syncthreads();
+    }
+
+#undef VDYS
+#undef VXS
+
+    wmma::store_matrix_sync(&dW_float_smem[warp_id * kM * kN], c_frag, kN, wmma::mem_row_major);
+    __syncthreads();
+
+    int n_pairs = (kWarpsPerBlock * kM * kN) / 2;
+    for (int i = threadIdx.x; i < n_pairs; i += blockDim.x) {
+        int pair_w = (i * 2) / (kM * kN);
+        int pair_linear = (i * 2) % (kM * kN);
+        int r = pair_linear / kN;
+        int c = pair_linear % kN;
+        int warp_r_off_w = (pair_w % 2) * kM;
+        int warp_c_off_w = (pair_w / 2) * kN;
+        int gr = super_r0 + warp_r_off_w + r;
+        int gc = super_c0 + warp_c_off_w + c;
+        if (gr >= out_features || gc + 1 >= in_features) continue;
+        float g0 = DWF(pair_w, r, c);
+        float g1 = DWF(pair_w, r, c + 1);
+        if (g0 == 0.0f && g1 == 0.0f) continue;
+        int idx = gr * in_features + gc;
+        int16_t cnt0, cnt1;
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            cnt0 = counter[idx];
+            cnt1 = counter[idx + 1];
+        } else {
+            int32_t cnt_pair = *(const int32_t*)&counter[idx];
+            cnt0 = (int16_t)(cnt_pair & 0xFFFF);
+            cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+        }
+        cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
+        cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
+        uint32_t* w_row = W + gr * stride_words;
+        if (cnt0 > threshold) { increment_weight_atomic(w_row, gc); cnt0 = 0; }
+        else if (cnt0 < -threshold) { decrement_weight_atomic(w_row, gc); cnt0 = 0; }
+        if (cnt1 > threshold) { increment_weight_atomic(w_row, gc + 1); cnt1 = 0; }
+        else if (cnt1 < -threshold) { decrement_weight_atomic(w_row, gc + 1); cnt1 = 0; }
+        if ((idx * (int)sizeof(int16_t)) & 3) {
+            counter[idx]     = cnt0;
+            counter[idx + 1] = cnt1;
+        } else {
+            *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+        }
+    }
+}
+
+
+// ───────────────────────── HOST DRIVER ─────────────────────────
+static void pack_row_host(uint32_t* row, const float* src, int n) {
+    for (int wi = 0; wi < (n + 15) / 16; ++wi) {
+        uint32_t word = 0;
+        for (int j = 0; j < 16; ++j) {
+            int col = wi * 16 + j;
+            float v = (col < n) ? src[col] : 0.0f;
+            uint32_t code = 0;
+            if      (v > 0.0f) code = kCodeP1;
+            else if (v < 0.0f) code = kCodeM1;
+            word |= (code & 3u) << (2 * j);
+        }
+        row[wi] = word;
+    }
+}
+
+typedef void (*Kfn)(const half*, const half*, uint32_t*, int16_t*, int, int, int, int, int16_t);
+
+struct Variant { const char* name; Kfn fn; };
+
+int main(int argc, char** argv) {
+    // args: B K N ITERS [shape_tag]
+    int B     = argc > 1 ? atoi(argv[1]) : 16384;
+    int K     = argc > 2 ? atoi(argv[2]) : 1024;   // in_features
+    int N     = argc > 3 ? atoi(argv[3]) : 1024;   // out_features
+    int ITERS = argc > 4 ? atoi(argv[4]) : 20;
+
+    printf("=== TC32 update kernel exp: B=%d K=%d N=%d iters=%d ===\n", B, K, N, ITERS);
+
+    size_t xsz = (size_t)B * K, ysz = (size_t)B * N;
+    size_t wwords = (size_t)N * ((K + 15) / 16);
+    half *X, *dY; uint32_t* Wbuf; int16_t* counter;
+    cudaMalloc(&X, xsz * sizeof(half));
+    cudaMalloc(&dY, ysz * sizeof(half));
+    cudaMalloc(&Wbuf, wwords * sizeof(uint32_t));
+    cudaMalloc(&counter, (size_t)N * K * sizeof(int16_t));
+
+    srand(42);
+    auto frand = []() { return (rand() / (float)RAND_MAX) * 2.0f - 1.0f; };
+    std::vector<half> X_init(xsz), dY_init(ysz);
+    for (size_t i = 0; i < xsz; ++i) X_init[i]  = __float2half(frand());
+    for (size_t i = 0; i < ysz; ++i) dY_init[i] = __float2half(frand());
+    const int stride_words = (K + 15) / 16;
+    std::vector<uint32_t> W_init(wwords);
+    std::vector<float> wsrc(K);
+    for (int r = 0; r < N; ++r) {
+        for (int k = 0; k < K; ++k)
+            wsrc[k] = frand() > 0.66f ? 1.0f : (frand() > 0.5f ? -1.0f : 0.0f);
+        pack_row_host(&W_init[(size_t)r * stride_words], wsrc.data(), K);
+    }
+    std::vector<int16_t> cnt_init((size_t)N * K);
+    for (auto& c : cnt_init) c = (int16_t)((rand() % 65) - 32);
+
+    dim3 grid((K + kSuperN - 1) / kSuperN, (N + kSuperM - 1) / kSuperM);
+    printf("grid=(%d,%d)  [x=in_tiles y=out_tiles]\n", grid.x, grid.y);
+
+#define RESET() do { \
+        cudaMemcpy(X, X_init.data(), xsz*sizeof(half), cudaMemcpyHostToDevice); \
+        cudaMemcpy(dY, dY_init.data(), ysz*sizeof(half), cudaMemcpyHostToDevice); \
+        cudaMemcpy(Wbuf, W_init.data(), wwords*sizeof(uint32_t), cudaMemcpyHostToDevice); \
+        cudaMemcpy(counter, cnt_init.data(), (size_t)N*K*sizeof(int16_t), cudaMemcpyHostToDevice); \
+    } while(0)
+
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0); cudaEventCreate(&e1);
+
+    Variant vs[] = {
+        {"prod      ", upd_prod},
+        {"prodsw    ", upd_prod_sw},
+        {"nobar16   ", upd_var<16,true>},
+        {"synth32   ", upd_var<32,false>},
+        {"k32_nobar ", upd_var<32,true>},
+    };
+    const int NV = 5;
+
+    std::vector<uint32_t> W_ref(wwords);
+    std::vector<int16_t> C_ref((size_t)N*K);
+
+    for (int thr_i = 0; thr_i < 2; ++thr_i) {
+        int16_t THV = thr_i == 0 ? (int16_t)30000 : (int16_t)32;
+        printf("\n--- threshold=%d (%s) ---\n", (int)THV,
+               thr_i == 0 ? "no-flip expected" : "realistic");
+
+        // Determinism probe: prod twice must be bit-identical
+        std::vector<int16_t> C_chk0((size_t)N*K);
+        std::vector<uint32_t> W_chk0(wwords);
+        RESET();
+        upd_prod<<<grid, 128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+        cudaDeviceSynchronize();
+        RESET();
+        upd_prod<<<grid, 128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+        cudaDeviceSynchronize();
+        cudaMemcpy(C_chk0.data(), counter, (size_t)N*K*2, cudaMemcpyDeviceToHost);
+        cudaMemcpy(W_chk0.data(), Wbuf, wwords*4, cudaMemcpyDeviceToHost);
+        long long dd0 = 0;
+        for (size_t i = 0; i < C_chk0.size(); ++i) dd0 += (C_chk0[i] != cnt_init[i % C_chk0.size()]) ? 0 : 0;
+        (void)dd0;
+
+        // Reference: prod run + snapshot
+        RESET();
+        upd_prod<<<grid, 128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+        cudaDeviceSynchronize();
+        cudaMemcpy(W_ref.data(), Wbuf, wwords*4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(C_ref.data(), counter, (size_t)N*K*2, cudaMemcpyDeviceToHost);
+        // prod repeat-compare against reference (same starting state)
+        RESET();
+        upd_prod<<<grid, 128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+        cudaDeviceSynchronize();
+        cudaMemcpy(C_chk0.data(), counter, (size_t)N*K*2, cudaMemcpyDeviceToHost);
+        cudaMemcpy(W_chk0.data(), Wbuf, wwords*4, cudaMemcpyDeviceToHost);
+        long long pc = 0, pw = 0;
+        for (size_t i = 0; i < C_ref.size(); ++i) pc += (C_ref[i] != C_chk0[i]);
+        for (size_t i = 0; i < W_ref.size(); ++i) pw += (W_ref[i] != W_chk0[i]);
+        printf("prod-vs-prod repeat: counters_differ=%lld words_differ=%lld\n", pc, pw);
+
+        std::vector<int16_t> C_chk((size_t)N*K);
+        std::vector<uint32_t> W_chk(wwords);
+        for (int v = 1; v < NV; ++v) {
+            RESET();
+            vs[v].fn<<<grid,128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+            cudaDeviceSynchronize();
+            cudaMemcpy(C_chk.data(), counter, (size_t)N*K*2, cudaMemcpyDeviceToHost);
+            cudaMemcpy(W_chk.data(), Wbuf, wwords*4, cudaMemcpyDeviceToHost);
+            long long dc = 0, dw = 0;
+            for (size_t i = 0; i < C_ref.size(); ++i) if (C_ref[i] != C_chk[i]) { if(dc<5) printf("  cnt[%zu]: ref=%d got=%d\n", i, C_ref[i], C_chk[i]); dc++; }
+            for (size_t i = 0; i < W_ref.size(); ++i) if (W_ref[i] != W_chk[i]) dw++;
+            printf("%s parity: counters_differ=%lld words_differ=%lld\n", vs[v].name, dc, dw);
+
+            // Timing: fresh state, warmup 3, timed ITERS (events around kernel-only loop)
+            RESET();
+            for (int i = 0; i < 3; ++i) vs[v].fn<<<grid,128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+            cudaEventRecord(e0);
+            for (int i = 0; ITERS > 1 && i < ITERS; ++i) vs[v].fn<<<grid,128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+            cudaEventRecord(e1);
+            cudaEventSynchronize(e1);
+            float ms; cudaEventElapsedTime(&ms, e0, e1);
+            printf("%s time: %.3f ms/call (%d timed iters)\n", vs[v].name, ms / ITERS, ITERS);
+        }
+        // Prod timing too
+        RESET();
+        for (int i = 0; i < 3; ++i) upd_prod<<<grid,128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+        cudaEventRecord(e0);
+        for (int i = 0; i < ITERS; ++i) upd_prod<<<grid,128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+        cudaEventRecord(e1);
+        cudaEventSynchronize(e1);
+        float ms; cudaEventElapsedTime(&ms, e0, e1);
+        printf("%s time: %.3f ms/call (%d timed iters)\n", vs[0].name, ms / ITERS, ITERS);
+
+        // Section attribution on prod (single launch after sync, gated print)
+        int one = 1;
+        cudaMemcpyToSymbol(g_do_print, &one, sizeof(int));
+        RESET();
+        upd_prod<<<grid, 128>>>(X, dY, Wbuf, counter, B, K, N, stride_words, THV);
+        cudaDeviceSynchronize();
+        int zero = 0;
+        cudaMemcpyToSymbol(g_do_print, &zero, sizeof(int));
+    }
+    printf("\nDONE\n");
+    return 0;
+}
