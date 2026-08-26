@@ -1,3 +1,28 @@
+/*
+ * ⚠ DEAD CODE — KNOWN SEMANTIC BUG — DO NOT SHIP OR OPTIMIZE WITHOUT FIXING.
+ *
+ * Status (2026-08-26 re-analysis, see HANDOFF.md §14):
+ *   • NOT used in training. custom_ops._ensure_loaded() -> pack_update._load_tc_if_needed()
+ *     aliases _up_tc_v2_fn to the 32×32 variant (gemm_update_tc_v2_32.cu) for every
+ *     dimension, so trainer autograd always runs TC32. This file is reachable only via
+ *     direct pack_update.update() / _load_up_tc_v2() calls.
+ *
+ * Known WMMA addressing bug (defect class identical to the three bugs fixed for
+ * backward_dx_tc_64 in unshipped commit 113b40b):
+ *   Fragment tiles are addressed by raw pointer offsets (&dY_smem[0][n_base],
+ *   ld = kWMMA_N = 16). For a col_major load with ld = 16 from base element
+ *   dY_smem[0][n_base], WMMA element (i, j) resolves to flat offset
+ *       n_base + i + 16*j
+ *   i.e. smem row (j + n_base/16), column i — NOT smem column (n_base + j).
+ *   Every fragment with n_base > 0 therefore multiplies the WRONG dY columns
+ *   (columns [0,16) re-read across shifted batch rows); only fragment
+ *   (frag_n == 0, frag_k == 0) computes correct products.
+ *
+ * Compiles clean (sm_75: 64 regs, 0 spills, no smem overflow), so nvcc gives no
+ * signal — the failure is purely semantic. Fix requires either per-fragment ldmatrix-
+ * correct staging into contiguous [16][16] slices, or wmma::load_matrix_sync on
+ * properly strided sub-tiles with matching leading dimensions.
+ */
 /**
  * gemm_update_tc_v2.cu — Weight update with 64×64 tile (WMMA, vectorized counter).
  *
