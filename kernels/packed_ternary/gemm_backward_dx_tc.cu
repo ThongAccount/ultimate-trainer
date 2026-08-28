@@ -44,8 +44,8 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
     int warp_k_off = (warp_id % 2) * 32;
 
     __shared__ half dY_smem[kSuperM][kWMMA_K];  // [64][16]
-    __shared__ half W_smem[kSuperN][kWMMA_K];   // [64][16]
-    __shared__ float spill[kFragsPerWarp][kWMMA_M][kWMMA_N];
+    __shared__ half W_smem[kWMMA_K][kSuperN];   // [16][64] — reduction × output
+    __shared__ float spill[kWarps][kWMMA_M][kWMMA_N];  // [4][16][16] per-warp spill
 
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K,
                    half, wmma::row_major> a_frag;  // dY
@@ -78,22 +78,22 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
             }
         }
 
-        // Load W[r0:r0+16, super_k0:super_k0+64] (transposed: stored as [64][16])
+        // Load W[r0:r0+16, super_k0:super_k0+64] → W_smem[n][k]
         {
             int n_total = kSuperN * kWMMA_K;
             for (int tid = threadIdx.x; tid < n_total; tid += 128) {
-                int r = tid / kWMMA_K;
-                int c = tid % kWMMA_K;
-                int gn = r0 + c;  // W row = out_feature index
-                int gk = super_k0 + r;  // W col = in_feature index
-                if (gn < N && gk < K && c < tile_r) {
+                int r = tid / kSuperN;   // r indexes reduction (n, 0..15)
+                int c = tid % kSuperN;   // c indexes output   (k, 0..63)
+                int gn = r0 + r;         // W row = out_feature index (reduction)
+                int gk = super_k0 + c;   // W col = in_feature index (output)
+                if (gn < N && gk < K && r < tile_r) {
                     int wi = gk / kWeightsPerWord;
                     int pos = gk % kWeightsPerWord;
                     uint32_t word = W[gn * stride_words + wi];
                     int8_t t = decode_ternary(word >> (2 * pos));
-                    W_smem[r][c] = __int2half_rn(t);
+                    W_smem[r][c] = __int2half_rn(t);  // W_smem[n][k]
                 } else {
-                    W_smem[r][c] = __float2half(0.0f);
+                    W_smem[r][c] = __float2half(0.0f);  // zero-pad
                 }
             }
         }
@@ -112,9 +112,9 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
             int k_base = warp_k_off + frag_k_off;
 
             // a_frag = dY[b_base:b_base+15, 0:15]  (row_major)
-            // b_frag = W[0:15, k_base:k_base+15]   (row_major)
+            // b_frag = W_smem[0:15, k_base:k_base+15]   (row_major, ld=64)
             wmma::load_matrix_sync(a_frag, &dY_smem[b_base][0], kWMMA_K);
-            wmma::load_matrix_sync(b_frag, &W_smem[k_base][0], kWMMA_K);
+            wmma::load_matrix_sync(b_frag, &W_smem[0][k_base], kSuperN);
             wmma::mma_sync(c_frag[fi], a_frag, b_frag, c_frag[fi]);
         }
 
@@ -126,24 +126,24 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
     for (int fi = 0; fi < kFragsPerWarp; ++fi) {
         int frag_b_off = (fi / 2) * kWMMA_M;
         int frag_k_off = (fi % 2) * kWMMA_N;
-        int b_base = warp_b_off + frag_b_off;
-        int k_base = warp_k_off + frag_k_off;
 
-        int gb0 = super_b0 + b_base;
-        int gk0 = super_k0 + k_base;
-
-        wmma::store_matrix_sync(&spill[fi][0][0], c_frag[fi],
+        wmma::store_matrix_sync(&spill[warp_id][0][0], c_frag[fi],
                                 kWMMA_N, wmma::mem_row_major);
         __syncthreads();
 
-        int n_elems = kWMMA_M * kWMMA_N;
+        // All 128 threads cooperate to write all 4 warps' 16×16 tiles
+        int n_elems = kWarps * kWMMA_M * kWMMA_N;  // 1024
         for (int tid = threadIdx.x; tid < n_elems; tid += 128) {
-            int r = tid / kWMMA_N;
-            int c = tid % kWMMA_N;
-            int gb = gb0 + r;
-            int gk = gk0 + c;
+            int w = tid / (kWMMA_M * kWMMA_N);
+            int rem = tid % (kWMMA_M * kWMMA_N);
+            int r = rem / kWMMA_N;
+            int c = rem % kWMMA_N;
+            int w_b_off = (w / 2) * 32;
+            int w_k_off = (w % 2) * 32;
+            int gb = super_b0 + w_b_off + frag_b_off + r;
+            int gk = super_k0 + w_k_off + frag_k_off + c;
             if (gb < B && gk < K) {
-                dX[gb * K + gk] = __float2half_rn(spill[fi][r][c]);
+                dX[gb * K + gk] = __float2half_rn(spill[w][r][c]);
             }
         }
         __syncthreads();

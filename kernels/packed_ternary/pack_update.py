@@ -231,6 +231,11 @@ def _load_dx_tc_32():
         _HAS_DX_TC_32 = True
     except Exception as e:
         print(f"[dx_tc_32] load failed: {e}")
+
+
+
+def _load_dx_tc():
+    """Load 64x64 backward dX TC kernel."""
     global _HAS_DX_TC, _dx_tc_fn
     if _HAS_DX_TC:
         return
@@ -262,7 +267,7 @@ def _load_dx_tc_32():
                 return dX;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-                m.def("backward_dx_tc", &dx_tc_wrapper, "dX = W^T @ dY (TC)");
+                m.def("backward_dx_tc", &dx_tc_wrapper, "dX = W^T @ dY (TC 64x64)");
             }
             """,
             cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2"],
@@ -271,6 +276,7 @@ def _load_dx_tc_32():
         _HAS_DX_TC = True
     except Exception as e:
         print(f"[dx_tc] load failed: {e}")
+
 
 
 def _load_up_tc():
@@ -522,13 +528,12 @@ def _load_if_needed():
 
 
 def _load_tc_if_needed():
-    """Ensure 32x32 TC kernels are loaded (legacy path)."""
-    global _HAS_DX_TC, _dx_tc_fn, _HAS_UP_TC_V2, _up_tc_v2_fn, _HAS_UP_TC_V3, _up_tc_v3_fn
+    """Ensure TC kernels are loaded (64x64 preferred; 32x32 fallback)."""
+    global _up_tc_v2_fn, _HAS_UP_TC_V2, _up_tc_v3_fn, _HAS_UP_TC_V3
     if not _HAS_DX_TC_32:
         _load_dx_tc_32()
-        if _HAS_DX_TC_32:
-            _dx_tc_fn = _dx_tc_32_fn
-            _HAS_DX_TC = True
+    if not _HAS_DX_TC:
+        _load_dx_tc()
     if not _HAS_UP_TC_V2_32:
         _load_up_tc_v2_32()
         if _HAS_UP_TC_V2_32:
@@ -638,10 +643,16 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
 
     # ── Backward: dX = dY @ W ──
     # W is already asserted contiguous above — skip redundant .contiguous()
-    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(in_features):
-        _load_tc_if_needed()
+    if _tc_ok_64(B) and _tc_ok_64(N_out) and _tc_ok_64(in_features):
+        _load_dx_tc()
         if _HAS_DX_TC:
             dX = _dx_tc_fn(W, dY_c, in_features)
+        else:
+            dX = _dx_fn(W, dY_c, in_features)
+    elif _tc_ok(B) and _tc_ok(N_out) and _tc_ok(in_features):
+        _load_dx_tc_32()
+        if _HAS_DX_TC_32:
+            dX = _dx_tc_32_fn(W, dY_c, in_features)
         else:
             dX = _dx_fn(W, dY_c, in_features)
     else:

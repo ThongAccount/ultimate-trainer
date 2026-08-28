@@ -14,18 +14,23 @@ from torch.library import custom_op
 # Lazy-loaded kernel references (populated on first call)
 _fwd_tc = None
 _dx_tc = None
+_dx_tc_64 = None
 _update_tc_v2 = None
 _update_tc_v3 = None
 _fused_bwd = None
 _loaded = False
 
-
 def _ensure_loaded():
-    global _fwd_tc, _dx_tc, _update_tc_v2, _update_tc_v3, _fused_bwd, _loaded
+    global _fwd_tc, _dx_tc, _dx_tc_64, _update_tc_v2, _update_tc_v3, _fused_bwd, _loaded
     if _loaded:
         return
     from .pack_forward import has_tc, _load_tc_32, _forward_fn_tc
-    from .pack_update import _load_tc_if_needed, _HAS_DX_TC, _dx_tc_fn, _HAS_UP_TC_V2, _up_tc_v2_fn, _HAS_UP_TC_V3, _up_tc_v3_fn
+    from .pack_update import (
+        _load_tc_if_needed, _HAS_DX_TC, _dx_tc_fn,
+        _HAS_DX_TC_32, _dx_tc_32_fn,
+        _HAS_UP_TC_V2, _up_tc_v2_fn,
+        _HAS_UP_TC_V3, _up_tc_v3_fn,
+    )
 
     if has_tc():
         _load_tc_32()
@@ -35,7 +40,8 @@ def _ensure_loaded():
     _load_tc_if_needed()
     from . import pack_update as pu
     pu._load_fused()
-    _dx_tc = pu._dx_tc_fn if pu._HAS_DX_TC else None
+    _dx_tc = pu._dx_tc_32_fn if pu._HAS_DX_TC_32 else None
+    _dx_tc_64 = pu._dx_tc_fn if pu._HAS_DX_TC else None
     _update_tc_v2 = pu._up_tc_v2_fn if pu._HAS_UP_TC_V2 else None
     _update_tc_v3 = pu._up_tc_v3_fn if pu._HAS_UP_TC_V3 else None
     _fused_bwd = pu._fused_fn if pu._HAS_FUSED else None
@@ -60,8 +66,12 @@ def _forward_tc_fake(W, X, K):
 
 @custom_op("packed_ternary::backward_dx_tc", mutates_args=())
 def backward_dx_tc(W: torch.Tensor, dY: torch.Tensor, K: int) -> torch.Tensor:
-    """Backward dX = dY @ W via WMMA Tensor Cores."""
+    """Backward dX = dY @ W via WMMA Tensor Cores (auto 64x64/32x32)."""
     _ensure_loaded()
+    B = dY.size(0)
+    N_out = dY.size(1)
+    if _dx_tc_64 is not None and B % 64 == 0 and N_out % 64 == 0 and K % 64 == 0:
+        return _dx_tc_64(W.contiguous(), dY.contiguous(), K)
     if _dx_tc is None:
         raise RuntimeError("TC backward kernel not available")
     return _dx_tc(W.contiguous(), dY.contiguous(), K)
