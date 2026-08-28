@@ -505,7 +505,7 @@ dispatch-overhead work now ranks above further CUDA kernel tuning.
    Change RETAINED: strictly dominant at kernel level, zero risk (bit-exact),
    saving materializes once dispatch overhead is removed. Revert = `git revert c7bc4ed`.
 
-## 16. SESSION 4 (2026-08-28): 64×64 backward-dX dispatch — correct but e2e-neutral
+## 16. SESSION 4 (2026-08-28): 64×64 backward-dX dispatch — real 1.16× bwd speedup
 
 ### What changed (commits `b23359b` + `242a665`)
 
@@ -515,23 +515,48 @@ The 64×64 backward-dX kernel (`gemm_backward_dx_tc.cu`, fixed in `113b40b`) was
 Fix splits `_load_dx_tc` from `_load_dx_tc_32`, stops the clobber, and routes
 `backward_dx_tc` to 64×64 when B/N_out/K are all 64-multiples.
 
-### Results (Modal T4, same container A/B)
+### Results (Modal T4)
 
-- Correctness: 7/7 shapes PASS vs torch ref (err ≈ 32×32).
-- Kernel: 64×64 = 43.70 ms vs 32×32 = 75.78 ms → **1.73×** (fc1 B=16384).
-- End-to-end: HEAD 4750.1 ms/step (3,449 tok/s) vs baseline 4749.8 ms/step
-  (3,449 tok/s) → **within noise**. Confirms §15.3.
-- §6's +18% regression (B=512 grid underfill) does NOT reproduce at gigatoken
-  B=16,384: too many CTAs for underfill.
+- Correctness: 7/7 shapes PASS vs torch ref.
+- Kernel (fc1 B=16384): 64×64 = 43.70 ms vs 32×32 = 75.78 ms → **1.73×**.
+- **Clean in-process A/B** (monkeypatch `_dx_tc_64`, no file swap / no .so
+  cache confound): full backward 2764 ms (64×64) vs 3208 ms (32×32) =
+  **1.16×, −444 ms/step**. (An earlier file-swap A/B reporting "neutral" was
+  confounded by torch .so caching — disregard.)
 
-### Verdict
+### CORRECTION to §15.3 — backward is GPU-bound, NOT dispatch-bound
 
-Numerically safe and dispatch-correct; removes a clobber-class defect that made
-the 64×64 kernel dead code. But **e2e-neutral** — the speedup vanishes into CPU/
-autograd dispatch overhead. Kernel optimization is saturated; next work MUST
-target the dispatch gap (§15.3): backward GPU kernels ≈ 480 ms/step while
-backward wall ≈ 3350 ms/step.
+Full profiler (CPU+CUDA) attribution of one step:
+- backward wall ≈ 3063 ms; backward GPU kernels sum ≈ 2.9 s → **~95% GPU**,
+  near-zero dispatch gap. §15.3's "backward kernels ≈ 480 ms, 90% dispatch" is
+  a measurement error and is retracted.
+- True backward breakdown:
+
+  | kernel | time | share |
+  |---|---|---|
+  | `update_tc_v2` (weight update) | 1383 ms | 45% |
+  | head `backward_dx` (32×32, N_out=50272) | 975 ms | 32% |
+  | 12 MLP `backward_dx` (64×64) | 559 ms | 18% |
+
+### Why the fix is partial (and where the remaining time is)
+
+1. `update_tc_v2` (1383 ms) is entirely untouched by the dX dispatch change —
+   the single biggest backward cost. **Prime next target.**
+2. Head dX is stuck on 32×32 because `VOCAB = 50272`, and `50272 % 64 = 32`
+   (multiple of 32, not 64), so the routing condition `N_out % 64 == 0` forever
+   excludes it. One head layer (975 ms) > all 12 MLP dX combined.
+   Fix = padded 64×64 kernel (boundary tiles) **or** bump `VOCAB` 50272 → 50304
+   (= 64×786).
+
+### Revised verdict
+
+The 64×64 dispatch is correct and delivers a **real 1.16× backward speedup**
+(−444 ms/step, ~13% of the 3.2 s backward). To move the needle further, attack
+`update_tc_v2` (45%) and the head-layer dX (32%, blocked by VOCAB not being a
+64-multiple).
 
 Full log: `docs/speedpass/2026-08-28-bwd-dx-64-dispatch.md`
-Validation harness: `tests/validate_bwd_dx_64.py`, `modal_e2e_ab.py`.
+Harness: `tests/validate_bwd_dx_64.py`, `tests/ab_dx_dispatch.py`,
+`tests/profile_backward_attribution.py`, `modal_ab_dx.py`,
+`modal_profile_backward.py`.
 Revert = `git revert b23359b`.

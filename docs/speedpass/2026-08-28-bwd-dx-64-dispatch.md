@@ -1,6 +1,10 @@
-# 64×64 Backward-dX Dispatch — 2026-08-28 (Modal T4)
+# 64×64 Backward-dX Dispatch — 2026-08-28 (Modal T4), REVISED
 
-## Hypothesis
+> Revision note: the original "e2e-neutral / dispatch-dominated" conclusion
+> below was WRONG. A clean in-process A/B + CPU/CUDA profiler showed the
+> dispatch fix delivers a real **1.16× backward speedup** and that backward is
+> **GPU-bound (~95%), not dispatch-bound**. See §CORRECTION at the end and
+> HANDOFF.md §16.
 
 The 64×64 backward-dX kernel (`gemm_backward_dx_tc.cu`, fixed in `113b40b`)
 was loaded but never dispatched: `_load_tc_if_needed()` clobbered `_dx_tc_fn`
@@ -36,27 +40,45 @@ Correctness vs torch reference — all shapes PASS, err ≈ 32×32:
 - 32×32: **75.78 ms**
 - Speedup: **1.73×**
 
-## End-to-end A/B (train_gigatoken, same T4 container)
+## CORRECTION — clean in-process A/B (disregard the file-swap A/B above)
 
-| variant | ms/step | tok/s |
+The file-swap A/B above (4750 vs 4750) was **confounded by torch .so caching**
+— swapping files in-place reuses the already-compiled 64×64 `.so`, so both
+"variants" ran the same kernel. A clean in-process A/B (monkeypatch
+`custom_ops._dx_tc_64`, same process, compiled kernels stable) gives:
+
+| variant | full backward ms/step |
+|---|---|
+| 64×64 dispatch | 2764 |
+| 32×32 forced | 3208 |
+
+**1.16× speedup, −444 ms/step.**
+
+## Profiler attribution (CORRECTED — overturns §15.3)
+
+CPU+CUDA profile of one step: backward wall ≈ 3063 ms, backward GPU kernels sum
+≈ 2.9 s → **~95% GPU-bound; near-zero dispatch gap**. §15.3's "~90% dispatch
+overhead / kernels only 480 ms" is retracted as a measurement error.
+
+| kernel | time | share |
 |---|---|---|
-| HEAD (dispatch fix) | 4750.1 | 3,449 |
-| BASELINE (HEAD~1) | 4749.8 | 3,449 |
+| `update_tc_v2` (weight update) | 1383 ms | 45% |
+| head `backward_dx` (32×32, N_out=50272) | 975 ms | 32% |
+| 12 MLP `backward_dx` (64×64) | 559 ms | 18% |
 
-**Result: within noise.** Confirms §15.3 — the kernel speedup vanishes inside
-CPU/autograd dispatch overhead (~90% of backward wall is dispatch, not kernels).
+## Why the fix is partial
 
-## Reconciliation with §6 (prior +18% regression)
+1. `update_tc_v2` = 1383 ms (45%) is untouched by the dX dispatch change.
+2. Head dX is stuck on 32×32: `VOCAB = 50272`, `50272 % 64 = 32`, so the
+   `N_out % 64 == 0` routing condition forever excludes it. One head layer
+   (975 ms) costs more than all 12 MLP dX layers combined.
 
-§6's regression was at B=512 (SubQSA probe, grid underfill: 128 vs 512 CTAs).
-At gigatoken B=16,384 there is no underfill, so the 1.73× kernel speedup holds
-and no e2e regression reproduces. The change is numerically safe and
-dispatch-correct, but e2e-neutral because the real bottleneck is autograd
-dispatch, not GPU kernel work.
+Fix options: (a) pad/pad-boundary 64×64 kernel handling non-64-multiples, or
+(b) bump `VOCAB` 50272 → 50304 (= 64×786).
 
-## Conclusion
+## Conclusion (REVISED)
 
-Kernel micro-optimization is saturated. The 64×64 backward-dX kernel is now
-correct and dispatchable (removes the clobber NPE-class defect), but the next
-piece of work must target CPU/autograd dispatch overhead (§15.3) — the
-backward GPU kernels sum to ~480 ms/step while backward wall is ~3350 ms/step.
+The 64×64 dispatch is correct and yields a **real 1.16× backward speedup**
+(−444 ms/step ≈ 13% of backward). Next targets, in order: `update_tc_v2`
+(45% of backward) and the head-layer dX (32%, blocked by VOCAB not being a
+64-multiple).
