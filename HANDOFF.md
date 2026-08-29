@@ -560,3 +560,49 @@ Harness: `tests/validate_bwd_dx_64.py`, `tests/ab_dx_dispatch.py`,
 `tests/profile_backward_attribution.py`, `modal_ab_dx.py`,
 `modal_profile_backward.py`.
 Revert = `git revert b23359b`.
+
+---
+
+## 17. SESSION 5 (2026-08-29): update_tc_v2 shared-store vectorization — -7…-18% kernel
+
+### What changed
+
+Single edit to `kernels/packed_ternary/gemm_update_tc_v2_32.cu`: the dY/X tile
+load loops wrote each `half2` as two separate 16-bit stores (`DYS(...)=v.x;
+DYS(...)=v.y`), which aliases adjacent halves into one 4-byte shared bank → a
+2-way bank conflict on *every* store wavefront. Both stores are now a single
+32-bit `*reinterpret_cast<half2*>(&DYS(...))=v` (and `&XS(...)`). `r`/`c` are
+always even (`i=q*2`), so the destination is 4-byte aligned and the cast is
+legal. Scalar fallback for unaligned/boundary cases unchanged.
+
+### Proof (ncu, before → after)
+
+| metric | before | after |
+|---|---|---|
+| shared-store bank conflicts | 1,669,866,713 | 46,622,531 (36×) |
+| shared-store wavefronts | 3,318,864,250 | 1,695,686,329 |
+
+### Isolated kernel timing (B=16384, bypass autograd, 20 iters)
+
+| shape | in | out | before | after | Δ |
+|---|---|---|---|---|---|
+| fc1 | 1024 | 4096 | 50.09 ms | 46.24 ms | -7.7% |
+| fc2 | 4096 | 1024 | 56.36 ms | 46.28 ms | -17.9% |
+| head | 1024 | 50272 | 594.64 ms | 550.48 ms | -7.4% |
+
+### Correctness
+
+- `tests/test_update_dimensional_bug.py`: counter 0/16384 errors, max diff 0.
+- `tests/test_gemm_update.py`: backward_dx, TC-vs-scalar, flip-direction all
+  `max_diff=0.0000`.
+
+### Dead end to avoid repeating
+
+A `kSmemPad` auto-padding attempt (ldm 16→24) was **reverted**: it targeted
+`wmma::load_matrix_sync`, which ncu shows is already ~0-way conflicted (1.7M
+conflicts / 825M requests), and inflated smem 8→10 KB (occupancy risk) for zero
+benefit ("excessive wavefronts" stayed byte-identical).
+
+Full log: `docs/speedpass/2026-08-29-update-kernel-smem-store-vectorization.md`
+Note: `tests/bench_update_v2.py` "full step" section throws a *pre-existing*
+harness shape error (`xx` = token IDs, not embeddings) — unrelated to this change.

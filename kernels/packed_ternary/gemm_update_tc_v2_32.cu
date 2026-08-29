@@ -81,8 +81,11 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
                 int byte_off = (gb * out_features + gr) * (int)sizeof(half);
                 if ((byte_off & 3) == 0 && r + 1 < kM && gr + 1 < out_features) {
                     half2 v = ((const half2*)&dY[gb * out_features + gr])[0];
-                    DYS(warp_id, b, r)     = v.x;
-                    DYS(warp_id, b, r + 1) = v.y;
+                    // Vectorized half2 store: r is always even (i=q*2), so the
+                    // target is 4-byte aligned. A single 32-bit store puts 32
+                    // lanes on 32 distinct banks (conflict-free); two separate
+                    // 16-bit stores alias adjacent halves into one bank (2-way).
+                    *reinterpret_cast<half2*>(&DYS(warp_id, b, r)) = v;
                 } else {
                     DYS(warp_id, b, r) = dY[gb * out_features + gr];
                     if (r + 1 < kM && gr + 1 < out_features)
@@ -106,8 +109,7 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
                 int byte_off = (gb * in_features + gc) * (int)sizeof(half);
                 if ((byte_off & 3) == 0 && c + 1 < kN && gc + 1 < in_features) {
                     half2 v = ((const half2*)&X[gb * in_features + gc])[0];
-                    XS(warp_id, b, c)     = v.x;
-                    XS(warp_id, b, c + 1) = v.y;
+                    *reinterpret_cast<half2*>(&XS(warp_id, b, c)) = v;
                 } else {
                     XS(warp_id, b, c) = X[gb * in_features + gc];
                     if (c + 1 < kN && gc + 1 < in_features)
