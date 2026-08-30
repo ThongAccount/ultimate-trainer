@@ -606,3 +606,37 @@ benefit ("excessive wavefronts" stayed byte-identical).
 Full log: `docs/speedpass/2026-08-29-update-kernel-smem-store-vectorization.md`
 Note: `tests/bench_update_v2.py` "full step" section throws a *pre-existing*
 harness shape error (`xx` = token IDs, not embeddings) — unrelated to this change.
+
+---
+
+## 18. SESSION 6 (2026-08-29): head-layer dX onto 64×64 — +9.8% e2e tok/s
+
+### Finding
+
+The 64×64 backward-dX kernel tiles **B × K** at 64 and reduces over
+**N (out_features) in 16-steps** (`kWMMA_K=16`, tail zero-pad). It needs
+`N % 16 == 0`, not `N % 64 == 0`. The dispatch gate checked `N_out % 64 == 0`
+where `N_out = dY.size(1) = out_features`. Head has N_out = VOCAB = 50272;
+`50272 % 64 = 32` → head dX was permanently stuck on the 32×32 kernel, even
+though `50272 % 16 == 0` (exactly 3142 reduction steps, zero tail).
+
+### Fix (1 line)
+
+`kernels/packed_ternary/custom_ops.py`: `N_out % 64 == 0` → `N_out % 16 == 0`.
+
+### Verification (Modal T4)
+
+- **Bit-exact**: 64×64 == 32×32 on head (16384,50272,1024) and N=50000 tail.
+  Head dispatch now routes 64×64 (`max|out-d64|=0`).
+- **Isolated kernel**: head 64×64 = 557.7 ms vs 32×32 = 991.2 ms (**1.78×**).
+- **Full-backward** (head-only isolation): −338 ms/step (1.089×).
+- **e2e tok/s** (interleaved single-process): 3979 → 4411 (**+9.8%**), −404 ms/step.
+- **pytest**: 57 passed.
+
+### Caveat
+
+Modal T4 run-to-run absolute timing drifts (same config 2279 vs 3809 ms across
+runs, likely thermal/clock). All A/Bs above are within a single process to cancel
+that drift.
+
+Full log: `docs/speedpass/2026-08-29-head-dx-64-dispatch.md`

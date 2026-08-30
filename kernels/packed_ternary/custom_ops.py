@@ -70,7 +70,7 @@ def backward_dx_tc(W: torch.Tensor, dY: torch.Tensor, K: int) -> torch.Tensor:
     _ensure_loaded()
     B = dY.size(0)
     N_out = dY.size(1)
-    if _dx_tc_64 is not None and B % 64 == 0 and N_out % 64 == 0 and K % 64 == 0:
+    if _dx_tc_64 is not None and B % 64 == 0 and N_out % 16 == 0 and K % 64 == 0:
         return _dx_tc_64(W.contiguous(), dY.contiguous(), K)
     if _dx_tc is None:
         raise RuntimeError("TC backward kernel not available")
