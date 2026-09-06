@@ -1,27 +1,8 @@
 /*
- * ⚠ DEAD CODE — KNOWN SEMANTIC BUG — DO NOT SHIP OR OPTIMIZE WITHOUT FIXING.
- *
- * Status (2026-08-26 re-analysis, see HANDOFF.md §14):
- *   • NOT used in training. custom_ops._ensure_loaded() -> pack_update._load_tc_if_needed()
- *     aliases _up_tc_v2_fn to the 32×32 variant (gemm_update_tc_v2_32.cu) for every
- *     dimension, so trainer autograd always runs TC32. This file is reachable only via
- *     direct pack_update.update() / _load_up_tc_v2() calls.
- *
- * Known WMMA addressing bug (defect class identical to the three bugs fixed for
- * backward_dx_tc_64 in unshipped commit 113b40b):
- *   Fragment tiles are addressed by raw pointer offsets (&dY_smem[0][n_base],
- *   ld = kWMMA_N = 16). For a col_major load with ld = 16 from base element
- *   dY_smem[0][n_base], WMMA element (i, j) resolves to flat offset
- *       n_base + i + 16*j
- *   i.e. smem row (j + n_base/16), column i — NOT smem column (n_base + j).
- *   Every fragment with n_base > 0 therefore multiplies the WRONG dY columns
- *   (columns [0,16) re-read across shifted batch rows); only fragment
- *   (frag_n == 0, frag_k == 0) computes correct products.
- *
- * Compiles clean (sm_75: 64 regs, 0 spills, no smem overflow), so nvcc gives no
- * signal — the failure is purely semantic. Fix requires either per-fragment ldmatrix-
- * correct staging into contiguous [16][16] slices, or wmma::load_matrix_sync on
- * properly strided sub-tiles with matching leading dimensions.
+ * Status note: 64×64 update path was dead code until session 8 fixed the
+ * WMMA addressing (see header below). Still not wired into the training
+ * dispatch — reachable only via pack_update._load_up_tc_v2()/update() 64×64
+ * gate. Production uses gemm_update_tc_v2_32.cu.
  */
 /**
  * gemm_update_tc_v2.cu — Weight update with 64×64 tile (WMMA, vectorized counter).
@@ -33,11 +14,16 @@
  * Computes: dW[n,k] = SUM_b dY[b,n] * X[b,k] over batch B.
  * Then: counter += sign(dW), flip when |cnt| > threshold.
  *
- * SMEM (6 KB):
- *   dY_smem[64][16]  — 2 KB
- *   X_smem[64][16]   — 2 KB
- *   dW_float_smem[64][64] — 16 KB (float, for WMMA output)
- * Total: ~20 KB (fits T4 48 KB)
+ * WMMA addressing fixed (session 8): smem tiles are reduction-major,
+ * [batch 16][output 64], fragment ldm = 64 (was ldm=16 against a 64-wide
+ * row → column shift for every n_base/k_base > 0, and 4-warp race on a
+ * single spill slot). Same defect class as 113b40b for backward_dx.
+ *
+ * SMEM (~12 KB):
+ *   dY_smem[16][64]  — 2 KB
+ *   X_smem[16][64]   — 2 KB
+ *   spill[4][16][16] — 4 KB (per-warp, float)
+ * Total: ~8 KB
  */
 
 #include <cuda_runtime.h>
@@ -71,9 +57,11 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
     int warp_n_off = (warp_id / 2) * 32;
     int warp_k_off = (warp_id % 2) * 32;
 
-    __shared__ half dY_smem[kSuperM][kWMMA_K];  // dY[b:tile, 0:16], reloaded per batch-step
-    __shared__ half X_smem[kSuperM][kWMMA_K];   // X[b:tile, 0:16], reloaded per batch-step
-    __shared__ float dW_frag[kFragsPerWarp][kWMMA_M][kWMMA_N];  // fragment spill
+    // Reduction-major tiles (fix for session-8 WMMA addressing bug, same
+    // class as 113b40b): reduction dim (batch) rows × full 64-wide output.
+    __shared__ half dY_smem[kWMMA_K][kSuperM];  // dY[b:16][n:64] reduction × rows
+    __shared__ half X_smem[kWMMA_K][kSuperN];   // X[b:16][k:64] reduction × cols
+    __shared__ float spill[kWarps][kWMMA_M][kWMMA_N];  // per-warp 16×16 spill
 
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K,
                    half, wmma::col_major> a_frag;  // dY transposed for dW = dY^T @ X
@@ -86,9 +74,9 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
     for (int f = 0; f < kFragsPerWarp; ++f)
         wmma::fill_fragment(c_frag[f], 0.0f);
 
-    // Batch loop: accumulate dW over all batch tiles
-    for (int b0 = 0; b0 < B; b0 += kSuperM) {
-        int tile_b = min(kSuperM, B - b0);
+    // Batch loop: accumulate dW over batch, 16 rows (one WMMA-K) at a time.
+    for (int b0 = 0; b0 < B; b0 += kWMMA_K) {
+        int tile_b = min(kWMMA_K, B - b0);
 
         // Load dY[b0:b0+64, super_n0:super_n0+64] in K-slices
         // Actually for WMMA we load one K-slice at a time
@@ -97,12 +85,13 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
         // dY dimension: [B, N]. We load dY[b0:b0+64, super_n0:super_n0+64]
         // in steps of kWMMA_M=16 across the N dimension
 
-        // For now, load [64, 16] slice of dY starting at super_n0 offset
+        // Load dY[b0:b0+16, super_n0:super_n0+64] → dY_smem[b][n]
+        // (reduction × output, like the fixed bwd-dX kernel in 113b40b)
         {
-            int n_total = kSuperM * kWMMA_K;
+            int n_total = kWMMA_K * kSuperM;
             for (int tid = threadIdx.x; tid < n_total; tid += 128) {
-                int r = tid / kWMMA_K;
-                int c = tid % kWMMA_K;
+                int r = tid / kSuperM;   // reduction (batch, 0..15)
+                int c = tid % kSuperM;   // output (out_features, 0..63)
                 int gb = b0 + r;
                 int gn = super_n0 + c;
                 if (gb < B && gn < N && r < tile_b) {
@@ -113,12 +102,12 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
             }
         }
 
-        // Load X[b0:b0+64, super_k0:super_k0+64] in K-slices
+        // Load X[b0:b0+16, super_k0:super_k0+64] → X_smem[b][k]
         {
-            int n_total = kSuperM * kWMMA_K;
+            int n_total = kWMMA_K * kSuperN;
             for (int tid = threadIdx.x; tid < n_total; tid += 128) {
-                int r = tid / kWMMA_K;
-                int c = tid % kWMMA_K;
+                int r = tid / kSuperN;
+                int c = tid % kSuperN;
                 int gb = b0 + r;
                 int gk = super_k0 + c;
                 if (gb < B && gk < K && r < tile_b) {
@@ -139,110 +128,107 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
             int n_base = warp_n_off + frag_n_off;
             int k_base = warp_k_off + frag_k_off;
 
-            // a_frag: dY[b, super_n0+n_base] — col_major (encoded in fragment type)
-            wmma::load_matrix_sync(a_frag, &dY_smem[0][n_base], kWMMA_K);
-            wmma::load_matrix_sync(b_frag, &X_smem[0][k_base], kWMMA_K);
+            // a_frag = dY^T slice: col_major, element (m,kk) =
+            // dY_smem[kk][n_base+m] via ld = kSuperM (NOT kWMMA_K=16 —
+            // the old code's ld=16 hit smem row j+n_base/16: shift bug).
+            wmma::load_matrix_sync(a_frag, &dY_smem[0][n_base], kSuperM);
+            // b_frag = X slice: row_major, element (kk,j) =
+            // X_smem[kk][k_base+j] via ld = kSuperN.
+            wmma::load_matrix_sync(b_frag, &X_smem[0][k_base], kSuperN);
             wmma::mma_sync(c_frag[fi], a_frag, b_frag, c_frag[fi]);
         }
 
         __syncthreads();
     }
 
-    // Store accumulator fragments to local SMEM for counter processing
+    // Counter phase, per fragment — per-warp spill (no race, cf. 113b40b C)
     #pragma unroll
     for (int fi = 0; fi < kFragsPerWarp; ++fi) {
-        wmma::store_matrix_sync(&dW_frag[fi][0][0], c_frag[fi],
+        int frag_n_off = (fi / 2) * kWMMA_M;
+        int frag_k_off = (fi % 2) * kWMMA_N;
+
+        wmma::store_matrix_sync(&spill[warp_id][0][0], c_frag[fi],
                                 kWMMA_N, wmma::mem_row_major);
-    }
-    __syncthreads();
+        __syncthreads();
 
-    // Process counter updates over the 64×64 tile
-    int n_pairs = (kWMMA_K * kWMMA_M * kFragsPerWarp * kWarps) / 2;  // (64*64)/2 = 2048
-    for (int i = threadIdx.x; i < n_pairs; i += 128) {
-        // Map pair index -> (warp, frag, row, col)
-        int idx2 = i * 2;
-        int frag_global = idx2 / (kWMMA_M * kWMMA_N);  // 0..15
-        int linear = idx2 % (kWMMA_M * kWMMA_N);
-        int r = linear / kWMMA_N;
-        int c = linear % kWMMA_N;
-
-        int warp_idx = frag_global / kFragsPerWarp;
-        int frag_local = frag_global % kFragsPerWarp;
-        int frag_n_off = (frag_local / 2) * kWMMA_M;
-        int frag_k_off = (frag_local % 2) * kWMMA_N;
-        int warp_n_off_w = (warp_idx / 2) * 32;
-        int warp_k_off_w = (warp_idx % 2) * 32;
-
-        int gn = super_n0 + warp_n_off_w + frag_n_off + r;
-        int gk = super_k0 + warp_k_off_w + frag_k_off + c;
-
-        if (gn >= N || gk + 1 >= K) continue;
-
-        float g0 = dW_frag[frag_global][r][c];
-        float g1 = dW_frag[frag_global][r][c + 1];
-
-        if (g0 == 0.0f && g1 == 0.0f) continue;
-
-        int idx = gn * K + gk;
-        // Vectorized int32 counter load (with alignment check)
-        int16_t cnt0, cnt1;
-        if ((idx * (int)sizeof(int16_t)) & 3) {
-            cnt0 = counter[idx];
-            cnt1 = counter[idx + 1];
-        } else {
-            int32_t cnt_pair = *(const int32_t*)&counter[idx];
-            cnt0 = (int16_t)(cnt_pair & 0xFFFF);
-            cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
-        }
-
-        cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
-        cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
-
-        uint32_t* w_row = W + gn * stride_words;
-        if (cnt0 > threshold) { increment_weight_atomic(w_row, gk); cnt0 = 0; }
-        else if (cnt0 < -threshold) { decrement_weight_atomic(w_row, gk); cnt0 = 0; }
-        if (cnt1 > threshold) { increment_weight_atomic(w_row, gk + 1); cnt1 = 0; }
-        else if (cnt1 < -threshold) { decrement_weight_atomic(w_row, gk + 1); cnt1 = 0; }
-
-        // Store
-        if ((idx * (int)sizeof(int16_t)) & 3) {
-            counter[idx] = cnt0;
-            counter[idx + 1] = cnt1;
-        } else {
-            *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
-        }
-    }
-
-    // Tail: handle last column when K is odd
-    if (K & 1) {
-        int last_gk = K - 1;
-        int total_elems = kWarps * kFragsPerWarp * kWMMA_M * kWMMA_N;
-        for (int i = threadIdx.x; i < total_elems; i += 128) {
-            int frag_global = i / (kWMMA_M * kWMMA_N);
-            int linear = i % (kWMMA_M * kWMMA_N);
+        // 128 threads process 4 warps × 16×16 elems = 512 pairs
+        int n_pairs = (kWarps * kWMMA_M * kWMMA_N) / 2;  // 512
+        for (int i = threadIdx.x; i < n_pairs; i += 128) {
+            int idx2 = i * 2;
+            int w = idx2 / (kWMMA_M * kWMMA_N);
+            int linear = idx2 % (kWMMA_M * kWMMA_N);
             int r = linear / kWMMA_N;
             int c = linear % kWMMA_N;
-            int warp_idx = frag_global / kFragsPerWarp;
-            int frag_local = frag_global % kFragsPerWarp;
-            int frag_n_off = (frag_local / 2) * kWMMA_M;
-            int frag_k_off = (frag_local % 2) * kWMMA_N;
-            int warp_n_off_w = (warp_idx / 2) * 32;
-            int warp_k_off_w = (warp_idx % 2) * 32;
-            // Only process threads mapping to the last column
-            int gk = super_k0 + warp_k_off_w + frag_k_off + c;
-            if (gk != last_gk) continue;
-            int gn = super_n0 + warp_n_off_w + frag_n_off + r;
-            if (gn >= N) continue;
-            float g = dW_frag[frag_global][r][c];
-            if (g == 0.0f) continue;
-            int idx = gn * K + last_gk;
-            int16_t cnt = counter[idx];
-            cnt += (g > 0.0f) ? -1 : (g < 0.0f) ? 1 : 0;
+
+            int w_n_off = (w / 2) * 32;
+            int w_k_off = (w % 2) * 32;
+
+            int gn = super_n0 + w_n_off + frag_n_off + r;
+            int gk = super_k0 + w_k_off + frag_k_off + c;
+
+            if (gn >= N || gk + 1 >= K) continue;
+
+            float g0 = spill[w][r][c];
+            float g1 = spill[w][r][c + 1];
+
+            if (g0 == 0.0f && g1 == 0.0f) continue;
+
+            int idx = gn * K + gk;
+            // Vectorized int32 counter load (with alignment check)
+            int16_t cnt0, cnt1;
+            if ((idx * (int)sizeof(int16_t)) & 3) {
+                cnt0 = counter[idx];
+                cnt1 = counter[idx + 1];
+            } else {
+                int32_t cnt_pair = *(const int32_t*)&counter[idx];
+                cnt0 = (int16_t)(cnt_pair & 0xFFFF);
+                cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
+            }
+
+            cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
+            cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
+
             uint32_t* w_row = W + gn * stride_words;
-            if (cnt > threshold) { increment_weight_atomic(w_row, last_gk); cnt = 0; }
-            else if (cnt < -threshold) { decrement_weight_atomic(w_row, last_gk); cnt = 0; }
-            counter[idx] = cnt;
+            if (cnt0 > threshold) { increment_weight_atomic(w_row, gk); cnt0 = 0; }
+            else if (cnt0 < -threshold) { decrement_weight_atomic(w_row, gk); cnt0 = 0; }
+            if (cnt1 > threshold) { increment_weight_atomic(w_row, gk + 1); cnt1 = 0; }
+            else if (cnt1 < -threshold) { decrement_weight_atomic(w_row, gk + 1); cnt1 = 0; }
+
+            // Store
+            if ((idx * (int)sizeof(int16_t)) & 3) {
+                counter[idx] = cnt0;
+                counter[idx + 1] = cnt1;
+            } else {
+                *(int32_t*)&counter[idx] = ((int32_t)cnt1 << 16) | ((int32_t)cnt0 & 0xFFFF);
+            }
         }
+
+        // Tail: last column when K is odd (same spill, same fi)
+        if (K & 1) {
+            int last_gk = K - 1;
+            for (int i = threadIdx.x; i < kWarps * kWMMA_M * kWMMA_N; i += 128) {
+                int w = i / (kWMMA_M * kWMMA_N);
+                int linear = i % (kWMMA_M * kWMMA_N);
+                int r = linear / kWMMA_N;
+                int c = linear % kWMMA_N;
+                int w_n_off = (w / 2) * 32;
+                int w_k_off = (w % 2) * 32;
+                int gk = super_k0 + w_k_off + frag_k_off + c;
+                if (gk != last_gk) continue;
+                int gn = super_n0 + w_n_off + frag_n_off + r;
+                if (gn >= N) continue;
+                float g = spill[w][r][c];
+                if (g == 0.0f) continue;
+                int idx = gn * K + last_gk;
+                int16_t cnt = counter[idx];
+                cnt += (g > 0.0f) ? -1 : (g < 0.0f) ? 1 : 0;
+                uint32_t* w_row = W + gn * stride_words;
+                if (cnt > threshold) { increment_weight_atomic(w_row, last_gk); cnt = 0; }
+                else if (cnt < -threshold) { decrement_weight_atomic(w_row, last_gk); cnt = 0; }
+                counter[idx] = cnt;
+            }
+        }
+        __syncthreads();
     }
 }
 
