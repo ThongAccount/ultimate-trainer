@@ -640,3 +640,22 @@ runs, likely thermal/clock). All A/Bs above are within a single process to cance
 that drift.
 
 Full log: `docs/speedpass/2026-08-29-head-dx-64-dispatch.md`
+
+---
+
+## 19. SESSION 11 (2026-09-07): Deep Repository Audit & Forward Kernel Discovery
+
+### Key Discoveries
+1. **Forward TC64 kernel is the #1 device time consumer (~1,371 ms, 37.6% of GPU time)** and has received zero optimization attention across all prior 10 sessions. It shares the identical single-K-slice structure (kK=16) that bottlenecked backward dX before Session 10.
+2. **Forward TC64 SMEM & Occupancy Bottleneck**: `gemm_forward_tc.cu` allocates a 16 KB float accumulator spill buffer (`spill[4][4][256]`), blowing static SMEM to 20,480 B (20 KB) and capping occupancy at 3 blocks/SM (37.5%).
+3. **Compilation Flags Disparity**: TC64 forward and SubQSA use `-O3 --use_fast_math`, while TC32 forward, TC64 backward dX, and TC32 update use only `-O2`.
+4. **Harness Bug Documented**: `tests/bench_update_v2.py` line 72 passes token IDs into `Mini.fc1` without embedding, crashing with shape mismatch.
+5. **Phase 8 SubQSA Stride**: In `subqsa_combine_kernel.cu`, line 190 accesses `o_proj_q` with stride `D=4096` between adjacent lanes, destroying coalescing.
+
+### Hardware-Verified Resource Counts (nvcc sm_75 ptxas, CUDA 13.3)
+- `gemm_forward_tc.cu` (64x64): 88 regs, 20 KB smem, 0 spills, 3 blocks/SM (37.5% occ)
+- `gemm_backward_dx_tc.cu` (64x64, K32): 96 regs, 12 KB smem, 0 spills, 5 blocks/SM (62.5% occ)
+- `gemm_update_tc_v2_32.cu` (32x32): 53 regs, 8 KB smem, 0 spills, 8 blocks/SM (100% occ)
+- `subqsa_combine_kernel.cu`: 62 regs, 0 spills, up to 48 KB dyn smem, 1 block/SM
+
+Full report: `docs/speedpass/2026-09-07-deep-audit.md` and repo root `AUDIT.md`.
