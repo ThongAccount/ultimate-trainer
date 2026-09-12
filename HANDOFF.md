@@ -753,6 +753,8 @@ head 653→401 (−38.5%). Step profile: forward 1371→806 ms.
 
 (Standalone commit-pinned pair showed +4% due to Modal instance drift on the
 unchanged backward — the same-instance test is the authoritative one.)
+Second independent same-instance run: −14.17% (3 clean trials each). F1 is the
+production baseline going forward.
 
 ### C2. FWD K32 on row-major W — REVERT (K16 still wins)
 
