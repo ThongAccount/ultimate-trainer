@@ -659,3 +659,119 @@ Full log: `docs/speedpass/2026-08-29-head-dx-64-dispatch.md`
 - `subqsa_combine_kernel.cu`: 62 regs, 0 spills, up to 48 KB dyn smem, 1 block/SM
 
 Full report: `docs/speedpass/2026-09-07-deep-audit.md` and repo root `AUDIT.md`.
+
+---
+
+## 20. SESSION 12 (2026-09-07): Roadmap Executed — 6 Experiments, 0 Wins
+
+Executed the session-11 audit roadmap (E1–E6) with paired Modal T4 A/Bs,
+gates, per-change ptxas. **None survived measurement. Production unchanged
+(7d07369 + dX K32).** net e2e 0.0%.
+
+| Exp | Hypothesis | Result | Decision |
+|---|---|---|---|
+| E1 fwd K-slice 16→32 | K-widen wins like dX | +31% (occ 3→2) | REVERT |
+| E2 half-bit decode LUT | W decode dominates | fp16-W probe 1.06x | FALSIFIED |
+| E3 flag harmonize -O3 | compiler slack | ~0% (noise) | REVERT |
+| E4 fwd spill 16→4KB | occ 3→7 frees blocks | +2% slower | REVERT |
+| E5 SubQSA P8 coalesce | stride-D destroys BW | not on bench path | SKIP |
+| E6 dX K32→K64 | 4 MMAs/sync | +20% (occ 5→3) | REVERT |
+
+Key evidence diamonds:
+- fwd occ 3→2 AND 3→7 both slow ⇒ forward NOT occupancy-bound.
+- decode ≠ cost (1.06x), flags ≠ cost (~0), sync-widen only wins with smem
+  headroom (dX K32 = 12KB ✓; fwd 20KB ✗; dX K64 20KB ✗).
+- All three kernels ≈2.5–3 GFLOP/ms — latency-bound in the 16-deep WMMA
+  smem access pattern; local optima reached.
+
+Full: `docs/speedpass/2026-09-07-session12-roadmap-execution.md`,
+`docs/speedpass/2026-09-07-forward-local-optimum.md`.
+
+## 21. SESSION 12b: Combined fwd K32 + reduced spill — FALSIFIED (+32%)
+
+The "missed combined test" from session 12 was run: K32 loop + 4KB spill as
+ONE change. Resource target HIT exactly (12KB smem / 96 regs / **5 blocks/SM,
+20 warps** — identical to the winning dX K32), yet head **+31.8% slower**
+(846 vs 642 ms), fc1/fc2 +30%. Hypothesis falsified: occupancy (3→5 blocks)
+is NOT sufficient to make forward's K-widening win.
+
+Mechanism found: forward's W smem store is **transposed** (`W_smem[c][r]`,
+c = k index = innermost). Widening K doubles the smem store scatter stride
+(16→32), and that store-transpose cost swamps the sync savings — independent
+of occupancy. dX K32 wins because its W tile stays row-major (no transpose).
+
+Implication: fwd K32 would need `W_smem[r][c]` row-major + adjusted b_frag
+ldm (a LAYOUT change), not a resource change. Not pursued this session.
+
+Full: `docs/speedpass/2026-09-07-session12b-combined-fwd-k32-spill.md`.
+Production unchanged (kernel reverted; only docs committed `e7c4521`).
+
+---
+
+## 22. SESSION 13 (2026-09-07): Experiment-discovery backlog
+
+Pure discovery (no kernel changes, no launches). Mapped all prior evidence:
+6 audit-roadmap experiments + session-12b combined test all failed
+measurement. Consolidated into `docs/speedpass/2026-09-07-experiment-backlog.md`:
+
+- Current bottleneck model: all 3 production WMMA kernels at ~2.5–3 GFLOP/ms;
+  latency-bound at the 16-deep smem tile chain.
+- Dead ends (12 items) — each with the evidence against re-testing.
+- Tier A (3), B (4), C (3), D (3) untested experiments with explicit
+  hypotheses, falsifiers, and failure modes.
+- Top remaining hypothesis: fwd TC64 K32 works if W_smem is stored row-major
+  (the transposed store is the Session-12b failure mode, not occupancy).
+
+---
+
+## 23. SESSION C1–C3 (2026-09-12): Second campaign — forward layout SHIPPED (−14% e2e)
+
+Branch chore/speedpass, HEAD 1053807 baseline. **F1: forward TC64 W_smem
+row-major — SHIPPED (d9ba61f).**
+
+### C1. FWD W_smem row-major — KEEP (isolated −38%, e2e −14%)
+
+Root mechanism: forward stored decoded W **transposed** `W_smem[k][n]`,
+k innermost → every 32-lane store hit ONE smem bank (32-way conflict —
+derived lane→bank, worst pattern in the codebase). dX stores row-major and is
+conflict-free.
+
+Fix (`gemm_forward_tc.cu`):
+- `W_smem[kSuperN][kWMMA_K]` row-major `[n][k]`
+- store `W_smem[r][c]` (r=n outer, c=k inner, consecutive lanes → consecutive smem)
+- `b_frag` → `wmma::col_major`, load `&W_smem[n_base][0]`, `ldm=16`
+
+Resources unchanged (88 regs / 20 KB / 0 spills). Parity bit-identical.
+
+Isolated (Modal T4, same-instance interleaved): fc1 52.7→32.2, fc2 53.2→32.7,
+head 653→401 (−38.5%). Step profile: forward 1371→806 ms.
+
+**Same-instance interleaved e2e (3 trials, no instance drift):**
+- OLD: 3594.6 / 3597.9 / 3595.7 ms → **3596.1 avg**
+- F1:  3090.6 / 3091.8 / 3093.2 ms → **3091.9 avg**
+- **Δ = −14.02% e2e, zero overlap, σ < 2 ms**
+
+(Standalone commit-pinned pair showed +4% due to Modal instance drift on the
+unchanged backward — the same-instance test is the authoritative one.)
+
+### C2. FWD K32 on row-major W — REVERT (K16 still wins)
+
+F2 = F1 + K32 tile (2 MMAs/sync, 24 KB, 2 blk/SM): fc1 −21.7%, head −20.5% vs
+OLD, but **K16 (F1) still −38%** — occupancy cliff at 24 KB. Confirms K16
+row-major layout is the lever; K-widening still loses on sm_75.
+
+### C3. UPDATE kSub=2 — REVERT (correct version +43%)
+
+kSub=2 batch sub-tiling (backlog A3): 74 regs / 12 KB / 5 blk; correctly
+implemented (parity WOK/COK) it is +44% slower (head 557→800 ms) — smem/reg
+doubling kills the 8 blk/SM occupancy. **Parity warning**: first buggy variant
+(uninitialized smem) showed −23% but WDIFF — caught by the gate before any
+shipping. Update's per-16-batch sync path is a local optimum.
+
+Full: `docs/speedpass/2026-09-12-campaign-c1-c3.md`.
+
+### Next (per new attribution)
+Forward 806 ms (26%), dX ~965, update ~1112 (70.6% backward). dX + update are
+the new hot targets. update kSub falsified; dX K32 is shipped already.
+Candidates: dX batch-tile widening (128/batch), launch-config, register sweep,
+CUDA-graph step, tiny-kernel elimination.
