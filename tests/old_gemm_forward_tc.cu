@@ -11,10 +11,9 @@
  * Each CTA computes a 64×64 output tile Y[b:b+64, n:n+64].
  * Each warp computes 4 WMMA fragments (2×2 grid) = 32×32 output.
  *
- * SMEM (20 KB total):
- *   W_smem[64][16]  — 2 KB — W decoded for current K-slice, row-major [n][k]
+ * SMEM (4 KB total):
+ *   W_smem[64][16]  — 2 KB — packed W decoded for current K-slice
  *   X_smem[64][16]  — 2 KB — X tile for current K-slice
- *   spill[4][4][256] — 16 KB — float accumulators before half global store
  *
  * Targets sm_75+. Works on any SM with WMMA support.
  */
@@ -56,24 +55,15 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
     int warp_n_off = (warp_id % 2) * 32;  // 0 or 32
 
     // Shared memory
-    // W_smem is [n][k] row-major (64×16): W[n0:64, k0:k0+16] stored untransposed.
-    // b_frag loads from it as col_major (leading dim kWMMA_K=16) — the same
-    // trick dX uses. Consecutive lanes write consecutive k (stride 1), killing
-    // the 32-way store bank conflict of the old transposed W_smem[c][r].
-    __shared__ half W_smem[kSuperN][kWMMA_K];  // [64][16]
+    __shared__ half W_smem[kWMMA_K][kSuperN];  // [16][64] — k-major (transposed) for WMMA matrix_b
     __shared__ half X_smem[kSuperM][kWMMA_K];  // [64][16]
 
     // WMMA fragments for 4 sub-tiles per warp
     // Each warp does 4 fragments: (b_off, n_off) offsets within warp's 32×32
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K,
                    half, wmma::row_major> a_frag;
-
-    // b_frag is the W operand. In the row-major W_smem[n][k], a matrix_b
-    // fragment reads [n][k] with the k dimension contiguous in memory — that
-    // is WMMAs "col_major" (leading dim = kWMMA_K = 16). dX uses the identical
-    // trick and is conflict-free on the same store direction.
     wmma::fragment<wmma::matrix_b, kWMMA_M, kWMMA_N, kWMMA_K,
-                   half, wmma::col_major> b_frag;
+                   half, wmma::row_major> b_frag;
     wmma::fragment<wmma::accumulator, kWMMA_M, kWMMA_N, kWMMA_K,
                    float> c_frag[kFragsPerWarp];
 
@@ -99,9 +89,9 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
                     int pos = gk % kWeightsPerWord;
                     uint32_t word = W[gn * stride_words + wi];
                     int8_t t = decode_ternary(word >> (2 * pos));
-                    W_smem[r][c] = __int2half_rn(t);  // row-major: W_smem[n][k]
+                    W_smem[c][r] = __int2half_rn(t);  // transposed: W_smem[k][n]
                 } else {
-                    W_smem[r][c] = __float2half(0.0f);
+                    W_smem[c][r] = __float2half(0.0f);
                 }
             }
         }
@@ -137,10 +127,10 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
                 &X_smem[b_base][0], kWMMA_K);
 
             // Load W tile: rows n_base..n_base+15 × columns 0..kWMMA_K-1
-            // W_smem is row-major [n][k]; matrix_b col_major reads [n][k]
-            // with row stride = ldm = kWMMA_K (16). Same trick as dX kernel.
+            // W_smem is k-major [k][n]; matrix_b fragment expects b[k][n] with
+            // leading dim kSuperN (64).
             wmma::load_matrix_sync(b_frag,
-                &W_smem[n_base][0], kWMMA_K);
+                &W_smem[0][n_base], kSuperN);
 
             wmma::mma_sync(c_frag[fi], a_frag, b_frag, c_frag[fi]);
         }
