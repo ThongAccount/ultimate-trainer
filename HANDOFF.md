@@ -777,3 +777,35 @@ Forward 806 ms (26%), dX ~965, update ~1112 (70.6% backward). dX + update are
 the new hot targets. update kSub falsified; dX K32 is shipped already.
 Candidates: dX batch-tile widening (128/batch), launch-config, register sweep,
 CUDA-graph step, tiny-kernel elimination.
+
+---
+
+## 24. SESSION C8 (2026-09-12): 10-agent sweep + CLOSEOUT — GPU work stopped
+
+10 Nemotron Ultra subagents audited every repo slice (fwd/dX/update kernels,
+decode, host dispatch, train loop, SubQSA, measurement infra, occupancy, SASS).
+2 built-but-unmeasured candidates; everything else rejected w/ evidence.
+**Modal T4 billing blocked** — GPU-required work suspended indefinitely.
+
+### Kept candidates (built, unrun: `tests/probe_dx_regsweep.py`, `tests/e2e_host_ab.py`)
+1. dX maxrregcount sweep (96->88/80/72; reg-bound, 5->6 blk/SM question)
+2. host sync+clone removal (train_gigatoken.py:198 sync; packed_linear.py:130 clone)
+
+### Verified non-fixable / rejected on verification
+- store_matrix_sync(fp32 acc -> half dest) illegal on sm_75 (mma.h compile error)
+- update kK=32 = kSub=2 repackaged (agent smem math wrong: truth 8KB/8blk)
+- update atomicOr batch can't clear 2-bit fields; smem +1 padding reverted 02b17a1
+- dX 2nd-N-subtile (3blk cliff); dX epilogue (occ 5->2); fwd spill (=E4 +2%)
+- decode sign-plane (2x W traffic); autograd-manual + CUDA-graph (host ~0.05%)
+- scalar->v4/decode4 (C5 neutral + 1.06x ceiling)
+
+### Measurement correction (permanent)
+All prior ternary GFLOP/ms claims **2x inflated** (1 FLOP/weight not 2*M*N*K).
+
+### Final shipped state
+F1 forward row-major (d9ba61f): -38.5% isolated, -14.0% e2e twice, 88 regs/20KB
+unchanged, bit-exact, 67 pytest PASS, pushed origin/chore/speedpass @ 784d402.
+
+### Resume (GPU needed)
+Modal billing / any T4 -> run the two probes -> triage -> if both fail, sm_75
+kernel tuning is exhausted; pivot correctness/convergence or sm_80+.
