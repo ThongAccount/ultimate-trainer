@@ -6,12 +6,12 @@
  *
  * Each CTA computes dX[b:b+64, k:k+64] = SUM_n dY[b:b+64, n] * W[n, k:k+64]
  *
- * Outer loop over N (out_features) in steps of 32 (two WMMA K-slices/sync).
- * SMEM (12 KB):
- *   dY_smem[64][32]  — 4 KB
- *   W_smem[32][64]   — 4 KB
- *   spill[4][16][16] — 4 KB (float, warp-private)
- * Total: ~12 KB (fits T4 48 KB)
+ * Outer loop over N (out_features) in steps of 16.
+ * SMEM (6 KB):
+ *   dY_smem[64][16]  — 2 KB
+ *   W_smem[64][16]   — 2 KB
+ *   spill[4][16][16] — 4 KB (float, reused)
+ * Total: ~10 KB (fits T4 48 KB)
  */
 
 #include <cuda_runtime.h>
@@ -40,7 +40,6 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
     int super_k0 = blockIdx.y * kSuperN;
 
     int warp_id = threadIdx.x / 32;
-    int wtid    = threadIdx.x % 32;
     int warp_b_off = (warp_id / 2) * 32;
     int warp_k_off = (warp_id % 2) * 32;
 
@@ -50,10 +49,7 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
     constexpr int kK2 = 2 * kWMMA_K;  // 32
     __shared__ half dY_smem[kSuperM][kK2];  // [64][32]
     __shared__ half W_smem[kK2][kSuperN];   // [32][64] — reduction × output
-    // One 16×16 warp-private accumulator slot (4 KB). Declared here so the
-    // whole-CTA loop below stays inside the kernel scope; only the owning warp
-    // ever touches its slot, so the epilogue needs no __syncthreads().
-    __shared__ float spill[kWarps][kWMMA_M * kWMMA_N];  // [4][256]
+    __shared__ float spill[kWarps][kWMMA_M][kWMMA_N];  // [4][16][16] per-warp spill
 
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K,
                    half, wmma::row_major> a_frag;  // dY
@@ -127,36 +123,31 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
     }
 
     // Store results to global dX
-    //
-    // WARP-PRIVATE spill (one 16×16 slot per warp, see declaration above). The
-    // old code reused that slot across the 4 fragments with the whole CTA
-    // copying from all warps under __syncthreads — an 8-barrier epilogue plus a
-    // race window between store_matrix_sync and the cooperative copy (the fwd
-    // kernel hit nondeterministic NaN from exactly that pattern). Now only the
-    // owning warp touches its slot, so no barrier is needed: store_matrix_sync
-    // and the global stores are warp-synchronous by construction.
     #pragma unroll
     for (int fi = 0; fi < kFragsPerWarp; ++fi) {
-        wmma::store_matrix_sync(&spill[warp_id][0], c_frag[fi],
+        int frag_b_off = (fi / 2) * kWMMA_M;
+        int frag_k_off = (fi % 2) * kWMMA_N;
+
+        wmma::store_matrix_sync(&spill[warp_id][0][0], c_frag[fi],
                                 kWMMA_N, wmma::mem_row_major);
+        __syncthreads();
 
-        const int frag_b_off = (fi / 2) * kWMMA_M;
-        const int frag_k_off = (fi % 2) * kWMMA_N;
-
-        // This warp copies its own 16×16 tile (32 lanes, 8 elements each).
-        #pragma unroll
-        for (int e = wtid; e < kWMMA_M * kWMMA_N; e += 32) {
-            int r = e / kWMMA_N;
-            int c = e % kWMMA_N;
-            int gb = super_b0 + warp_b_off + frag_b_off + r;
-            int gk = super_k0 + warp_k_off + frag_k_off + c;
+        // All 128 threads cooperate to write all 4 warps' 16×16 tiles
+        int n_elems = kWarps * kWMMA_M * kWMMA_N;  // 1024
+        for (int tid = threadIdx.x; tid < n_elems; tid += 128) {
+            int w = tid / (kWMMA_M * kWMMA_N);
+            int rem = tid % (kWMMA_M * kWMMA_N);
+            int r = rem / kWMMA_N;
+            int c = rem % kWMMA_N;
+            int w_b_off = (w / 2) * 32;
+            int w_k_off = (w % 2) * 32;
+            int gb = super_b0 + w_b_off + frag_b_off + r;
+            int gk = super_k0 + w_k_off + frag_k_off + c;
             if (gb < B && gk < K) {
-                dX[gb * K + gk] = __float2half_rn(spill[warp_id][r * kWMMA_N + c]);
+                dX[gb * K + gk] = __float2half_rn(spill[w][r][c]);
             }
         }
-        // store_matrix_sync + shared loads/stores are warp-synchronous; the next
-        // iteration reuses the slot only after this warp's reads retire.
-        __syncwarp();
+        __syncthreads();
     }
 }
 

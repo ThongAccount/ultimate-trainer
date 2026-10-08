@@ -32,10 +32,21 @@ __global__ __launch_bounds__(256) void packed_ternary_forward_packed_kernel(
     int b = blockIdx.x * blockDim.x + threadIdx.x;
     int n = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (b < batch_size && n < out_features) {
-        // ── Kernel body ─────────────────────────────────────────────
+    // The body contains __syncthreads(), so the guard MUST be uniform across
+    // the block. Use whole-block bounds (derived from blockIdx only) rather than
+    // per-thread b/n, or tail blocks hit a divergent barrier (undefined, hangs).
+    const bool block_active =
+        (blockIdx.x * blockDim.x < batch_size) &&
+        (blockIdx.y * blockDim.y < out_features);
 
-        // Double-buffered SMEM: load next tile while computing current
+    if (block_active) {
+        // Threads with b >= batch_size or n >= out_features still run the loads
+        // and every barrier; they simply read zeros and skip the final store.
+
+        // Double-buffered SMEM: load next tile while computing current.
+        // NOTE: b_local is threadIdx.x, i.e. the *block-local* row. X_tile is
+        // indexed [local row][k] and the loader fills lb = i / tile_k from
+        // blockIdx.x * blockDim.x, so local row == threadIdx.x is correct.
         __shared__ half X_tile[2][32][16];
 
         float acc = 0.0f;
@@ -97,8 +108,13 @@ __global__ __launch_bounds__(256) void packed_ternary_forward_packed_kernel(
             compute_buf ^= 1;
         }
 
-        // Store result
-        Y[b * in_features + out_features * n + 0] = __float2half(acc);
+        // Store result. Y is [batch, out_features] row-major, so the row stride
+        // is out_features. The old expression mixed in_features and multiplied
+        // by out_features, writing far past the element (and past the buffer for
+        // all but the first tile).
+        if (b < batch_size && n < out_features) {
+            Y[(long)b * out_features + n] = __float2half(acc);
+        }
     }
 }
 

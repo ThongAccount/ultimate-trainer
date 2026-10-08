@@ -259,11 +259,16 @@ void launch_subqsa_combine_forward(
 
     // Guard against exceeding the 48 KB default dynamic-shared limit on
     // sm_70+ (can be raised, but only explicitly via cudaFuncSetAttribute).
+    // This used to `return` silently, which left `y` uninitialised and gave the
+    // caller no host-visible error — a wrong-result bug disguised as a fallback.
+    // Fail loudly instead: an under-specified shape must never produce numbers.
     if (shared_mem > 48 * 1024) {
         fprintf(stderr, "[subqsa_combine] shared memory %zu B exceeds 48 KB limit "
-                        "(D=%d, H=%d). Recompile with cudaFuncSetAttribute or "
-                        "use the eager fallback.\n", shared_mem, D, H);
-        return;
+                        "(D=%d, H=%d). Raise the limit with cudaFuncSetAttribute or "
+                        "use the eager fallback; the fused path was NOT run and y "
+                        "is untouched.\n", shared_mem, D, H);
+        fflush(stderr);
+        exit(EXIT_FAILURE);
     }
 
     dim3 grid(B, T);

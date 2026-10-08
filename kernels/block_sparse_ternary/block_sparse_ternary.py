@@ -31,6 +31,18 @@ try:
         const uint64_t* block_mask, float gamma,
         int M, int N, int K, int BM, int BN, int BK, int num_k_tiles) {
 
+        // Hard precondition: the kernel's shared tiles and per-thread index
+        // mapping are compiled for exactly TILE×TILE. Passing a larger BM/BN
+        // strides the grid by BM/BN while each block only covers TILE rows and
+        // columns, so 3/4 of every tile is never written (silent garbage) and
+        // the block_mask index (pid_n / BN) reads the wrong tile. Refuse
+        // instead of corrupting memory.
+        TORCH_CHECK(BM == TILE && BN == TILE && BK == TILE,
+                    "block_sparse_ternary: kernel is hardcoded for BM=BN=BK=",
+                    TILE, "; got BM=", BM, " BN=", BN, " BK=", BK,
+                    ". The fused sparse path is disabled in production for this "
+                    "reason — extend the kernel or use the eager fallback.");
+
         dim3 grid((M + BM - 1) / BM, (N + BN - 1) / BN);
         dim3 block(TILE, TILE);
         block_sparse_ternary_kernel<<<grid, block>>>(
@@ -129,7 +141,7 @@ def _block_sparse_ternary_eager(x, weight, gamma, block_mask, BM=16, BN=16):
         for tk in range(num_k_tiles):
             bit = tn * num_k_tiles + tk
             if not (block_mask[bit // 64] & (1 << (bit % 64))):
-                y[:, tn*BN:(tn+1)*BN] = 0
+                y[:, tn * BN : (tn + 1) * BN] = 0
     return y.to(x.dtype)
 
 
@@ -150,7 +162,9 @@ class BlockSparseTernaryFn(torch.autograd.Function):
                 weight.contiguous().float(),
                 block_mask.contiguous().long(),
                 float(gamma),
-                BM, BN, BK,
+                BM,
+                BN,
+                BK,
             )
             return y.to(x.dtype)
 
@@ -164,7 +178,9 @@ class BlockSparseTernaryFn(torch.autograd.Function):
         with torch.no_grad():
             w_q = torch.clamp(torch.round(weight / gamma), -1, 1)
         dx = grad_output @ w_q.to(grad_output.dtype)
-        dw = grad_output.reshape(-1, grad_output.shape[-1]).t() @ x.reshape(-1, x.shape[-1])
+        dw = grad_output.reshape(-1, grad_output.shape[-1]).t() @ x.reshape(
+            -1, x.shape[-1]
+        )
         return dx, dw, None, None, None, None, None
 
 
