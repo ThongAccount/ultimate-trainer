@@ -76,8 +76,8 @@ def main() -> int:
     ap.add_argument(
         "--probe",
         default="regsweep",
-        choices=("regsweep", "hostab"),
-        help="regsweep: dX maxrregcount sweep; hostab: sync+clone e2e A/B",
+        choices=("regsweep", "hostab", "wdedup"),
+        help="regsweep: dX maxrregcount sweep; hostab: sync+clone e2e A/B; wdedup: fwd W-load dedup",
     )
     ap.add_argument("--branch", default=DEFAULT_BRANCH)
     ap.add_argument("--repo-dir", default=DEFAULT_CLONE)
@@ -114,8 +114,10 @@ def main() -> int:
     buf = io.StringIO()
     if args.probe == "regsweep":
         import probe_dx_regsweep as probe
-    else:
+    elif args.probe == "hostab":
         import e2e_host_ab as probe
+    else:
+        import probe_fwd_wdedup as probe
     with contextlib.redirect_stdout(buf):
         probe.main()
     wall = round(time.time() - t0, 1)

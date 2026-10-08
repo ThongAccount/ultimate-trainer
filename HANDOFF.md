@@ -809,3 +809,40 @@ unchanged, bit-exact, 67 pytest PASS, pushed origin/chore/speedpass @ 784d402.
 ### Resume (GPU needed)
 Modal billing / any T4 -> run the two probes -> triage -> if both fail, sm_75
 kernel tuning is exhausted; pivot correctness/convergence or sm_80+.
+
+---
+
+## 25. SESSION C9 (2026): Colab T4 backend + both probes measured — FALSIFIED
+
+Modal stayed billing-blocked. New backend: Colab CLI `0.7.4`, free-tier T4
+(`torch 2.11 cu130`) via one-shot `colab run --gpu T4` runners. Pattern cloned
+from bdh (`colab_bdh_diag.py` / `colab_scale.py` / `colab_gptref.py`): runner
+clones `ThongAccount/ultimate-trainer.git` via `GITHUB_TOKEN`, runs probe
+in-process, prints `RESULTS JSON:`. Commit `3673b51` + probes pushed so the
+clone contains them (untracked files are invisible to the VM — first regsweep
+run failed import on this).
+
+Runner: `colab_speedpass.py` (`--probe regsweep|hostab`).
+
+### C9a. dX maxrregcount sweep — REVERT (all slower, parity exact)
+`tests/probe_dx_regsweep.py`, 4 compile variants, T4 same-instance interleaved.
+Parity EXACT on all three restricted variants. Timings:
+- fc1: default 41.03, r88 42.04 (+2.5%), r80 42.02 (+2.4%), r72 41.81 (+1.9%)
+- head: default 520.46, r88 532.94 (+2.4%), r80 533.20 (+2.4%), r72 534.48 (+2.7%)
+Spilling costs more than the extra block would buy. Register space closed.
+
+### C9b. Host sync+clone removal — REVERT (noise)
+`tests/e2e_host_ab.py`, same kernels both arms, 3 interleaved trials:
+- BASE min 3573.0 ms, FIXED min 3577.0 ms, delta **+0.11%**
+- FIXED loss finite: True (clone removal is correctness-safe, just not faster)
+Host dispatch is not the bottleneck (matches §16: ~95% GPU in bwd). Closed.
+
+### Next (untested, from 3-agent kernel audit)
+Per §24 resume rule both C8-kept candidates failed, but the fresh audit found
+NEW untested mechanisms (not re-proposals of falsified paths):
+1. **W 16x redundant global loads** (fwd `gemm_forward_tc.cu:92-102`, dX
+   `:86-103`) — 1 word/row + reg decode. Biggest remainder, traffic not ALU.
+2. **half2 vectorized stores** (dX `:70-83`, fwd `:89-123`) — port shipped
+   update pattern (`gemm_update_tc_v2_32.cu:84-88`).
+3. Head tail `VOCAB 50272->50304` (=64*786), counter 4-wide port, fused-gate
+   relaxation (all small, GPU-gated).
