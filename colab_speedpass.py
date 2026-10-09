@@ -76,9 +76,10 @@ def main() -> int:
     ap.add_argument(
         "--probe",
         default="regsweep",
-        choices=("regsweep", "hostab", "wdedup", "dxepilogue"),
+        choices=("regsweep", "hostab", "wdedup", "dxepilogue", "pytest"),
         help="regsweep: dX maxrregcount sweep; hostab: sync+clone e2e A/B; "
-        "wdedup: fwd W-load dedup; dxepilogue: dX warp-private epilogue parity",
+        "wdedup: fwd W-load dedup; dxepilogue: dX warp-private epilogue parity; "
+        "pytest: full GPU correctness suite",
     )
     ap.add_argument("--branch", default=DEFAULT_BRANCH)
     ap.add_argument("--repo-dir", default=DEFAULT_CLONE)
@@ -112,30 +113,61 @@ def main() -> int:
     sys.path.insert(0, os.path.join(repo, "tests"))
 
     t0 = time.time()
-    buf = io.StringIO()
-    if args.probe == "regsweep":
-        import probe_dx_regsweep as probe
-    elif args.probe == "hostab":
-        import e2e_host_ab as probe
-    elif args.probe == "wdedup":
-        import probe_fwd_wdedup as probe
-    else:
-        import probe_dx_epilogue as probe
-    with contextlib.redirect_stdout(buf):
-        probe.main()
-    wall = round(time.time() - t0, 1)
-    log = buf.getvalue()
-    print(log, flush=True)
-
     res = {
         "probe": args.probe,
         "commit": commit,
         "branch": args.branch,
         "gpu": torch.cuda.get_device_name(0),
         "pytorch": torch.__version__,
-        "wall_s": wall,
-        "log": log.splitlines(),
     }
+
+    if args.probe == "pytest":
+        # Correctness gate for the kernel-fix commit. Subprocess pytest so the
+        # suite's own capture/exit codes behave exactly as they do locally.
+        import subprocess
+
+        r = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/test_packed_linear.py",
+                "tests/test_gemm_update.py",
+                "tests/test_kernels.py",
+                "tests/test_packed_ternary.py",
+                "tests/test_speedpass_kernels.py",
+                "tests/test_gemm_forward.py",
+                "-q",
+                "--no-header",
+                "--tb=short",
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=2400,
+        )
+        out = (r.stdout or "") + (r.stderr or "")
+        print(out, flush=True)
+        res["exit_code"] = r.returncode
+        res["passed"] = r.returncode == 0
+        res["log"] = out.splitlines()[-40:]
+    else:
+        buf = io.StringIO()
+        if args.probe == "regsweep":
+            import probe_dx_regsweep as probe
+        elif args.probe == "hostab":
+            import e2e_host_ab as probe
+        elif args.probe == "wdedup":
+            import probe_fwd_wdedup as probe
+        else:
+            import probe_dx_epilogue as probe
+        with contextlib.redirect_stdout(buf):
+            probe.main()
+        log = buf.getvalue()
+        print(log, flush=True)
+        res["log"] = log.splitlines()
+
+    res["wall_s"] = round(time.time() - t0, 1)
     print("\nRESULTS JSON:", json.dumps(res, indent=2), flush=True)
     return 0
 
