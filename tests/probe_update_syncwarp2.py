@@ -96,7 +96,14 @@ def main():
         dY = torch.randn(BATCH, out, device=dev, dtype=torch.float16) * 0.1
         W0 = torch.randint(0, 4, (out, (inn + 15) // 16), device=dev, dtype=torch.int32)
         W0 = torch.where(W0 == 3, 0, W0)
-        C0 = torch.zeros(out * inn, device=dev, dtype=torch.int16)
+        # Seed counters AT/PAST the threshold so a single pass triggers real
+        # weight flips. With zero-initialised counters the gradient moves them
+        # by +/-1 and never reaches threshold, so W is never mutated and the
+        # parity gate is vacuous (measured: flips=0). The kernel's entire job is
+        # the flip, so the gate must exercise it.
+        C0 = torch.randint(
+            -(THRESHOLD + 1), THRESHOLD + 2, (out * inn,), device=dev, dtype=torch.int16
+        )
 
         # parity: both kernels mutate W and counter in place, so run each on a
         # private copy and compare bit-for-bit.
@@ -108,13 +115,21 @@ def main():
         w_same = torch.equal(Wo, Wn)
         c_same = torch.equal(Co, Cn)
         n_flip = int((Wo != W0).sum().item())
+        n_ctr = int((Co != C0).sum().item())
         print(
             f"  parity {name}: W {'EXACT' if w_same else 'DIFF'} "
-            f"counter {'EXACT' if c_same else 'DIFF'} flips={n_flip}",
+            f"counter {'EXACT' if c_same else 'DIFF'} "
+            f"flips={n_flip} counters_changed={n_ctr}",
             flush=True,
         )
         if not (w_same and c_same):
             raise SystemExit(f"PARITY FAIL on {name} — refusing to report timings")
+        if n_flip == 0:
+            raise SystemExit(
+                f"GATE VACUOUS on {name}: no weight flips occurred, so W parity "
+                f"proves nothing about the path this kernel exists for. "
+                f"threshold={THRESHOLD}"
+            )
 
         # timings on fresh state each iteration (update is destructive)
         def timed(fn, iters=5, warmup=2):
