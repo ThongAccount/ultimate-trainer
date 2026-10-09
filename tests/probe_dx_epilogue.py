@@ -65,6 +65,12 @@ def build(cu_path, name):
 
 
 def unpack_ref(W, K):
+    """Unpack W[N, stride_words] into a [N, K] FP16 ternary matrix.
+
+    The kernel computes dX = dY @ W^T, so the reference must be (dY [B, N])
+    times (W [N, K]) transposed -> Wf.t() is [N, K].t() = [K, N]. Correct
+    shape for `dY.float() @ Wf.float().t()`.
+    """
     N, stride = W.shape
     words = W.long().unsqueeze(-1)
     shifts = torch.arange(16, device=W.device).view(1, 1, 16) * 2
@@ -100,7 +106,9 @@ def main():
         W = torch.randint(0, 4, (out, (inn + 15) // 16), device=dev, dtype=torch.int32)
         W = torch.where(W == 3, 0, W)
         Wf = unpack_ref(W, inn)
-        ref = (dY.float() @ Wf.float().t()).half()
+        # kernel: dX[b, k] = SUM_n dY[b, n] * W[n, k]  =>  dX = dY @ Wf
+        # (dY is [B, out], Wf is [out, in] -> result [B, in]).
+        ref = (dY.float() @ Wf.float()).half()
 
         yo = old.dx(W, dY, inn)
         yn = new.dx(W, dY, inn)
