@@ -846,3 +846,74 @@ NEW untested mechanisms (not re-proposals of falsified paths):
    update pattern (`gemm_update_tc_v2_32.cu:84-88`).
 3. Head tail `VOCAB 50272->50304` (=64*786), counter 4-wide port, fused-gate
    relaxation (all small, GPU-gated).
+
+---
+
+## 26. SESSION C12 verdict + C13 (2026-10-10): 20-agent crack sweep — priorities inverted
+
+C12 (update warp-scope barriers, commit `357c33b`): parity bit-exact (W+counter,
+2.66M real flips on head after seeding fix), timing −2.57/+3.28/−1.92% —
+entirely inside the 3-trial protocol's ±4–6% CI → **reclassified
+MEASUREMENT-NOISE (undecided)**. Moot regardless: 0.7% e2e ceiling < 1% ship
+bar. Do not re-measure.
+
+C13: completed the aborted 20-investigation mission (3 salvaged from the dead
+session ZIP, 17 respawned after an agent-model pin fix). All 20 delivered.
+Full report: `docs/speedpass/2026-10-10-20-agent-crack-sweep.md`.
+
+### The three headline results
+
+1. **Roofline closes the tuning debate**: fwd head = 2.0 TFLOPS (3% of TC peak),
+   dX 3.35 (5%), update = 1.8% of DRAM roofline / 12% TC peak. No bandwidth,
+   occupancy, or flop wall exists — all three kernels idle at barriers
+   (0 LDGSTS in every SASS dump; single-buffered lockstep). The fwd-dX 1.65×
+   gap: bytes are PROVABLY symmetric (26.3B halfs, 206M HMMA in both) — the gap
+   is 2× outer iterations × fixed per-iteration barrier drain, compounded by
+   occupancy (fwd 3 CTAs/SM vs dX 5, from fwd's 16KB spill epilogue).
+2. **The correctness gate has a dispatch trap**: gate tests at dims 16–63
+   dispatch to **v3** (magnitude-scaled — a different algorithm) while
+   production runs **v2**; `test_update_tc_flips_bits` uses N=4 → scalar
+   fallback (never touches TC); the only direct v2 test is excluded from the
+   Colab gate; CUDA-less runs silently PASS. The production update kernel has
+   ZERO direct semantic tests, and the probe gate is old-vs-new parity only
+   (any bug shared by both arms passes). Every future kernel change ships
+   ungated until this is fixed.
+3. **The benchmark protocol was underpowered**: 3-trial min-of-3 = ±4–6% CI.
+   A 1% win is undetectable; F1 (−14%) survives scrutiny, but several
+   "falsified" verdicts are actually "undecided, below bar".
+
+### GO queue (ordered)
+
+1. Test-suite fixes: reference-transition gate (~20 lines: seeded W/counter +
+   Python-computed expected flips, 4 cases), add both dimensional-bug tests to
+   `colab_pytest.py` TEST_MODULES, hard-fail fixture when CUDA present but a
+   prod kernel fails to load.
+2. Protocol upgrade: 10 paired trials, median, warmup 10, `torch.cuda._sleep`
+   settle, A/A null arm. CI → ±1.5%.
+3. fwd warp-private spill epilogue (dX pattern): smem 20→8 KB, occ 3→4-6/SM.
+   Mirror of shipped, validated dX refactor. ~3–5% e2e realistic.
+4. fwd n-outer rasterization swizzle: co-resident CTAs share the X tile
+   (X DRAM 25.7 GB→~32 MB). 3-line grid change, bit-identical.
+5. update cp.async/double-buffer probe: 1024 serial iters at ~2200 cycles
+   exposed latency each; pre-registered falsifier (occ tension 8→6 blk/SM —
+   the class that killed kSub=2; one probe then close either way).
+6. fwd instruction bundle: kLUT→branchless decode (kills STL+LDL.S8 local-mem
+   round trips in ALL kernels — the "8-byte stack frame" in ptxas output),
+   W-word 16× LDG dedup-in-regs (different mechanism from falsified C10,
+   which kept 64-thread load participation), half2 X/dY loads (L118/L82).
+   Must be measured under the upgraded protocol (predicted 1–3% e2e).
+
+### CLOSED permanently
+
+counter 4-wide CAS, split-K update, VOCAB 50304, compiler flag space
+(−O2/−O3/vectorization byte-identical SASS; fast_math = semantic risk, zero
+gain), persistent update kernel (occ already 100%), deferred flips
+(experimental branch only), all tile/occupancy/register re-proposals.
+
+### Latent bugs banked (fix opportunistically, none live at prod dims)
+
+int16 counter wrap at ±32768 (1-line clamp); odd-in_features tail unreachable
+→ last W column never trains; threshold≥32768 int16 truncation (all-negative
+counters flip); `pack_tensor` half-even vs `pack_row` half-away .5 mismatch;
+convergence has no damping/annealing at all (limit-cycle risk — needs the
+flip-rate trajectory test before any long training run).
