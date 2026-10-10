@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "gpu": "T4",
+  "_meta": {
+    "status": "provisional",
+    "note": "provisional, derived from HANDOFF §23/§25 isolated numbers, regenerate with --update-baseline on first Colab run",
+    "sources": {
+      "fwd_ms": "HANDOFF §23 C1 (Modal T4, same-instance interleaved, post-F1)",
+      "dx_ms": "HANDOFF §25 C9a (Colab T4, default variant); fc2 never isolated on T4 - borrowed fc1 (same FLOPs: 16384x1024x4096 vs 16384x4096x1024)",
+      "update_ms": "HANDOFF §23 C3 kSub=2 baseline column (45.40/47.16/557.8 = unmodified v2_32 update kernel)",
+      "step_ms": "HANDOFF §23 e2e same-instance avg (3091.9, post-F1)"
+    },
+    "protocol": "these are 3-trial min / ad-hoc protocol numbers (pre-C13-upgrade); the first --update-baseline run replaces them with 10-trial-median numbers, after which WARN/FAIL deltas are meaningful at the ±1.5% CI the upgraded protocol provides",
+    "update_kernel_note": "update arm uses the production dispatch chain (update_tc_v2 op -> v2_32 loader) at threshold=32, the train_gigatoken.py production config"
+  },
+  "config": {
+    "batch": 16384,
+    "threshold": 32,
+    "n_trials": 10,
+    "warmup": 10,
+    "shapes": {
+      "fc1": { "in": 1024, "out": 4096 },
+      "fc2": { "in": 4096, "out": 1024 },
+      "head": { "in": 1024, "out": 50272 }
+    }
+  },
+  "kernels": {
+    "fc1": { "fwd_ms": 32.2, "dx_ms": 41.03, "update_ms": 45.40 },
+    "fc2": { "fwd_ms": 32.7, "dx_ms": 41.03, "update_ms": 47.16 },
+    "head": { "fwd_ms": 401.4, "dx_ms": 520.46, "update_ms": 557.8 }
+  },
+  "step_ms": 3091.9
+}

@@ -2,83 +2,100 @@
 
 This test specifically checks if the dimensional bug in update_tc_v2 causes
 numerical errors by comparing against a ground-truth implementation.
+
+pytest-safe (C13 fix): the original script-style body ran at import time and
+called sys.exit(0/1) — pytest would terminate the whole run at collection.
+Body is now wrapped in test_update_dimensional_bug(); __main__ preserves the
+standalone `python3 tests/test_update_dimensional_bug.py` behavior.
 """
 import os
 import sys
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-sys.path.insert(0, os.getcwd())
 
-import torch
-torch.manual_seed(0)
+import pytest
 
-# Test dimensions: Must trigger the bug (N, K >= 64)
-B, N, K = 32, 128, 128
-threshold = 32
+os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
 
-print(f"Testing update_tc_v2 correctness: B={B}, N={N}, K={K}")
 
-# Create test inputs
-X = torch.randn(B, K, device="cuda", dtype=torch.float16)
-dY = torch.randn(B, N, device="cuda", dtype=torch.float16)
+def _has_cuda():
+    try:
+        import torch
 
-# Compute reference gradient: dW = dY^T @ X
-dW_ref = (dY.T.float() @ X.float()).half()  # [N, K]
+        return torch.cuda.is_available()
+    except Exception:
+        return False
 
-# Initialize packed weight and counter
-kWeightsPerWord = 16
-stride_words = (K + kWeightsPerWord - 1) // kWeightsPerWord
-W_packed = torch.zeros(N, stride_words, dtype=torch.int32, device="cuda")
-counter_ref = torch.zeros(N, K, dtype=torch.int16, device="cuda")
-counter_kernel = torch.zeros(N, K, dtype=torch.int16, device="cuda")
 
-# Reference update: counter -= sign(dW)
-for n in range(N):
-    for k in range(K):
-        g = dW_ref[n, k].item()
-        if g > 0:
-            counter_ref[n, k] = -1
-        elif g < 0:
-            counter_ref[n, k] = 1
+def test_update_dimensional_bug():
+    if not _has_cuda():
+        pytest.skip("no CUDA on this box")
+    import torch
 
-# Kernel update
-from kernels.packed_ternary.pack_update import _load_up_tc_v2_32
-_load_up_tc_v2_32()
+    torch.manual_seed(0)
+    sys.path.insert(0, os.getcwd())
 
-from kernels.packed_ternary import pack_update as pu
-if not pu._HAS_UP_TC_V2_32:
-    print("❌ TC32 update kernel not available")
-    sys.exit(1)
+    # Test dimensions: Must trigger the bug (N, K >= 64)
+    B, N, K = 32, 128, 128
+    threshold = 32
 
-W_packed_test = W_packed.clone()
-pu._up_tc_v2_32_fn(W_packed_test, counter_kernel, X, dY, threshold)
+    print(f"Testing update_tc_v2 correctness: B={B}, N={N}, K={K}")
 
-# Compare
-diff = (counter_kernel - counter_ref).abs()
-max_diff = diff.max().item()
-num_errors = (diff > 0).sum().item()
-error_rate = num_errors / (N * K) * 100
+    X = torch.randn(B, K, device="cuda", dtype=torch.float16)
+    dY = torch.randn(B, N, device="cuda", dtype=torch.float16)
 
-print(f"\n{'='*60}")
-print(f"UPDATE_TC_V2 CORRECTNESS TEST")
-print(f"{'='*60}")
-print(f"Dimensions: B={B}, N={N}, K={K}")
-print(f"Reference counter changes: {(counter_ref != 0).sum().item()} / {N*K}")
-print(f"Kernel counter changes:    {(counter_kernel != 0).sum().item()} / {N*K}")
-print(f"Max difference: {max_diff}")
-print(f"Error count: {num_errors} / {N*K} ({error_rate:.2f}%)")
-print(f"{'='*60}")
+    # Reference gradient: dW = dY^T @ X
+    dW_ref = (dY.T.float() @ X.float()).half()  # [N, K]
 
-if max_diff == 0:
-    print("✅ PASS — Kernel matches reference exactly")
-    sys.exit(0)
-else:
-    print(f"❌ FAIL — Kernel has {error_rate:.2f}% errors (dimensional bug confirmed)")
-    
-    # Show sample errors
-    errors = torch.nonzero(diff > 0)[:10]
-    print(f"\nSample errors (first 10):")
-    for i in range(min(10, len(errors))):
-        n, k = errors[i]
-        print(f"  [{n:3d}, {k:3d}]: ref={counter_ref[n,k]:3d}, kernel={counter_kernel[n,k]:3d}, dW_ref={dW_ref[n,k]:.3f}")
-    
-    sys.exit(1)
+    kWeightsPerWord = 16
+    stride_words = (K + kWeightsPerWord - 1) // kWeightsPerWord
+    W_packed = torch.zeros(N, stride_words, dtype=torch.int32, device="cuda")
+    counter_ref = torch.zeros(N, K, dtype=torch.int16, device="cuda")
+    counter_kernel = torch.zeros(N, K, dtype=torch.int16, device="cuda")
+
+    # Reference update: counter -= sign(dW)
+    signs = torch.sign(dW_ref.float()).to(torch.int16)
+    counter_ref = (counter_ref - signs).to(torch.int16)
+
+    # Kernel update (production v2_32, loaded directly — bypasses the
+    # small-dims v3 dispatch trap this suite previously suffered from)
+    from kernels.packed_ternary.pack_update import _load_up_tc_v2_32
+
+    _load_up_tc_v2_32()
+
+    from kernels.packed_ternary import pack_update as pu
+
+    if not pu._HAS_UP_TC_V2_32:
+        pytest.fail("CUDA present but TC32 v2 update kernel failed to load")
+
+    W_packed_test = W_packed.clone()
+    pu._up_tc_v2_32_fn(W_packed_test, counter_kernel, X, dY, threshold)
+
+    # Compare
+    diff = (counter_kernel - counter_ref).abs()
+    max_diff = diff.max().item()
+    num_errors = (diff > 0).sum().item()
+    error_rate = num_errors / (N * K) * 100
+
+    print(f"\n{'=' * 60}")
+    print(f"UPDATE_TC_V2 CORRECTNESS TEST")
+    print(f"{'=' * 60}")
+    print(f"Dimensions: B={B}, N={N}, K={K}")
+    print(f"Reference counter changes: {(counter_ref != 0).sum().item()} / {N*K}")
+    print(f"Kernel counter changes:    {(counter_kernel != 0).sum().item()} / {N*K}")
+    print(f"Max difference: {max_diff}")
+    print(f"Error count: {num_errors} / {N*K} ({error_rate:.2f}%)")
+    print(f"{'=' * 60}")
+
+    assert max_diff == 0, (
+        f"update_tc_v2 dimensional/counter mismatch: {num_errors} errors "
+        f"({error_rate:.2f}%), max diff {max_diff}. Sample: "
+        f"{[(int(n), int(k), int(counter_ref[n, k]), int(counter_kernel[n, k])) for n, k in torch.nonzero(diff > 0)[:10]]}"
+    )
+
+
+if __name__ == "__main__":
+    # Standalone behavior preserved: exit code reflects pass/fail.
+    try:
+        test_update_dimensional_bug()
+    except pytest.skip.Exception:  # Skipped -> treat as neutral exit
+        sys.exit(0)
+    print("PASS — Kernel matches reference exactly")

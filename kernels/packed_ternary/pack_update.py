@@ -605,6 +605,16 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
             return
     # 32x32 TC (legacy, for dims 16-63)
     if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(N_in):
+        # The 32x32 update kernels take threshold as int16_t.  threshold >= 32768
+        # wraps to <= -32768 in the (int16_t) cast, making EVERY negative counter
+        # satisfy cnt < -threshold → spurious flip on every step (ParityAudit2
+        # Gap 7).  Host-side guard: reject the whole int16 truncation cliff.
+        # (Python-side equivalent of TORCH_CHECK — same RuntimeError semantics.)
+        if not (0 <= int(threshold) <= 32767):
+            raise RuntimeError(
+                f"threshold must be in [0, 32767], got {threshold}: the update "
+                "kernel stores threshold as int16_t, and any value >= 32768 "
+                "truncates to a negative int16, flipping every negative counter")
         _load_tc_if_needed()
         # Prefer v3 (magnitude-scaled) > v2 (vectorized) > v1
         if _HAS_UP_TC_V3:

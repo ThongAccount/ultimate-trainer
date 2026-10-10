@@ -211,6 +211,14 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
             cnt1 += (g1 > 0.0f) ? -delta1 : delta1;
         }
 
+        // Saturating clamp BEFORE the threshold check: int16 counters wrap
+        // silently at ±32768, making |cnt| > threshold spuriously true and
+        // flipping the weight (sweep #4). Same class of bug as v2_32; this
+        // path is currently dead in production but clamped for hygiene.
+        // With delta <= 8 the counter can reach ±32768 in ~4k steps.
+        cnt0 = max(-32767, min(32767, cnt0));
+        cnt1 = max(-32767, min(32767, cnt1));
+
         // Weight flips
         uint32_t* w_row = W + gr * stride_words;
 
@@ -266,6 +274,8 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v3_kernel(
             int delta = __float2int_rn(fabsf(g_avg));
             delta = max(1, min(8, delta));
             cnt += (g_avg > 0.0f) ? -delta : delta;
+            // Saturating clamp before the threshold check (see pair path above).
+            cnt = max(-32767, min(32767, cnt));
 
             uint32_t* w_row = W + gr * stride_words;
             if (cnt > threshold) {

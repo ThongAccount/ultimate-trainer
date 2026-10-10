@@ -11,15 +11,38 @@ This is NOT the previously falsified C4 (which swapped one barrier for __syncwar
 without checking whether the tiles were private). Here the whole hot path is
 warp-private, so both barriers go.
 
-Parity gate: bit-exact W and counter changes vs the production kernel. A wrong
-answer here silently corrupts training, so the gate is mandatory, not advisory.
+Gates (all mandatory — a wrong answer here silently corrupts training):
+
+1. Reference-transition gate (NEW kernel vs Python-computed ABSOLUTE
+   expectation, tests/probe_reference_gate.py). The old-vs-new parity check
+   below is vacuous in the strong sense (sweep #5): it only proves OLD == NEW,
+   so any bug shared by BOTH arms — inverted counter sign, non-strict
+   threshold compare, wrong column, double flip, missing reset — passes
+   because both arms produce the same wrong answer. The reference stage pins
+   the kernel to the production semantics read from gemm_update_tc_v2_32.cu:
+   counter += -sign(dW) (moves AGAINST the gradient), flip when |cnt| >
+   threshold STRICT, counter resets to 0 on flip, increment saturates at +1
+   / decrement at -1. Catches: inverted sign convention, >= vs > threshold,
+   wrong-row/column addressing, double flip, missing reset, zero-grad skip
+   path clobbering counters, plain counter arithmetic.
+
+2. Bit-exact W and counter parity OLD vs NEW on production shapes — catches
+   variant-specific divergence (what the barrier swap could plausibly break).
+   Refuses to report timings unless the gate is non-vacuous (flips > 0).
+
+Timing: tests.bench_protocol.ab_median — 10 paired trials, median (not min),
+clock-settle barrier between trials, A/A null arm on the first shape to
+calibrate sigma_null. This is the mandatory C13 protocol (sweep #15); the old
+3-trial min-of-3 is retired. A trailing "RESULTS <json>" line preserves the
+machine-readable contract (colab_speedpass.py captures stdout; downstream
+parsers look for the RESULTS JSON line, same shape as probe_fwd_spill).
 
 Usage: python tests/probe_update_syncwarp2.py
 """
 
+import json
 import os
 import sys
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
@@ -69,6 +92,9 @@ def build(cu_path, name):
 
 
 def main():
+    from tests.bench_protocol import ab_median, report_line
+    from tests.probe_reference_gate import run_reference_gate
+
     dev = "cuda"
     torch.manual_seed(0)
     BATCH = 16384
@@ -81,17 +107,33 @@ def main():
     new = build(NEW_CU, "upd_sw_new")
     print("built NEW ok", flush=True)
 
+    # ── Gate 1: reference-transition (ABSOLUTE semantics, NEW kernel) ──
+    # One deterministic update on a crafted 64x64 fixture whose expected
+    # W/counter state is computed in Python from the production rules.
+    # This is the only stage that can catch bugs shared by OLD and NEW.
+    print("\nREFERENCE-TRANSITION GATE (NEW kernel vs Python expectation):",
+          flush=True)
+    try:
+        rg = run_reference_gate(new.upd, dev, threshold=THRESHOLD)
+        print(f"  PASS: {rg['positions']} probe positions, "
+              f"{rg['resets']} flips/counter-resets bit-exact "
+              f"(sign=counter-against-grad, strict |cnt|>{THRESHOLD}, "
+              f"reset-to-0, W saturates at +/-1)", flush=True)
+    except AssertionError as e:
+        raise SystemExit(f"REFERENCE GATE FAIL: {e} — refusing to continue")
+
     print(
         f"\n{'name':<6} {'in':>5} {'out':>6}   {'old_ms':>8} {'new_ms':>8} {'d%':>7}"
         f"   {'W':>6} {'counter':>8}",
         flush=True,
     )
 
-    for name, inn, out in [
+    results = {}
+    for si, (name, inn, out) in enumerate([
         ("fc1", 1024, 4096),
         ("fc2", 4096, 1024),
         ("head", 1024, 50272),
-    ]:
+    ]):
         X = torch.randn(BATCH, inn, device=dev, dtype=torch.float16) * 0.1
         dY = torch.randn(BATCH, out, device=dev, dtype=torch.float16) * 0.1
         W0 = torch.randint(0, 4, (out, (inn + 15) // 16), device=dev, dtype=torch.int32)
@@ -105,8 +147,8 @@ def main():
             -(THRESHOLD + 1), THRESHOLD + 2, (out * inn,), device=dev, dtype=torch.int16
         )
 
-        # parity: both kernels mutate W and counter in place, so run each on a
-        # private copy and compare bit-for-bit.
+        # Gate 2: parity — both kernels mutate W and counter in place, so run
+        # each on a private copy and compare bit-for-bit.
         Wo, Co = W0.clone(), C0.clone()
         Wn, Cn = W0.clone(), C0.clone()
         old.upd(X, dY, Wo, Co, inn, THRESHOLD)
@@ -131,34 +173,43 @@ def main():
                 f"threshold={THRESHOLD}"
             )
 
-        # timings on fresh state each iteration (update is destructive)
-        def timed(fn, iters=5, warmup=2):
-            for _ in range(warmup):
-                fn()
-            torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            for _ in range(iters):
-                fn()
-            torch.cuda.synchronize()
-            return (time.perf_counter() - t0) / iters * 1000
-
-        def run_old():
-            old.upd(X, dY, W0.clone(), C0.clone(), inn, THRESHOLD)
-
-        def run_new():
-            new.upd(X, dY, W0.clone(), C0.clone(), inn, THRESHOLD)
-
-        to, tn = [], []
-        for _ in range(3):
-            to.append(timed(run_old))
-            tn.append(timed(run_new))
-        mo, mn = min(to), min(tn)
-        d = 100.0 * (mn - mo) / mo
+        # Timing: bench_protocol.ab_median — 10 paired trials, median,
+        # clock-settle between trials, null arm on the first shape. Update is
+        # destructive, so prepare_* rebuilds fresh state OUTSIDE the timed
+        # region.
+        res = ab_median(
+            lambda: old.upd(X, dY, W0.clone(), C0.clone(), inn, THRESHOLD),
+            lambda: new.upd(X, dY, W0.clone(), C0.clone(), inn, THRESHOLD),
+            null_arm=(si == 0),
+        )
+        results[name] = res
+        line = report_line(f"upsw2/{name}", res)
+        print("  " + line, flush=True)
+        if res.sigma_null_pct is not None:
+            print(
+                f"    (null arm: sigma_null={res.sigma_null_pct:.2f}%, "
+                f"decision threshold={max(2 * res.sigma_null_pct, 1.0):.2f}%)",
+                flush=True,
+            )
         print(
-            f"{name:<6} {inn:>5} {out:>6}   {mo:8.2f} {mn:8.2f} {d:7.2f}"
-            f"   {'ok' if w_same else 'BAD':>6} {'ok' if c_same else 'BAD':>8}",
+            f"{name:<6} {inn:>5} {out:>6}   {res.a_ms:8.2f} {res.b_ms:8.2f} "
+            f"{res.delta_pct:7.2f}   {'ok':>6} {'ok':>8}",
             flush=True,
         )
+
+    # Machine-readable summary — same RESULTS-JSON-line contract as
+    # probe_fwd_spill (colab_speedpass.py captures the whole stdout as "log";
+    # downstream tooling greps this line).
+    print("\nRESULTS " + json.dumps({
+        name: {
+            "old_ms": round(res.a_ms, 3),
+            "new_ms": round(res.b_ms, 3),
+            "delta_pct": round(res.delta_pct, 3),
+            "sigma_null_pct": (round(res.sigma_null_pct, 3)
+                               if res.sigma_null_pct is not None else None),
+        }
+        for name, res in results.items()
+    }), flush=True)
 
 
 if __name__ == "__main__":

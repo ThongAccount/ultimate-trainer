@@ -76,10 +76,24 @@ def main() -> int:
     ap.add_argument(
         "--probe",
         default="regsweep",
-        choices=("regsweep", "hostab", "wdedup", "dxepilogue", "upsw2"),
+        choices=(
+            "regsweep",
+            "hostab",
+            "wdedup",
+            "dxepilogue",
+            "upsw2",
+            "fwdspill",
+            "fwdswizzle",
+            "uppipeline",
+            "perfgate",
+        ),
         help="regsweep: dX maxrregcount sweep; hostab: sync+clone e2e A/B; "
         "wdedup: fwd W-load dedup; dxepilogue: dX warp-private epilogue; "
-        "upsw2: update batch-loop warp-scope barriers",
+        "upsw2: update batch-loop warp-scope barriers; "
+        "fwdspill: fwd warp-private spill epilogue (C13-GO1); "
+        "fwdswizzle: fwd n-outer rasterization swizzle (C13-GO2); "
+        "uppipeline: update double-buffer pipelining (C13-GO3); "
+        "perfgate: production perf regression gate vs tests/perf_baseline_t4.json",
     )
     ap.add_argument("--branch", default=DEFAULT_BRANCH)
     ap.add_argument("--repo-dir", default=DEFAULT_CLONE)
@@ -107,13 +121,6 @@ def main() -> int:
 
     ensure_ninja()
     os.chdir(repo)
-    if repo not in sys.path:
-        sys.path.insert(0, repo)
-    # tests/ probes do sys.path.insert of repo themselves; ensure cwd imports work
-    sys.path.insert(0, os.path.join(repo, "tests"))
-
-    t0 = time.time()
-    buf = io.StringIO()
     if args.probe == "regsweep":
         import probe_dx_regsweep as probe
     elif args.probe == "hostab":
@@ -122,8 +129,16 @@ def main() -> int:
         import probe_fwd_wdedup as probe
     elif args.probe == "dxepilogue":
         import probe_dx_epilogue as probe
-    else:
+    elif args.probe == "upsw2":
         import probe_update_syncwarp2 as probe
+    elif args.probe == "fwdspill":
+        import probe_fwd_spill as probe
+    elif args.probe == "fwdswizzle":
+        import probe_fwd_swizzle as probe
+    elif args.probe == "uppipeline":
+        import probe_update_pipeline as probe
+    else:  # perfgate
+        import colab_perfgate as probe
     with contextlib.redirect_stdout(buf):
         probe.main()
     wall = round(time.time() - t0, 1)

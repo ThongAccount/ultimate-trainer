@@ -211,12 +211,25 @@ def test_backward_dx_tc_odd_shapes():
 
 def test_update_tc_flips_bits():
 
-    """TC update kernel flips weights when counter exceeds threshold (batch >= 16)."""
+    """TC update kernel flips weights when counter exceeds threshold (batch >= 16).
+
+    N=32 (was 4) so _tc_ok passes and this actually reaches the TC kernel —
+    the old N=4 silently fell back to the scalar path (sweep #2/#19).
+    """
     if not _has_cuda():
         return
 
+    # Hard-fail if the TC v2 kernel isn't available: a silent scalar fallback
+    # would make this test validate the wrong kernel (sweep #2 dispatch trap).
+    import kernels.packed_ternary.pack_update as pu
+    pu._load_up_tc_v2_32()
+    if pu._up_tc_v2_32_fn is None or not pu._HAS_UP_TC_V2_32:
+        import pytest
+        pytest.fail("TC v2_32 update kernel failed to load on a CUDA machine")
+
     torch.manual_seed(0)
-    B, K, N = 16, 16, 4
+    B, K, N = 32, 32, 32
+    assert all(pu._tc_ok(d) for d in (B, K, N)), "dims must dispatch to TC"
     W_fp32 = torch.zeros(N, K)
     W_packed = _pack_and_check(W_fp32)
     counter = init_counter(N, K)
@@ -227,7 +240,7 @@ def test_update_tc_flips_bits():
     X[:, 0] = 1.0
     dY[:, 0] = 1.0
 
-    threshold = 16  # with B=16, dW=16/step → counter hits -16 at step 16
+    threshold = 16  # with B=32, dW=32/step → counter hits -17 (flip) at step 16
     flips = 0
     for step in range(50):
         update(W_packed, counter, X, dY, threshold)
@@ -236,7 +249,96 @@ def test_update_tc_flips_bits():
             old_W = W_packed.clone()
 
     assert flips > 0, "TC update: No bit flips occurred"
+    assert flips >= 2, (
+        f"TC update: only {flips} flips in 50 steps — expected the tracked "
+        "weight to flip every ~16 steps (0→-1→-1-saturated needs 2+ flips)"
+    )
     print(f"  ✅ TC update flips bits: {flips} flips in 50 steps")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Test 6: boundary semantics at TC dims (sweep #18)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_update_tc_all_zero_gradients():
+    """All-zero gradients: counters and weights unchanged after a step."""
+    if not _has_cuda():
+        return
+
+    B, K, N = 32, 32, 32
+    W_fp32 = torch.zeros(N, K)
+    W_packed = _pack_and_check(W_fp32)
+    counter = init_counter(N, K)
+    # Seed non-zero counters to prove the kernel doesn't touch them.
+    counter[:] = 5
+    W_before = W_packed.clone()
+    c_before = counter.clone()
+
+    X = torch.zeros(B, K, dtype=torch.float16, device="cuda")
+    dY = torch.zeros(B, N, dtype=torch.float16, device="cuda")
+    update(W_packed, counter, X, dY, threshold=16)
+
+    assert torch.equal(W_packed, W_before), "W changed under all-zero gradients"
+    assert torch.equal(counter, c_before), "counter changed under all-zero gradients"
+    print("  ✅ TC update zero-grad: W and counter unchanged")
+
+
+def test_update_tc_all_same_sign_gradients():
+    """All-same-sign gradients: every counter moves the same, consistent direction."""
+    if not _has_cuda():
+        return
+
+    B, K, N = 32, 32, 32
+    W_fp32 = torch.zeros(N, K)
+    W_packed = _pack_and_check(W_fp32)
+    counter = init_counter(N, K)
+
+    # dW = dY^T @ X = (-1)·B everywhere → counter += 1 per step (descent).
+    X = torch.ones(B, K, dtype=torch.float16, device="cuda")
+    dY = -torch.ones(B, N, dtype=torch.float16, device="cuda")
+    update(W_packed, counter, X, dY, threshold=16)
+
+    assert (counter == 1).all(), (
+        f"counter not uniformly +1 after negative-grad step: "
+        f"min={counter.min().item()}, max={counter.max().item()}"
+    )
+    # And the positive-gradient direction:
+    counter[:] = 0
+    dY = torch.ones(B, N, dtype=torch.float16, device="cuda")
+    update(W_packed, counter, X, dY, threshold=16)
+    assert (counter == -1).all(), (
+        f"counter not uniformly -1 after positive-grad step: "
+        f"min={counter.min().item()}, max={counter.max().item()}"
+    )
+    print("  ✅ TC update same-sign: counters move uniformly, direction correct")
+
+
+def test_update_tc_threshold_zero():
+    """threshold=0: every nonzero-grad step flips immediately (|cnt|>0)."""
+    if not _has_cuda():
+        return
+
+    B, K, N = 32, 32, 32
+    W_fp32 = torch.zeros(N, K)
+    W_packed = _pack_and_check(W_fp32)
+    counter = init_counter(N, K)
+
+    X = torch.zeros(B, K, dtype=torch.float16, device="cuda")
+    dY = torch.zeros(B, N, dtype=torch.float16, device="cuda")
+    X[:, 0] = 1.0
+    dY[:, 0] = -1.0  # dW[0,0] = -B < 0 → counter +1 → +1 > 0 → flip 0→+1
+
+    update(W_packed, counter, X, dY, threshold=0)
+
+    assert (counter == 0).all(), "counter must reset to 0 after a flip step"
+    # W[0,0] packed bit must now encode +1 (code 1 at bit position 0)
+    w00_code = int(W_packed[0, 0]) & 3
+    assert w00_code == 1, f"W[0,0] did not flip 0→+1 with threshold=0 (code={w00_code})"
+    # second flip step: +1 stays +1 (saturated), counter still resets
+    update(W_packed, counter, X, dY, threshold=0)
+    assert (counter == 0).all()
+    assert (int(W_packed[0, 0]) & 3) == 1, "saturated +1 must stay +1"
+    print("  ✅ TC update threshold=0: immediate flip + reset, saturation holds")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -251,6 +353,9 @@ if __name__ == "__main__":
         ("backward dX TC",    test_backward_dx_tc),
         ("TC vs scalar",     test_backward_dx_tc_vs_scalar_crosscheck),
         ("TC update flips",   test_update_tc_flips_bits),
+        ("TC zero grads",     test_update_tc_all_zero_gradients),
+        ("TC same-sign",      test_update_tc_all_same_sign_gradients),
+        ("TC threshold=0",    test_update_tc_threshold_zero),
     ]
     for name, fn in tests:
         try:

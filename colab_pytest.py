@@ -36,6 +36,11 @@ TEST_MODULES = [
     "tests/test_packed_ternary.py",
     "tests/test_gemm_fused.py",
     "tests/test_speedpass_kernels.py",
+    # Direct production-update-kernel (TC v2/v2_32) semantic tests — the only
+    # direct v2 coverage; were excluded from the suite (sweep #2/#19).
+    "tests/test_update_dimensional_bug.py",
+    "tests/test_update64_dimensional_bug.py",
+    "tests/test_update_semantics.py",
 ]
 
 

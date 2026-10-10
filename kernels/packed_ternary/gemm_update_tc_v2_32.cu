@@ -199,6 +199,14 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
         cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
         cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
 
+        // Saturating clamp BEFORE the threshold check: int16 counters wrap
+        // silently at ±32768, making |cnt| > threshold spuriously true and
+        // flipping the weight (sweep #4). Clamp to ±32767 so INT16_MIN can
+        // never be observed. Prod threshold=32 never legitimately reaches the
+        // clamp (flip+reset fires at threshold+1), so this is a no-op there.
+        cnt0 = max(-32767, min(32767, cnt0));
+        cnt1 = max(-32767, min(32767, cnt1));
+
         // Weight flips for cnt0
         uint32_t* w_row = W + gr * stride_words;
         if (cnt0 > threshold) {
@@ -252,6 +260,8 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
             int idx = gr * in_features + gc;
             int16_t cnt = counter[idx];
             cnt += (g > 0.0f) ? -1 : (g < 0.0f) ? 1 : 0;
+            // Saturating clamp before the threshold check (see pair path above).
+            cnt = max(-32767, min(32767, cnt));
 
             uint32_t* w_row = W + gr * stride_words;
             if (cnt > threshold) {
