@@ -917,3 +917,80 @@ int16 counter wrap at ±32768 (1-line clamp); odd-in_features tail unreachable
 counters flip); `pack_tensor` half-even vs `pack_row` half-away .5 mismatch;
 convergence has no damping/annealing at all (limit-cycle risk — needs the
 flip-rate trajectory test before any long training run).
+
+---
+
+## 27. SESSION C13-fix (2026-10-10): sweep fixes implemented — commit `675c24f`
+
+7 parallel fix agents (glm-5.3 task agents) + orchestrator integration landed
+all C13 GO items except the fwd instruction bundle (still queued). 22 files,
++3666/−122. All py_compile + nvcc sm_75 production-flag compiles green;
+CPU-runnable suites pass (counter-clamp 1055 cases, perfgate logic 20).
+
+### Correctness fixes (production files)
+
+1. **Counter clamp** (`gemm_update_tc_v2_32.cu` +10, `v3_32` +10): saturating
+   ±32767 clamp after increment, before threshold compare, pair + tail paths.
+   Kills the int16 wrap spurious-flip (sweep #4). Resources identical
+   (REG:53 / 8192 B / 0 spills, verified vs pre-clamp build). Key semantic:
+   at threshold=32767 the counter now PINS at the rail instead of
+   wrong-direction flipping; for all reachable counters at prod threshold=32
+   the clamp is provably a no-op.
+2. **Threshold cliff guard** (`pack_update.py` +10): update() rejects
+   threshold outside [0, 32767] with a message naming the int16 truncation
+   cliff (threshold=32768 → −32768 → every negative counter flips).
+
+### Test-suite holes closed
+
+3. **Reference-transition gate** (NEW `tests/test_update_semantics.py`, 8
+   tests): drives the production v2_32 kernel DIRECTLY via
+   `pu._up_tc_v2_32_fn` — bypassing the small-dims v3 dispatch trap. Asserts
+   bit-exact packed-W transitions + counter resets against a Python reference
+   across the full transition matrix (grad±) × (W ∈ {−1, 0, +1}), counter
+   carry T−4→…→T→0, and strict-boundary (no flip AT threshold).
+4. **Dispatch trap**: `test_update_tc_flips_bits` N=4→32 (now actually
+   reaches TC); asserts `_up_tc_v2_32_fn` loaded. 3 new boundary tests
+   (all-zero grads / all-same-sign / threshold=0).
+5. **Gate module list**: dimensional-bug tests + semantics test added to
+   `colab_pytest.py` TEST_MODULES (the excluded direct-v2 coverage).
+6. **Session gate** (NEW `tests/conftest.py`): on CUDA, hard-fails listing
+   any prod kernel that won't load (fwd tc_32/64, dx tc/32, up v2/v2_32);
+   `OMP_SKIP_KERNEL_GATE=1` escape hatch.
+7. **pytest-safety**: `test_update_dimensional_bug.py` was script-style with
+   import-time `sys.exit(0/1)` — would have terminated the whole pytest run
+   at collection. Rewritten as a test function + `__main__` guard; reference
+   loop vectorized (per-element Python loop → `torch.sign`).
+
+### Benchmark protocol + perf gate
+
+8. **`tests/bench_protocol.py`** (NEW, orchestrator-written): 10-trial paired
+   interleaved median, warmup 10, `torch.cuda._sleep` clock settle, A/A null
+   arm with empirical sigma_null; `report_line` decision rule
+   |Δ| > max(2σ_null, 1%); `solo_median` single-arm for the gate. CI ±4-6% →
+   ~±1.5%. All four probes migrated.
+9. **`colab_perfgate.py` + `tests/perf_baseline_t4.json`** (NEW): production
+   trio + full step vs committed baseline (schema 1, provisional HANDOFF
+   §23/§25 numbers); WARN ≥2%, FAIL ≥5%, exit 1; `--update-baseline`
+   regenerates after first Colab run. 20-test logic suite green.
+
+### Perf candidate probes (production untouched, GPU-gated)
+
+| Probe | Variant | Resources (old→new) | Pre-registered prediction |
+|---|---|---|---|
+| `fwdspill` | fwd warp-private spill epilogue | smem 20480→8192, occ 3→5, regs 88→96, epilogue CTA barriers →0 | head −3..−6%, e2e 3-5% if barrier-drain holds |
+| `fwdswizzle` | fwd n-outer rasterization | xpose: IDENTICAL (672 SASS = prod); swizzle: +2 regs | X DRAM 25.7GB→~32MB; e2e ≤2.5%; ship head-only if fc regresses |
+| `uppipeline` | update double-buffer, register staging | smem 8192→12288 (occ 8→5 — WORSE than nominal 8→6, stated), 2→1 barriers/trip, loads in flight across HMMA | overlap wins: fc1 −10..−20%; occ wins: +5-10%. Falsifier: fc1 ≥ −2% closes the class |
+
+`colab_speedpass.py` gains `--probe fwdspill|fwdswizzle|uppipeline|perfgate`.
+
+### Next (GPU-gated, one Colab session)
+
+1. `colab run ... colab_pytest.py` — the enlarged gate (semantics + dimensional
+   + boundary + conftest kernel gate) on the clamped kernels.
+2. `--probe fwdspill` then `fwdswizzle` then `uppipeline` — bit-exact parity
+   gates then 10-trial medians; decision rule per bench_protocol.
+3. `colab_perfgate.py -- --update-baseline` — regenerate the baseline with
+   same-protocol numbers; inspect + commit.
+4. Still queued from the sweep: fwd instruction bundle (kLUT branchless +
+   W-word reg-dedup + half2 X/dY loads), sanitizer one-shot, flip-rate
+   convergence test.
