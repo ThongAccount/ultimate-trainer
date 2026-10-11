@@ -248,12 +248,16 @@ def test_update_tc_flips_bits():
             flips += 1
             old_W = W_packed.clone()
 
-    assert flips > 0, "TC update: No bit flips occurred"
-    assert flips >= 2, (
-        f"TC update: only {flips} flips in 50 steps — expected the tracked "
-        "weight to flip every ~16 steps (0→-1→-1-saturated needs 2+ flips)"
+    # dW[0,0] = B > 0 every step -> counter[0,0] -= 1 from 0; strict flip at
+    # |cnt| > threshold fires first at step 17 (cnt=-17): 0 -> -1, reset.
+    # After that the weight is SATURATED at -1: further decrement flips are
+    # CAS no-ops (W stays -1, counter resets each 17 steps). So exactly ONE
+    # visible bit transition is the correct production behavior in 50 steps.
+    # (Verified on Colab T4 2026-10-11: kernel produced exactly 1.)
+    assert flips == 1, (
+        f"TC update: expected exactly 1 visible flip in 50 steps "
+        f"(0->-1 at step 17, then -1 saturated), got {flips}"
     )
-    print(f"  ✅ TC update flips bits: {flips} flips in 50 steps")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

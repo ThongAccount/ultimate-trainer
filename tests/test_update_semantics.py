@@ -201,7 +201,12 @@ def test_counter_carry_across_steps():
     packed_W = _pack_bits(W_int8).cuda()
     counter = cnt.to(torch.int16).cuda()
 
-    carry = [THRESH - 4, THRESH - 3, THRESH - 2, THRESH - 1, THRESH, 0]
+    # Post-update counter values: start at THRESH-4=12, +1 per step (g<0),
+    # strict flip at cnt>THRESH. So: 13, 14, 15, 16, then 17 -> flip -> 0.
+    # (The original list started at 12 — the PRE-update value. Kernel was
+    # right; the expectation vector was off by one element. Colab T4
+    # 2026-10-11 confirmed 13 at step 0.)
+    carry = [THRESH - 3, THRESH - 2, THRESH - 1, THRESH, 0]
     for step, expected_cnt in enumerate(carry):
         _run_kernel(packed_W, counter, X, dY, THRESH)
         W_int8, cnt = _ref_step(W_int8, cnt, X.cpu(), dY.cpu(), THRESH)
