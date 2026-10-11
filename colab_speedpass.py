@@ -121,6 +121,8 @@ def main() -> int:
 
     ensure_ninja()
     os.chdir(repo)
+    # tests/ probes do sys.path.insert of repo themselves; ensure cwd imports work
+    sys.path.insert(0, os.path.join(repo, "tests"))
     if args.probe == "regsweep":
         import probe_dx_regsweep as probe
     elif args.probe == "hostab":
