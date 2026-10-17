@@ -20,6 +20,18 @@ _CU = r"""
 #include <torch/extension.h>
 #include <c10/cuda/CUDAStream.h>
 
+torch::Tensor decode_wrapper(torch::Tensor W_packed, int N, int K);
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("decode", &decode_wrapper, "packed ternary -> fp16 decode");
+}
+"""
+
+_CU_KERNEL = r"""
+#include <cuda_runtime.h>
+#include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
+
 __device__ __forceinline__ int8_t d_decode(uint32_t code2) {
     // 00 -> 0, 01 -> +1, 10 -> -1, 11 -> 0 (INVALID sentinel -> 0)
     return (int8_t)(((int)(code2 & 1)) - ((int)(code2 >> 1) & 1));
@@ -56,10 +68,6 @@ torch::Tensor decode_wrapper(torch::Tensor W_packed, int N, int K) {
         N, K, stride_words);
     return W16;
 }
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("decode", &decode_wrapper, "packed ternary -> fp16 decode");
-}
 """
 
 
@@ -72,9 +80,8 @@ def load_decode():
 
     lib = load_inline(
         name="pt_decode_standalone",
-        cpp_sources="",
-        cuda_sources=[_CU],
-        functions=["decode"],
+        cpp_sources=_CU,            # cpp carries the kernel decl + PYBIND11 module
+        cuda_sources=[_CU_KERNEL],  # .cu carries the kernel + launcher
         extra_cuda_cflags=["-O2"],
         verbose=False,
     )
