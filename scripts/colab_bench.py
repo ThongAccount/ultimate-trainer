@@ -65,6 +65,8 @@ def main() -> int:
     ap.add_argument("--shapes", default=None,
                     help="comma list of fc1,fc2,head (default: $PT_SHAPES or fc1)")
     ap.add_argument("--no-setup", action="store_true")
+    ap.add_argument("--no-setup-env", dest="no_setup", action="store_true",
+                    help=argparse.SUPPRESS)  # hidden: env-driven set below
     ap.add_argument("--arm", default="all",
                     help="all|fwd|dx|update|cublas — one arm isolates the "
                          "poisoning OOB (sticky CUDA error kills the process)")
@@ -72,6 +74,8 @@ def main() -> int:
     # '-f <connection.json>' argv — tolerate unknown args (per brief's note
     # to adapt to the CLI's actual surface rather than fight it).
     args, _unknown = ap.parse_known_args()
+    if os.environ.get("PT_NO_SETUP") == "1":
+        args.no_setup = True
     if not args.shapes:
         args.shapes = os.environ.get("PT_SHAPES", "fc1")
 
