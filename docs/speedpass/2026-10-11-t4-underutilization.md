@@ -84,3 +84,43 @@ production dispatch; stays in `tests/`.
 **Phase 2c (PT_BACKEND=cublas|custom)**: not started — the update-kernel path
 was its blocker; the fwd/dX path (the 20.7× win) does NOT need it.
 
+
+## Open bug found during Phase 1 validation: 32-lane fwd kernel OOBs
+
+**Status**: pre-existing (not a regression from this campaign), reproducible on
+every fresh Colab VM, deterministic. Parked pending root-cause analysis.
+
+**Repro** (any shape, e.g. B=1024 K=64 N=64):
+```python
+from kernels.packed_ternary import pack_tensor
+from kernels.packed_ternary.pack_forward import packed_ternary_forward_tc
+Y = packed_ternary_forward_tc(pack_tensor(torch.randn(64,64,cuda)*.05),
+                               torch.randn(1024,64,cuda,dtype=fp16))
+# torch.AcceleratorError: illegal memory access (with CUDA_LAUNCH_BLOCKING=1)
+```
+
+**Evidence it is pre-existing and not environmental or a plumbing regression**:
+- Fails at the pre-campaign commit `a3d2117` in a fresh clone (the same commit
+  whose Phase 0 fc1 fwd measurement succeeded on an earlier session).
+- Fails with the pre-stream-plumbing `pack_forward.py` pasted in.
+- Fails via the raw `_forward_fn_tc` (no padding wrapper).
+- Build + link is clean (nm-visible `launch_packed_ternary_tc` defined in
+  `gemm_forward_tc_32.cu`; wrapper arg order verified to match the launcher).
+- Not a bad GPU: pure-torch works, and a bad GPU is ruled out by the fresh-VM
+  determinism across 3 sessions.
+- The one session where fwd measured fine (`pt`, commit a3d2117) had a warm
+  extension cache from an earlier build — stale-artifact masking is the
+  remaining hypothesis for the discrepancy.
+
+**Why the Phase 0 fc1 fwd number is still credible**: the bench measured
+86.04 ms / 1.60 TFLOPS on that same warm session, and the numbers are
+internally consistent (the dX/update rows from the same run match prior
+AUDIT.md baselines, and the cuBLAS arm of 4.15 ms — an entirely different
+code path — is what makes the comparison meaningful). But **the fc1 dispatch
+row should be re-measured on a session where the fwd kernel is healthy** before
+being treated as final.
+
+**Next root-cause step**: compare the `.so` in the warm `pt` session's
+`/root/.cache/torch_extensions` against a fresh build (objdump/nm the two),
+then static-read `gemm_forward_tc_32.cu`'s global-index math for the
+(load/store bounds) against `stride_words` for non-power-of-16 strides.
