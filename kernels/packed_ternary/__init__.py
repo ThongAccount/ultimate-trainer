@@ -246,7 +246,12 @@ def pack_tensor(fp32_tensor: torch.Tensor, gamma: float = 1.0) -> torch.Tensor:
 
     # Must be int32 so the CUDA kernel can read stride_words uint32 entries
     # per row without pointer-arithmetic mismatch (int64 → uint32 halves data).
-    return torch.from_numpy(packed.astype(np.int32))
+    out = torch.from_numpy(packed.astype(np.int32))
+    # pack_tensor reads fp32_tensor.cpu() above, so the result is a host tensor.
+    # Callers hand it straight to CUDA kernels — return it on the SAME device as
+    # the input, otherwise the kernel dereferences a host pointer as a device
+    # pointer (illegal address at the first W load).
+    return out.to(fp32_tensor.device)
 
 
 def unpack_tensor(packed: torch.Tensor, rows: int, cols: int, gamma: float = 1.0) -> torch.Tensor:
