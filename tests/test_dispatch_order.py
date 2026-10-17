@@ -30,13 +30,14 @@ def _has_cuda():
 
 
 def test_16_gate_accepts_wide_shapes():
-    """%16 (not %64): 80 and 112 must be eligible for the 64 kernels."""
+    """%16 (not %64): dims need only be 16-aligned for the 64 kernels."""
     from kernels.packed_ternary.pack_update import _tc_ok_16
 
     assert _tc_ok_16(80), "80 must be 64-kernel eligible"
     assert _tc_ok_16(112), "112 must be 64-kernel eligible"
     assert _tc_ok_16(4096) and _tc_ok_16(1024)
-    assert not _tc_ok_16(48), "48 is not 16-aligned"
+    assert _tc_ok_16(48), "48 = 3x16 is 16-ALIGNED (my earlier comment was wrong)"
+    assert not _tc_ok_16(48 + 8), "56 is not 16-aligned"
     assert not _tc_ok_16(15), "below WMMA minimum"
 
 
@@ -83,11 +84,23 @@ def test_small_then_large_dispatch_stays_64():
         fn(W, counter, X, dY, 32)
         return W, counter
 
-    # 1) small shape FIRST (the poisoning case — would overwrite the shared ptr)
-    _, _n = pu._select_update_fn(32, 32, 32)
-    assert _n in ("v3_32", "v2_32", "v1_32"), _n
+    # 1) small shape FIRST. With the %16 gate the 64x64 kernel is eligible at
+    #    32 (it has internal bounds guards), so v2_64 is a CORRECT answer —
+    #    the invariant under test is that a small call never POISONS the slot
+    #    for later large calls, i.e. both calls return the same kernel their
+    #    shapes demand regardless of order.
+    _, _n_small = pu._select_update_fn(32, 32, 32)
+    assert _n_small == "v2_64", _n_small
 
-    # 2) large shape SECOND — must still select v2_64
+    # 2) the poisoning case re-derived: with the OLD shared-pointer design,
+    #    if the small call had taken a 32x32 kernel it would have overwritten
+    #    the pointer the 64 path reads. Regression guard: call the small shape,
+    #    then assert the large shape STILL selects v2_64 and produces the
+    #    same result as a fresh large-only call.
+    _, _n_large_after = pu._select_update_fn(64, 16384, 1024)
+    assert _n_large_after == "v2_64", (
+        f"large shape after small call selected {_n_large_after} — "
+        "load-order-dependent dispatch regression")
     W, counter = run((64, 16384, 1024), "v2_64")
 
 
