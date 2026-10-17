@@ -22,6 +22,21 @@ sys.path.insert(0, os.getcwd())
 import torch
 
 
+def _chunked_cos(a, b, chunk=1 << 22):
+    """Cosine similarity without materialising a flattened copy (OOM-safe)."""
+    import math
+    af = a.float().flatten()
+    bf = b.float().flatten()
+    dot = na = nb = 0.0
+    for i in range(0, af.numel(), chunk):
+        x = af[i:i + chunk]
+        y = bf[i:i + chunk]
+        dot += float((x * y).sum())
+        na += float((x * x).sum())
+        nb += float((y * y).sum())
+    return dot / (math.sqrt(na) * math.sqrt(nb) + 1e-30)
+
+
 def timeit(fn, warmup=10, trials=20):
     for _ in range(warmup):
         fn()
@@ -71,11 +86,9 @@ def main():
         row = {"shape": name, "K": K, "N": N}
         if Y_custom is not None:
             row["fwd_max_abs"] = (Y_custom.float() - Y_cublas.float()).abs().max().item()
-            row["fwd_cos"] = torch.nn.functional.cosine_similarity(
-                Y_custom.float().flatten(), Y_cublas.float().flatten(), dim=0).item()
+            row["fwd_cos"] = _chunked_cos(Y_custom, Y_cublas)
         row["dx_max_abs"] = (dX_custom.float() - dX_cublas.float()).abs().max().item()
-        row["dx_cos"] = torch.nn.functional.cosine_similarity(
-            dX_custom.float().flatten(), dX_cublas.float().flatten(), dim=0).item()
+        row["dx_cos"] = _chunked_cos(dX_custom, dX_cublas)
 
         # timing on the ACTIVE backend
         row["fwd_ms"] = timeit(lambda: forward_tc(W, X, K))
