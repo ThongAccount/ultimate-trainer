@@ -62,11 +62,12 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=16384)
     ap.add_argument("--commit", default="HEAD")
     ap.add_argument("--out", default="/content/roofline.json")
-    ap.add_argument("--shapes", default="fc1",
-                    help="comma list of fc1,fc2,head — keep each Colab "
-                         "invocation under the tool's ~300s deadline")
+    ap.add_argument("--shapes", default=None,
+                    help="comma list of fc1,fc2,head (default: $PT_SHAPES or fc1)")
     ap.add_argument("--no-setup", action="store_true")
     args = ap.parse_args()
+    if not args.shapes:
+        args.shapes = os.environ.get("PT_SHAPES", "fc1")
 
     print("---- nvidia-smi ----", flush=True)
     subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap,clocks.max.sm,"
