@@ -97,10 +97,14 @@ void decode_into_wrapper(
 
 
 def load_decode():
-    """Compile/return the decode module (idempotent)."""
-    global _DECODE_FN, _HAS_DECODE
-    if _HAS_DECODE:
-        return _DECODE_FN
+    """Compile/return the decode extension module (idempotent).
+
+    Always returns the MODULE (has both .decode and .decode_into) — never a
+    bare function — so callers can't end up calling an object that lacks one.
+    """
+    global _DECODE_MOD, _HAS_DECODE
+    if _DECODE_MOD is not None:
+        return _DECODE_MOD
     from torch.utils.cpp_extension import load_inline
 
     lib = load_inline(
@@ -110,7 +114,6 @@ def load_decode():
         extra_cuda_cflags=["-O2"],
         verbose=False,
     )
-    global _DECODE_MOD
     _DECODE_MOD = lib
     _DECODE_FN = lib.decode
     _HAS_DECODE = True
@@ -119,7 +122,7 @@ def load_decode():
 
 def decode_packed(W_packed: torch.Tensor, N: int, K: int) -> torch.Tensor:
     """Decode packed [N, stride_words] int32 -> fp16 [N, K] on GPU (allocating)."""
-    return load_decode()(W_packed, N, K)
+    return load_decode().decode(W_packed, N, K)
 
 
 def decode_into(W_packed: torch.Tensor, W16: torch.Tensor, N: int, K: int) -> None:
