@@ -65,8 +65,22 @@ after warmup-10, cuda events. **fc1 measured (K=1024, N=4096):**
 
 | Step | Change | Commit | Status |
 |---|---|---|---|
-| 1.1 | current CUDA stream at all 18 launch sites (was `nullptr`) | `d31b4c7` | compile-verified; capture test written |
-| 1.2 | explicit load-order-independent update selector + per-tile pointers + %16 gates + PT_VERBOSE_DISPATCH | `44aeba5` | regression tests written; T4-pending |
-| 1.3 | existing 5 test modules on T4 | — | pending same session |
+| 1.1 | current CUDA stream at all 18 launch sites (was `nullptr`) | `d31b4c7` | compile-verified; capture test written (`tests/test_graph_replay_parity.py`) |
+| 1.2 | explicit load-order-independent update selector + per-tile pointers + %16 gates + PT_VERBOSE_DISPATCH | `44aeba5` | regression tests written (`tests/test_dispatch_order.py`); T4-pending |
+| 1.3 | existing 5 test modules on T4 | — | **pending** — same session, not yet run |
 
-## Phase 2 / 3 — pending Phase 0 numbers.
+## Phase 2 — decode-once + cuBLAS backend
+
+**Phase 2a (decode)**: shipped. `kernels/packed_ternary/pack_decode.py` — GPU
+decode kernel, 0.105 ms at fc1 (measured), plus `decode_into` persistent-buffer
+form (graph-capturable) and `kernels/packed_ternary/scratch.py` scratch manager.
+This alone makes the cuBLAS arm viable.
+
+**Phase 2b (counter-word update, no atomicCAS)**: PARITY FAILED, parked per the
+brief's 3-strike rule. Evidence + diagnosis:
+`docs/speedpass/2026-10-11-counterword-findings.md`. Kernel never wired into
+production dispatch; stays in `tests/`.
+
+**Phase 2c (PT_BACKEND=cublas|custom)**: not started — the update-kernel path
+was its blocker; the fwd/dX path (the 20.7× win) does NOT need it.
+
