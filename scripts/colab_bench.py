@@ -65,7 +65,10 @@ def main() -> int:
     ap.add_argument("--shapes", default=None,
                     help="comma list of fc1,fc2,head (default: $PT_SHAPES or fc1)")
     ap.add_argument("--no-setup", action="store_true")
-    args = ap.parse_args()
+    # colab exec wraps the file in a Jupyter kernel that appends its own
+    # '-f <connection.json>' argv — tolerate unknown args (per brief's note
+    # to adapt to the CLI's actual surface rather than fight it).
+    args, _unknown = ap.parse_known_args()
     if not args.shapes:
         args.shapes = os.environ.get("PT_SHAPES", "fc1")
 
