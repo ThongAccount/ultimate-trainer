@@ -18,25 +18,32 @@ REPO_URL = "https://github.com/ThongAccount/ultimate-trainer.git"
 DEST = "/content/ultimate-trainer"
 
 
-def ensure_repo(commit: str = "HEAD") -> str:
+def ensure_repo(commit: str = "HEAD", branch: str = "chore/speedpass") -> str:
     tok = os.environ.get("GITHUB_TOKEN", "")
     if not os.path.isdir(os.path.join(DEST, ".git")):
         url = REPO_URL.replace("https://", f"https://{tok}@") if tok else REPO_URL
         subprocess.run(["git", "clone", "--quiet", url, DEST], check=True)
     else:
         subprocess.run(["git", "-C", DEST, "fetch", "--quiet", "origin"], check=True)
+    # Pin the branch FIRST — a fresh clone lands on the default (master), and
+    # `checkout HEAD` there silently keeps the stale commit.
     subprocess.run(
-        ["git", "-C", DEST, "checkout", "--quiet", commit], check=True
+        ["git", "-C", DEST, "checkout", "--quiet", branch], check=True
     )
     subprocess.run(
-        ["git", "-C", DEST, "pull", "--quiet", "origin",
-         subprocess.run(["git", "-C", DEST, "branch", "--show-current"],
-                        capture_output=True, text=True).stdout.strip()],
-        check=False,
+        ["git", "-C", DEST, "reset", "--hard", "--quiet", f"origin/{branch}"],
+        check=True,
     )
+    if commit != "HEAD":
+        subprocess.run(
+            ["git", "-C", DEST, "checkout", "--quiet", commit], check=True
+        )
+        subprocess.run(
+            ["git", "-C", DEST, "reset", "--hard", "--quiet", commit], check=True
+        )
     head = subprocess.check_output(
         ["git", "-C", DEST, "rev-parse", "HEAD"], text=True).strip()
-    print(f"repo={DEST} commit={head}", flush=True)
+    print(f"repo={DEST} branch={branch} commit={head}", flush=True)
     return DEST
 
 
@@ -78,7 +85,8 @@ def main() -> int:
                 sys.path.insert(0, p)
     os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5")
 
-    sys.path.insert(0, "tests")
+    tests_dir = os.path.join(os.getcwd(), "tests") if not args.no_setup else "tests"
+    sys.path.insert(0, tests_dir)
     import bench_roofline as br
 
     rows = []
