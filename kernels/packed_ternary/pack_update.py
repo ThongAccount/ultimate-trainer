@@ -188,8 +188,14 @@ def _load_fused():
 
 _HAS_DX_TC = _HAS_UP_TC = _HAS_UP_TC_V2 = _HAS_UP_TC_V3 = False
 _HAS_DX_TC_32 = _HAS_UP_TC_V2_32 = _HAS_UP_TC_V3_32 = False
-_dx_tc_fn = _up_tc_fn = _up_tc_v2_fn = _up_tc_v3_fn = None
+_HAS_UP_TC_V2_64 = False
+_dx_tc_fn = _up_tc_fn = None
 _dx_tc_32_fn = _up_tc_v2_32_fn = _up_tc_v3_32_fn = None
+# Per-tile pointers: the 64x64 build must never alias the 32x32 build —
+# the retired shared-pointer design made large-shape calls silently run
+# the small kernel depending on call order (the Phase 1.2 bug).
+_up_tc_v2_64_fn = None
+_up_tc_v3_64_fn = None
 
 
 def _load_dx_tc_32():
@@ -330,8 +336,8 @@ def _load_up_tc():
 
 
 def _load_up_tc_v2():
-    global _HAS_UP_TC_V2, _up_tc_v2_fn
-    if _HAS_UP_TC_V2:
+    global _HAS_UP_TC_V2, _HAS_UP_TC_V2_64, _up_tc_v2_64_fn
+    if _HAS_UP_TC_V2_64:
         return
     try:
         from torch.utils.cpp_extension import load_inline
@@ -369,14 +375,14 @@ def _load_up_tc_v2():
             """,
             cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2", "--use_fast_math"],
         )
-        _up_tc_v2_fn = _lib.update_tc_v2
-        _HAS_UP_TC_V2 = True
+        _up_tc_v2_64_fn = _lib.update_tc_v2
+        _HAS_UP_TC_V2 = _HAS_UP_TC_V2_64 = True
     except Exception as e:
         print(f"[up_tc_v2] load failed: {e}")
 
 
 def _load_up_tc_v3():
-    global _HAS_UP_TC_V3, _up_tc_v3_fn
+    global _HAS_UP_TC_V3, _up_tc_v3_64_fn
     if _HAS_UP_TC_V3:
         return
     try:
@@ -415,7 +421,7 @@ def _load_up_tc_v3():
             """,
             cuda_sources=[combined], verbose=False, extra_cuda_cflags=["-O2", "--use_fast_math"],
         )
-        _up_tc_v3_fn = _lib.update_tc_v3
+        _up_tc_v3_64_fn = _lib.update_tc_v3
         _HAS_UP_TC_V3 = True
     except Exception as e:
         print(f"[up_tc_v3] load failed: {e}")
@@ -529,6 +535,16 @@ def _tc_ok_64(dim: int) -> bool:
     return dim >= 64 and (dim % 64) == 0
 
 
+def _tc_ok_16(dim: int) -> bool:
+    """True if dim is valid for the 64x64 TC kernels.
+
+    Same alignment rule as _tc_ok (%16): the 64x64 kernels carry internal
+    bounds guards for their 64-row/64-col tiles, so 80/112-wide shapes take
+    the wide tile instead of falling through to the 32x32 one (brief 1.2).
+    """
+    return dim >= TC_MIN_DIM and (dim % TC_ALIGN) == 0
+
+
 def _load_if_needed():
     """Ensure scalar kernels are loaded (lazy load on first use)."""
     if not _HAS_DX:
@@ -538,22 +554,59 @@ def _load_if_needed():
 
 
 def _load_tc_if_needed():
-    """Ensure TC kernels are loaded (64x64 preferred; 32x32 fallback)."""
-    global _up_tc_v2_fn, _HAS_UP_TC_V2, _up_tc_v3_fn, _HAS_UP_TC_V3
+    """Load the 32x32 TC fallbacks into their OWN globals.
+
+    Historical bug this keeps: this function used to overwrite the shared
+    `_up_tc_v2_fn` / `_up_tc_v3_fn` (which the 64x64 fast path also writes)
+    with the 32x32 build, so a small-shape call earlier in the process made
+    every later large-shape call silently run the 32x32 kernel. Each tile
+    size now keeps its own function pointer; selection is explicit in
+    _select_update_fn() and never load-order-dependent.
+    """
     if not _HAS_DX_TC_32:
         _load_dx_tc_32()
     if not _HAS_DX_TC:
         _load_dx_tc()
     if not _HAS_UP_TC_V2_32:
         _load_up_tc_v2_32()
-        if _HAS_UP_TC_V2_32:
-            _up_tc_v2_fn = _up_tc_v2_32_fn
-            _HAS_UP_TC_V2 = True
     if not _HAS_UP_TC_V3_32:
         _load_up_tc_v3_32()
-        if _HAS_UP_TC_V3_32:
-            _up_tc_v3_fn = _up_tc_v3_32_fn
-            _HAS_UP_TC_V3 = True
+
+
+_VERBOSE = os.environ.get("PT_VERBOSE_DISPATCH") == "1"
+
+
+def _select_update_fn(B: int, N_out: int, N_in: int):
+    """Return (fn, name) for the update path — load-order independent.
+
+    Gates the 64x64 kernels on %16, not %64: the 64 kernels carry their own
+    internal bounds guards (brief's Phase 1.2), so a 80- or 112-wide shape
+    can take the wide tile instead of falling to the 32x32 one.
+
+    Returns (None, None) when no TC kernel is available (caller falls back
+    to scalar).
+    """
+    if _tc_ok_16(B) and _tc_ok_16(N_out) and _tc_ok_16(N_in):
+        _load_up_tc_v2()
+        if _HAS_UP_TC_V2 and _up_tc_v2_64_fn is not None:
+            if _VERBOSE:
+                print(f"[dispatch] update {N_out}x{N_in} <- v2_64", flush=True)
+            return _up_tc_v2_64_fn, "v2_64"
+    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(N_in):
+        _load_tc_if_needed()
+        if _HAS_UP_TC_V3_32 and _up_tc_v3_32_fn is not None:
+            if _VERBOSE:
+                print(f"[dispatch] update {N_out}x{N_in} <- v3_32", flush=True)
+            return _up_tc_v3_32_fn, "v3_32"
+        if _HAS_UP_TC_V2_32 and _up_tc_v2_32_fn is not None:
+            if _VERBOSE:
+                print(f"[dispatch] update {N_out}x{N_in} <- v2_32", flush=True)
+            return _up_tc_v2_32_fn, "v2_32"
+        if _HAS_UP_TC and _up_tc_fn is not None:
+            if _VERBOSE:
+                print(f"[dispatch] update {N_out}x{N_in} <- v1_32", flush=True)
+            return _up_tc_fn, "v1_32"
+    return None, None
 
 
 def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Tensor:
@@ -607,35 +660,21 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
     X = X.contiguous()  # fine — X is only read
     dY = dY.contiguous()  # fine — dY is only read
 
-    # 64x64 TC (fast path for large dims)
-    if _tc_ok_64(B) and _tc_ok_64(N_out) and _tc_ok_64(N_in):
-        _load_up_tc_v2()
-        if _HAS_UP_TC_V2:
-            _up_tc_v2_fn(W, counter, X, dY, int(threshold))
-            return
-    # 32x32 TC (legacy, for dims 16-63)
-    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(N_in):
-        # The 32x32 update kernels take threshold as int16_t.  threshold >= 32768
-        # wraps to <= -32768 in the (int16_t) cast, making EVERY negative counter
-        # satisfy cnt < -threshold → spurious flip on every step (ParityAudit2
-        # Gap 7).  Host-side guard: reject the whole int16 truncation cliff.
-        # (Python-side equivalent of TORCH_CHECK — same RuntimeError semantics.)
-        if not (0 <= int(threshold) <= 32767):
-            raise RuntimeError(
-                f"threshold must be in [0, 32767], got {threshold}: the update "
-                "kernel stores threshold as int16_t, and any value >= 32768 "
-                "truncates to a negative int16, flipping every negative counter")
-        _load_tc_if_needed()
-        # Prefer v3 (magnitude-scaled) > v2 (vectorized) > v1
-        if _HAS_UP_TC_V3:
-            _up_tc_v3_fn(W, counter, X, dY, int(threshold))
-            return
-        if _HAS_UP_TC_V2:
-            _up_tc_v2_fn(W, counter, X, dY, int(threshold))
-            return
-        if _HAS_UP_TC:
-            _up_tc_fn(W, counter, X, dY, int(threshold))
-            return
+    # The 32x32 update kernels take threshold as int16_t.  threshold >= 32768
+    # wraps to <= -32768 in the (int16_t) cast, making EVERY negative counter
+    # satisfy cnt < -threshold → spurious flip on every step (ParityAudit2
+    # Gap 7).  Host-side guard: reject the whole int16 truncation cliff.
+    # (Python-side equivalent of TORCH_CHECK — same RuntimeError semantics.)
+    if not (0 <= int(threshold) <= 32767):
+        raise RuntimeError(
+            f"threshold must be in [0, 32767], got {threshold}: the update "
+            "kernel stores threshold as int16_t, and any value >= 32768 "
+            "truncates to a negative int16, flipping every negative counter")
+
+    fn, which = _select_update_fn(B, N_out, N_in)
+    if fn is not None:
+        fn(W, counter, X, dY, int(threshold))
+        return
 
     # Fallback to scalar
     _load_if_needed()
@@ -681,15 +720,9 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
 
     # ── Update: dW→sign→counter→flip ──
     N_in = X_c.size(1)
-    if _tc_ok(B) and _tc_ok(N_out) and _tc_ok(N_in):
-        _load_tc_if_needed()
-        # Prefer v3 (magnitude-scaled) > v2 (vectorized) > v1
-        if _HAS_UP_TC_V3:
-            _up_tc_v3_fn(W, counter, X_c, dY_c, int(threshold))
-        elif _HAS_UP_TC_V2:
-            _up_tc_v2_fn(W, counter, X_c, dY_c, int(threshold))
-        elif _HAS_UP_TC:
-            _up_tc_fn(W, counter, X_c, dY_c, int(threshold))
+    fn, which = _select_update_fn(B, N_out, N_in)
+    if fn is not None:
+        fn(W, counter, X_c, dY_c, int(threshold))
     else:
         _load_if_needed()
         _up_fn(W, counter, X_c, dY_c, int(threshold))

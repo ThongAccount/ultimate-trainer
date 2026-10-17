@@ -28,8 +28,8 @@ def _ensure_loaded():
     from .pack_update import (
         _load_tc_if_needed, _HAS_DX_TC, _dx_tc_fn,
         _HAS_DX_TC_32, _dx_tc_32_fn,
-        _HAS_UP_TC_V2, _up_tc_v2_fn,
-        _HAS_UP_TC_V3, _up_tc_v3_fn,
+        _HAS_UP_TC_V2_64, _up_tc_v2_64_fn,
+        _HAS_UP_TC_V3_32, _up_tc_v3_32_fn,
     )
 
     if has_tc():
@@ -42,8 +42,9 @@ def _ensure_loaded():
     pu._load_fused()
     _dx_tc = pu._dx_tc_32_fn if pu._HAS_DX_TC_32 else None
     _dx_tc_64 = pu._dx_tc_fn if pu._HAS_DX_TC else None
-    _update_tc_v2 = pu._up_tc_v2_fn if pu._HAS_UP_TC_V2 else None
-    _update_tc_v3 = pu._up_tc_v3_fn if pu._HAS_UP_TC_V3 else None
+    # Tile-size-specific pointers — no shared aliasing (the load-order bug).
+    _update_tc_v2 = pu._up_tc_v2_64_fn if pu._HAS_UP_TC_V2_64 else None
+    _update_tc_v3 = pu._up_tc_v3_32_fn if pu._HAS_UP_TC_V3_32 else None
     _fused_bwd = pu._fused_fn if pu._HAS_FUSED else None
     _loaded = True
 

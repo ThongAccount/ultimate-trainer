@@ -42,6 +42,7 @@ TEST_MODULES = [
     "tests/test_update64_dimensional_bug.py",
     "tests/test_update_semantics.py",
     "tests/test_graph_replay_parity.py",
+    "tests/test_dispatch_order.py",
 ]
 
 
