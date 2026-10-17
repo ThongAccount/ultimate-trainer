@@ -41,8 +41,8 @@ def pytest_sessionstart(session):
         missing.append("dx_tc_32 (gemm_backward_dx_tc_32.cu)")
     if pu._dx_tc_fn is None:
         missing.append("dx_tc (gemm_backward_dx_tc.cu)")
-    if pu._up_tc_v2_fn is None:
-        missing.append("up_tc_v2 (gemm_update_tc_v2.cu)")
+    if pu._up_tc_v2_64_fn is None:
+        missing.append("up_tc_v2_64 (gemm_update_tc_v2.cu)")
     if pu._up_tc_v2_32_fn is None:
         missing.append("up_tc_v2_32 (gemm_update_tc_v2_32.cu)")
     if pf._forward_fn_tc is None:
