@@ -187,9 +187,11 @@ __global__ __launch_bounds__(128) void packed_ternary_update_counterword_kernel(
             int c = c_lo + j;
             if (c >= c_hi) break;
 
-            // (r_local, c) lives in warp w' = (r_local/kM)*2 + c/kN,
-            // elements (r_local%kM, c%kN) of that warp's accumulator
-            int wq = (r_local / kM) * 2 + (c / kN);
+            // (r_local, c) lives in warp wq: row-half = (r_local/kM) % 2,
+            // col-half = c/kN.  Mirrors v2_32's mapping exactly:
+            //   warp_r_off = (w % 2) * kM,  warp_c_off = (w / 2) * kN
+            // so w = 2*(c/kN) + (r_local/kM).
+            int wq = 2 * (c / kN) + (r_local / kM) % 2;
             int r_in = r_local % kM;
             int c_in = c % kN;
 
