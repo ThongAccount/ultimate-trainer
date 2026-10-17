@@ -21,9 +21,11 @@ _CU = r"""
 #include <c10/cuda/CUDAStream.h>
 
 torch::Tensor decode_wrapper(torch::Tensor W_packed, int N, int K);
+void decode_into_wrapper(torch::Tensor W_packed, torch::Tensor W16, int N, int K);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("decode", &decode_wrapper, "packed ternary -> fp16 decode");
+    m.def("decode", &decode_wrapper, "packed ternary -> fp16 decode (allocating)");
+    m.def("decode_into", &decode_into_wrapper, "packed ternary -> fp16 decode into existing buffer");
 }
 """
 
@@ -53,20 +55,42 @@ __global__ __launch_bounds__(256) void decode_kernel(
     }
 }
 
-torch::Tensor decode_wrapper(torch::Tensor W_packed, int N, int K) {
-    TORCH_CHECK(W_packed.is_cuda(), "W_packed must be CUDA");
-    auto W16 = torch::empty({N, K},
-                            torch::dtype(torch::kFloat16).device(W_packed.device()));
-    int stride_words = W_packed.size(1);
+void decode_into_launcher(
+    const uint32_t* W, __half* W16,
+    int N, int K, int stride_words, cudaStream_t stream)
+{
     int nk = N * K;
     int threads = 256;
     int blocks = (nk + threads - 1) / threads;
     if (blocks > 65535) blocks = 65535;
-    decode_kernel<<<blocks, threads, 0, c10::cuda::getCurrentCUDAStream()>>>(
+    decode_kernel<<<blocks, threads, 0, stream>>>(W, W16, N, K, stride_words);
+}
+
+// Allocating form (bench/probe convenience)
+torch::Tensor decode_wrapper(torch::Tensor W_packed, int N, int K) {
+    TORCH_CHECK(W_packed.is_cuda(), "W_packed must be CUDA");
+    auto W16 = torch::empty({N, K},
+                            torch::dtype(torch::kFloat16).device(W_packed.device()));
+    decode_into_launcher(
         reinterpret_cast<const uint32_t*>(W_packed.data_ptr<int32_t>()),
         reinterpret_cast<__half*>(W16.data_ptr<at::Half>()),
-        N, K, stride_words);
+        N, K, W_packed.size(1),
+        c10::cuda::getCurrentCUDAStream());
     return W16;
+}
+
+// Persistent-buffer form: graph-capturable (stable pointers across replays)
+void decode_into_wrapper(
+    torch::Tensor W_packed, torch::Tensor W16, int N, int K)
+{
+    TORCH_CHECK(W_packed.is_cuda() && W16.is_cuda(), "must be CUDA");
+    TORCH_CHECK(W16.dtype() == torch::kFloat16, "W16 must be fp16");
+    TORCH_CHECK(W16.size(0) == N && W16.size(1) == K, "W16 shape mismatch");
+    decode_into_launcher(
+        reinterpret_cast<const uint32_t*>(W_packed.data_ptr<int32_t>()),
+        reinterpret_cast<__half*>(W16.data_ptr<at::Half>()),
+        N, K, W_packed.size(1),
+        c10::cuda::getCurrentCUDAStream());
 }
 """
 
@@ -91,5 +115,10 @@ def load_decode():
 
 
 def decode_packed(W_packed: torch.Tensor, N: int, K: int) -> torch.Tensor:
-    """Decode packed [N, stride_words] int32 -> fp16 [N, K] on GPU."""
+    """Decode packed [N, stride_words] int32 -> fp16 [N, K] on GPU (allocating)."""
     return load_decode()(W_packed, N, K)
+
+
+def decode_into(W_packed: torch.Tensor, W16: torch.Tensor, N: int, K: int) -> None:
+    """Decode into an existing fp16 [N, K] buffer (graph-capturable)."""
+    load_decode().decode_into(W_packed, W16, N, K)

@@ -84,7 +84,8 @@ def bench_shape(name, K, N, B, dev):
 
     torch.manual_seed(0)
     W_fp = torch.randn(N, K, device=dev) * 0.05
-    W_packed = pack_tensor(W_fp.cuda().half())           # int32 words [N, stride]
+    # pack_tensor packs on host -> move the packed words to the GPU
+    W_packed = pack_tensor(W_fp.cuda().half()).to(dev)     # int32 words [N, stride]
     W16 = _decode(W_packed, N, K)  # [N, K] fp16 (GPU decode kernel)
     X = torch.randn(B, K, device=dev, dtype=torch.float16) * 0.5
     dY = torch.randn(B, N, device=dev, dtype=torch.float16) * 0.1
