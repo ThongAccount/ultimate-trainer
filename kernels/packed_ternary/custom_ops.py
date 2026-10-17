@@ -11,6 +11,8 @@ Usage:
 import torch
 from torch.library import custom_op
 
+from .cublas_backend import backward_dx as cublas_dx, forward as cublas_fwd, use_cublas
+
 # Lazy-loaded kernel references (populated on first call)
 _fwd_tc = None
 _dx_tc = None
@@ -51,7 +53,13 @@ def _ensure_loaded():
 
 @custom_op("packed_ternary::forward_tc", mutates_args=())
 def forward_tc(W: torch.Tensor, X: torch.Tensor, K: int) -> torch.Tensor:
-    """Ternary forward GEMM: Y = X @ W^T via WMMA Tensor Cores."""
+    """Ternary forward GEMM: Y = X @ W^T via WMMA Tensor Cores.
+
+    PT_BACKEND=cublas routes to decode-once + cuBLAS (measured 20.7x faster
+    than the custom kernels at B=16384; decode costs 0.105 ms — Phase 0).
+    """
+    if use_cublas():
+        return cublas_fwd(W, X, K)
     _ensure_loaded()
     if _fwd_tc is None:
         raise RuntimeError("TC forward kernel not available")
@@ -67,7 +75,12 @@ def _forward_tc_fake(W, X, K):
 
 @custom_op("packed_ternary::backward_dx_tc", mutates_args=())
 def backward_dx_tc(W: torch.Tensor, dY: torch.Tensor, K: int) -> torch.Tensor:
-    """Backward dX = dY @ W via WMMA Tensor Cores (auto 64x64/32x32)."""
+    """Backward dX = dY @ W via WMMA Tensor Cores (auto 64x64/32x32).
+
+    PT_BACKEND=cublas routes to decode-once + cuBLAS.
+    """
+    if use_cublas():
+        return cublas_dx(W, dY, K)
     _ensure_loaded()
     B = dY.size(0)
     N_out = dY.size(1)
