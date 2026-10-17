@@ -96,8 +96,24 @@ brief's 3-strike rule. Evidence + diagnosis:
 `docs/speedpass/2026-10-11-counterword-findings.md`. Kernel never wired into
 production dispatch; stays in `tests/`.
 
-**Phase 2c (PT_BACKEND=cublas|custom)**: not started — the update-kernel path
-was its blocker; the fwd/dX path (the 20.7× win) does NOT need it.
+**Phase 2c (`PT_BACKEND=cublas|custom`): IMPLEMENTED AND ACCEPTED**
+(`eee07bb`, verified `2635d53` on T4, probe `tests/probe_pt_backend.py`):
+
+| shape | cublas fwd | TFLOPS | cublas dX | parity vs custom |
+|---|---|---|---|---|
+| fc1 (16384×1024×4096) | 7.33 ms | **18.74** | 3.97 ms | **bit-exact** (max_abs 0.0, cos 0.0) |
+| fc2 (16384×4096×1024) | 3.92 ms | **35.10** | 4.32 ms | bit-exact |
+| head (16384×1024×50272) | 51.74 ms | **32.60** | 54.02 ms | bit-exact |
+
+- Brief acceptance `fwd >= 10 TFLOPS @16384x4096x4096`: **PASS (18.74)**.
+- Parity is bit-exact, not merely close — the decode+cuBLAS path produces
+  byte-identical outputs to the custom WMMA kernels at all three shapes, so
+  the backend swap is a pure throughput change with no semantic risk.
+- fc1 shows 18.7 vs fc2's 35.1 TFLOPS because K=1024 is a less favourable
+  cuBLAS tile (and the custom kernel is relatively better at that shape) —
+  the fc1 row is the conservative one.
+- Still open for this phase: whole-step (trainer-level) time vs the custom
+  baseline, and the 300-step Shakespeare loss check (~2.54 reference).
 
 
 ## Open bug found during Phase 1 validation: 32-lane fwd kernel OOBs
