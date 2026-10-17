@@ -77,14 +77,15 @@ def timeit(fn, warmup=10, trials=20):
 
 def bench_shape(name, K, N, B, dev):
     import torch
-    from kernels.packed_ternary import pack_tensor, unpack_tensor
+    from kernels.packed_ternary import pack_tensor
+    from kernels.packed_ternary.pack_decode import decode_packed as _decode
     from kernels.packed_ternary.pack_update import backward_dx, update
     from kernels.packed_ternary.custom_ops import forward_tc
 
     torch.manual_seed(0)
     W_fp = torch.randn(N, K, device=dev) * 0.05
     W_packed = pack_tensor(W_fp.cuda().half())           # int32 words [N, stride]
-    W16 = unpack_tensor(W_packed, N, K).to(torch.float16)  # [N, K] fp16
+    W16 = _decode(W_packed, N, K)  # [N, K] fp16 (GPU decode kernel)
     X = torch.randn(B, K, device=dev, dtype=torch.float16) * 0.5
     dY = torch.randn(B, N, device=dev, dtype=torch.float16) * 0.1
 
@@ -126,7 +127,7 @@ def bench_shape(name, K, N, B, dev):
 
     # ---- (b) decode (reported separately) + cuBLAS GEMMs ----
     try:
-        row["decode_ms"] = timeit(lambda: unpack_tensor(W_packed, N, K))
+        row["decode_ms"] = timeit(lambda: _decode(W_packed, N, K))
     except Exception:
         row["decode_ms"] = None
 
