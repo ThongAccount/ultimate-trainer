@@ -65,6 +65,9 @@ def main() -> int:
     ap.add_argument("--shapes", default=None,
                     help="comma list of fc1,fc2,head (default: $PT_SHAPES or fc1)")
     ap.add_argument("--no-setup", action="store_true")
+    ap.add_argument("--arm", default="all",
+                    help="all|fwd|dx|update|cublas — one arm isolates the "
+                         "poisoning OOB (sticky CUDA error kills the process)")
     # colab exec wraps the file in a Jupyter kernel that appends its own
     # '-f <connection.json>' argv — tolerate unknown args (per brief's note
     # to adapt to the CLI's actual surface rather than fight it).
@@ -102,7 +105,8 @@ def main() -> int:
         if wanted and sname not in wanted:
             continue
         print(f"--- {sname} B={args.batch} K={K} N={N} ---", flush=True)
-        row = br.bench_shape(sname, K, N, args.batch, "cuda")
+        row = br.bench_shape(sname, K, N, args.batch, "cuda",
+                             arms=getattr(args, "arm", "all"))
         rows.append(row)
         for k, v in row.items():
             if isinstance(v, float):

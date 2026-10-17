@@ -75,7 +75,7 @@ def timeit(fn, warmup=10, trials=20):
     return statistics.median(ts)
 
 
-def bench_shape(name, K, N, B, dev):
+def bench_shape(name, K, N, B, dev, arms="all"):
     import torch
     from kernels.packed_ternary import pack_tensor
     from kernels.packed_ternary.pack_decode import decode_packed as _decode
@@ -102,8 +102,10 @@ def bench_shape(name, K, N, B, dev):
         except Exception as e:
             row[key] = f"ERR {type(e).__name__}: {str(e)[:80]}"
 
-    _try(lambda: forward_tc(W_packed, X, K), "dispatch_fwd_ms")
-    _try(lambda: backward_dx(W_packed, dY, K), "dispatch_dx_ms")
+    if arms in ("all", "fwd"):
+        _try(lambda: forward_tc(W_packed, X, K), "dispatch_fwd_ms")
+    if arms in ("all", "dx"):
+        _try(lambda: backward_dx(W_packed, dY, K), "dispatch_dx_ms")
     # update mutates in place -> fresh clone per trial OUTSIDE the timed region
     try:
         counter = torch.zeros(N, K, dtype=torch.int16, device=dev)
