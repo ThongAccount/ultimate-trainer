@@ -39,7 +39,7 @@ def main():
     ap.add_argument("--shapes", default="fc1")
     ap.add_argument("--trials", type=int, default=10)
     ap.add_argument("--skip-timing", action="store_true")
-    args = ap.parse_args()
+    args, _unknown = ap.parse_known_args()   # colab exec appends -f <json>
 
     from kernels.packed_ternary import pack_update as pu
     from kernels.packed_ternary.pack_encode import counterword_module
