@@ -52,6 +52,7 @@ def _load_dx():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_backward_dx(
                     const uint32_t* W, const void* dY, void* dX,
@@ -64,7 +65,7 @@ def _load_dx():
                 launch_packed_ternary_backward_dx(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     dY.data_ptr<at::Half>(), dX.data_ptr<at::Half>(),
-                    B, K, N, W.size(1), nullptr);
+                    B, K, N, W.size(1), c10::cuda::getCurrentCUDAStream());
                 return dX;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -95,6 +96,7 @@ def _load_up():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_update(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
@@ -109,7 +111,7 @@ def _load_up():
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    threshold, nullptr);
+                    threshold, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update", &update_wrapper, "Fused dW->sign->counter->flip");
@@ -145,6 +147,7 @@ def _load_fused():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_backward_update_fused(
                     const void* dY, const void* X, const uint32_t* W_read,
@@ -165,7 +168,7 @@ def _load_fused():
                     const_cast<uint32_t*>(reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>())),
                     counter.data_ptr<int16_t>(),
                     dY.size(0), in_features, dY.size(1), W.size(1),
-                    threshold, nullptr);
+                    threshold, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("backward_update_fused", &fused_wrapper,
@@ -206,6 +209,7 @@ def _load_dx_tc_32():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_backward_dx_tc(
                     const uint32_t* W, const void* dY, void* dX,
@@ -218,7 +222,7 @@ def _load_dx_tc_32():
                 launch_packed_ternary_backward_dx_tc(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     dY.data_ptr<at::Half>(), dX.data_ptr<at::Half>(),
-                    B, K, N, W.size(1), nullptr);
+                    B, K, N, W.size(1), c10::cuda::getCurrentCUDAStream());
                 return dX;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -251,6 +255,7 @@ def _load_dx_tc():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_backward_dx_tc_64(
                     const uint32_t* W, const void* dY, void* dX,
@@ -263,7 +268,7 @@ def _load_dx_tc():
                 launch_packed_ternary_backward_dx_tc_64(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     dY.data_ptr<at::Half>(), dX.data_ptr<at::Half>(),
-                    B, K, N, W.size(1), nullptr);
+                    B, K, N, W.size(1), c10::cuda::getCurrentCUDAStream());
                 return dX;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -295,6 +300,7 @@ def _load_up_tc():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_update_tc(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
@@ -309,7 +315,7 @@ def _load_up_tc():
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    threshold, nullptr);
+                    threshold, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc", &update_tc_wrapper, "Fused dW->sign->counter->flip (TC)");
@@ -339,6 +345,7 @@ def _load_up_tc_v2():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_update_tc_v2_64(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
@@ -353,7 +360,7 @@ def _load_up_tc_v2():
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    threshold, nullptr);
+                    threshold, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v2", &update_tc_v2_wrapper,
@@ -384,6 +391,7 @@ def _load_up_tc_v3():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_update_tc_v3(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
@@ -398,7 +406,7 @@ def _load_up_tc_v3():
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    threshold, nullptr);
+                    threshold, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v3", &update_tc_v3_wrapper,
@@ -430,6 +438,7 @@ def _load_up_tc_v2_32():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_update_tc_v2(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
@@ -444,7 +453,7 @@ def _load_up_tc_v2_32():
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    (int16_t)threshold, nullptr);
+                    (int16_t)threshold, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v2_32", &up_tc_v2_32_wrapper, "Update TC 32x32");
@@ -475,6 +484,7 @@ def _load_up_tc_v3_32():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_update_tc_v3(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
@@ -489,7 +499,7 @@ def _load_up_tc_v3_32():
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    (int16_t)threshold, nullptr);
+                    (int16_t)threshold, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v3_32", &up_tc_v3_32_wrapper, "Update TC 32x32 v3");

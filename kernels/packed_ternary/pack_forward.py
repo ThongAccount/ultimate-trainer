@@ -54,6 +54,7 @@ def _load_forward_kernel():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
 
             extern "C" {
                 void launch_packed_ternary_forward(
@@ -91,7 +92,7 @@ def _load_forward_kernel():
                     in_features,
                     out_features,
                     stride_words,
-                    nullptr  // default stream
+                    c10::cuda::getCurrentCUDAStream()
                 );
 
                 return Y;
@@ -165,6 +166,7 @@ def _load_forward_kernel_v2():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
 
             extern "C" {
                 void launch_packed_ternary_forward_v2(
@@ -202,7 +204,7 @@ def _load_forward_kernel_v2():
                     in_features,
                     out_features,
                     stride_words,
-                    nullptr
+                    c10::cuda::getCurrentCUDAStream()
                 );
 
                 return Y;
@@ -264,6 +266,7 @@ def _load_v3():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_forward_v3(
                     const uint32_t* W, const void* X, void* Y,
@@ -276,7 +279,7 @@ def _load_v3():
                 launch_packed_ternary_forward_v3(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
-                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                    X.size(0), X.size(1), W.size(0), W.size(1), c10::cuda::getCurrentCUDAStream());
                 return Y;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -330,6 +333,7 @@ def _load_v4():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_forward_v4(
                     const uint32_t* W, const void* X, void* Y,
@@ -341,7 +345,7 @@ def _load_v4():
                 launch_packed_ternary_forward_v4(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
-                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                    X.size(0), X.size(1), W.size(0), W.size(1), c10::cuda::getCurrentCUDAStream());
                 return Y;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -401,6 +405,7 @@ def _load_tc_32():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_tc(
                     const uint32_t* W, const void* X, void* Y,
@@ -412,7 +417,7 @@ def _load_tc_32():
                 launch_packed_ternary_tc(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
-                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                    X.size(0), X.size(1), W.size(0), W.size(1), c10::cuda::getCurrentCUDAStream());
                 return Y;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -484,6 +489,7 @@ def _load_tc_64():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_forward_tc_64(
                     const uint32_t* W, const void* X, void* Y,
@@ -495,7 +501,7 @@ def _load_tc_64():
                 launch_packed_ternary_forward_tc_64(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
-                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                    X.size(0), X.size(1), W.size(0), W.size(1), c10::cuda::getCurrentCUDAStream());
                 return Y;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -539,6 +545,7 @@ def packed_ternary_forward_tc_64(W, X):
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_tc(
                     const uint32_t* W, const void* X, void* Y,
@@ -550,7 +557,7 @@ def packed_ternary_forward_tc_64(W, X):
                 launch_packed_ternary_tc(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
-                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                    X.size(0), X.size(1), W.size(0), W.size(1), c10::cuda::getCurrentCUDAStream());
                 return Y;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -627,6 +634,7 @@ def _load_packed():
             cpp_sources=r"""
             #include <cuda_runtime.h>
             #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
             extern "C" {
                 void launch_packed_ternary_forward_packed(
                     const uint32_t* W, const void* X, void* Y,
@@ -639,7 +647,7 @@ def _load_packed():
                 launch_packed_ternary_forward_packed(
                     reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
                     X.data_ptr<at::Half>(), Y.data_ptr<at::Half>(),
-                    X.size(0), X.size(1), W.size(0), W.size(1), nullptr);
+                    X.size(0), X.size(1), W.size(0), W.size(1), c10::cuda::getCurrentCUDAStream());
                 return Y;
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
