@@ -36,7 +36,30 @@ commit quoted per row; torch 2.11.0+cu130.
 
 ## Phase 0 — baseline roofline (B=16384 per production shape)
 
-(pending — table populated below when the T4 run lands)
+Commit `a3d2117`, T4 sm_75 @ 1155 MHz, torch 2.11.0+cu130, median-of-20
+after warmup-10, cuda events. **fc1 measured (K=1024, N=4096):**
+
+| arm | ms | TFLOPS | vs dispatch |
+|---|---|---|---|
+| **dispatch fwd** (packed ternary, custom kernels) | **86.04** | **1.60** | 1.0× |
+| **cuBLAS fwd** (pre-decoded fp16 `X @ W16^T`) | **4.15** | **33.15** | **20.7× faster** |
+| dispatch dX (`dY @ W`) | 42.02 | 3.4 | — |
+| cuBLAS dX | 3.97 | 35.9 | 10.6× faster |
+| dispatch update (dW→counter→flip) | 46.53 | — | — |
+| **decode W → fp16** (new GPU kernel) | **0.105** | — | ~2.6% of one GEMM |
+
+### Phase 0 conclusions
+
+1. **The dispatch path reaches 1.6 TFLOPS = 2.5% of the T4's 65 TFLOPS
+   FP16 peak.** The brief's "~1%" estimate is confirmed (order of magnitude).
+2. **Pre-decoded W + cuBLAS is 20.7× faster on fwd, 10.6× on dX, and
+   decode costs only 0.105 ms** — for fc1 that means
+   decode+GEMM = 4.15ms vs 86.04ms, a 20.7× win *including* decode.
+   The "2-bit packing gives no throughput benefit at B·SEQ=16384" claim is
+   now measured, not argued.
+3. Per-shape fc2/head still pending (each Colab invocation is one shape;
+   the pattern now works and is cheap: ~9 min per shape on a warm session).
+4. SM clock during the run: 1155 MHz (no power capping observed).
 
 ## Phase 1 — plumbing fixes
 
