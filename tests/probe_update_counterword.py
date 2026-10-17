@@ -21,7 +21,6 @@ sys.path.insert(0, os.path.join(os.getcwd(), "tests"))
 import torch
 
 from kernels.packed_ternary import pack_tensor
-from kernels.packed_ternary.pack_encode import build_counterword_ext  # noqa: F401
 
 B = 16384
 K = 1024
