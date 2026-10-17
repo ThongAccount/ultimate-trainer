@@ -135,7 +135,22 @@ code path — is what makes the comparison meaningful). But **the fc1 dispatch
 row should be re-measured on a session where the fwd kernel is healthy** before
 being treated as final.
 
-**Next root-cause step**: compare the `.so` in the warm `pt` session's
-`/root/.cache/torch_extensions` against a fresh build (objdump/nm the two),
-then static-read `gemm_forward_tc_32.cu`'s global-index math for the
-(load/store bounds) against `stride_words` for non-power-of-16 strides.
+**ROOT CAUSE — RESOLVED (commit `2e86e8b`): `pack_tensor` returned a CPU
+tensor.** `torch.from_numpy(packed.astype(np.int32))` never moved the result
+back to the GPU, so every fresh-VM probe/test handed the fwd kernel a *host*
+pointer and the first W load faulted. compute-sanitizer pinned it exactly:
+`W data_ptr=0x3ed6cdd0` (host) vs `X=0x7da477000000` (device), fault address
+~4 GB from both with a 4-byte per-lane stride, 63 identical faults all at
+`packed_ternary_tc_kernel+0x6b0`. Static audit (4 parallel mechanical agents)
+then confirmed the kernel itself has ZERO unguarded global accesses — the
+indexing was never wrong. The roofline bench masked the bug because it called
+`.to(dev)` explicitly.
+
+**Fix**: `pack_tensor` returns `out.to(fp32_tensor.device)` — same device as
+the input, so W lands on the GPU wherever the caller's input lives.
+
+**Verification (T4)**: 8/8 shapes bit-exact vs the fp32 reference
+(maxdiff=0.0000): (16,16,16), (32,32,32), (64,64,128), (64,80,128),
+(256,64,128), (1024,64,64), AND production fc1 (16384×1024×4096) and fc2
+(16384×4096×1024). The graph-replay/dispatch tests and the blocked Phase 2
+acceptance numbers are now unblocked.
