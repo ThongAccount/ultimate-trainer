@@ -54,7 +54,7 @@ def counterword_module():
     combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
 
     _CW_MOD = load_inline(
-        name="pt_update_counterword",
+        name="pt_update_counterword_v2",
         cpp_sources=_CPP,
         cuda_sources=[combined],
         extra_cuda_cflags=["-O2"],
