@@ -93,14 +93,17 @@ def bench_shape(name, K, N, B, dev):
     row = {"shape": name, "K": K, "N": N, "B": B}
 
     # ---- (a) dispatch path ----
-    try:
-        row["dispatch_fwd_ms"] = timeit(lambda: forward_tc(W_packed, X, K))
-    except Exception as e:
-        row["dispatch_fwd_ms"] = f"ERR {type(e).__name__}: {e}"
-    try:
-        row["dispatch_dx_ms"] = timeit(lambda: backward_dx(W_packed, dY, K))
-    except Exception as e:
-        row["dispatch_dx_ms"] = f"ERR {type(e).__name__}: {e}"
+    # NOTE: the 32-lane fwd kernel OOBs on fresh Colab VMs (documented open
+    # bug in the campaign report). Record the failure and CONTINUE so the
+    # cuBLAS arm still measures.
+    def _try(fn, key):
+        try:
+            row[key] = timeit(fn)
+        except Exception as e:
+            row[key] = f"ERR {type(e).__name__}: {str(e)[:80]}"
+
+    _try(lambda: forward_tc(W_packed, X, K), "dispatch_fwd_ms")
+    _try(lambda: backward_dx(W_packed, dY, K), "dispatch_dx_ms")
     # update mutates in place -> fresh clone per trial OUTSIDE the timed region
     try:
         counter = torch.zeros(N, K, dtype=torch.int16, device=dev)
