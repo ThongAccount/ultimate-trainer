@@ -13,6 +13,7 @@ import os
 import torch
 
 _DECODE_FN = None
+_DECODE_MOD = None
 _HAS_DECODE = False
 
 _CU = r"""
@@ -109,9 +110,11 @@ def load_decode():
         extra_cuda_cflags=["-O2"],
         verbose=False,
     )
+    global _DECODE_MOD
+    _DECODE_MOD = lib
     _DECODE_FN = lib.decode
     _HAS_DECODE = True
-    return _DECODE_FN
+    return _DECODE_MOD
 
 
 def decode_packed(W_packed: torch.Tensor, N: int, K: int) -> torch.Tensor:
