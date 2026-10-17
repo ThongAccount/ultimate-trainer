@@ -57,9 +57,24 @@ after warmup-10, cuda events. **fc1 measured (K=1024, N=4096):**
    decode+GEMM = 4.15ms vs 86.04ms, a 20.7× win *including* decode.
    The "2-bit packing gives no throughput benefit at B·SEQ=16384" claim is
    now measured, not argued.
-3. Per-shape fc2/head still pending (each Colab invocation is one shape;
-   the pattern now works and is cheap: ~9 min per shape on a warm session).
-4. SM clock during the run: 1155 MHz (no power capping observed).
+3. Per-shape fc2/head measured (`eb08d515`, cuBLAS arms — the custom fwd
+   kernel OOBs on fresh VMs, see the open-bug note below):
+
+| shape | decode ms | cublas fwd ms (TFLOPS) | cublas dX ms | cublas dW ms | custom update ms |
+|---|---|---|---|---|---|
+| fc1 (K=1024,N=4096) | 0.105 | 4.15 (33.1) | 3.97 | 5.47 | 46.5 |
+| fc2 (K=4096,N=1024) | 0.109 | 4.01 (34.3) | 4.29 | 5.68 | 46.3 |
+| head (K=1024,N=50272) | 1.022 | 50.56 (33.4) | 52.73 | 80.65 | 596.4 |
+
+4. **Whole-step implication (fc-layer pair + head, per step at B=16384)**:
+   decode 1.24 ms + cuBLAS fwd/dX 119.6 ms vs custom fwd/dX/update
+   (86.0+42.0+46.5 measured for fc1 ×2 layers ≈ 350 ms + head 86 ms
+   extrapolated). Even the fully-measured *update* row is unchanged at
+   ~46 ms/layer (the v2_32 counter kernel is not the bottleneck), so the
+   win is entirely fwd/dX: **roughly 2.5-3× on the GEMM share of the step.**
+5. SM clock during the runs: 1155 MHz (no power capping observed).
+6. **Update ran fine on the same fresh VM where fwd OOBs** — the fault is
+   fwd-kernel-specific, strengthening the "pre-existing fwd bug" diagnosis.
 
 ## Phase 1 — plumbing fixes
 
