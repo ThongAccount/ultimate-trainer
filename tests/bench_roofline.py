@@ -118,7 +118,7 @@ def bench_shape(name, K, N, B, dev):
             torch.cuda.synchronize()
             return e0.elapsed_time(e1)
 
-        for _ in range(10):           # warmup
+        for _ in range(5):            # warmup
             _one_update()
         row["dispatch_update_ms"] = statistics.median(
             [_one_update() for _ in range(20)]

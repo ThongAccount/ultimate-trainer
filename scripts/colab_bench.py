@@ -62,6 +62,9 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=16384)
     ap.add_argument("--commit", default="HEAD")
     ap.add_argument("--out", default="/content/roofline.json")
+    ap.add_argument("--shapes", default="fc1",
+                    help="comma list of fc1,fc2,head — keep each Colab "
+                         "invocation under the tool's ~300s deadline")
     ap.add_argument("--no-setup", action="store_true")
     args = ap.parse_args()
 
@@ -89,8 +92,11 @@ def main() -> int:
     sys.path.insert(0, tests_dir)
     import bench_roofline as br
 
+    wanted = args.shapes.split(",") if args.shapes != "all" else None
     rows = []
     for sname, K, N in br.SHAPES:
+        if wanted and sname not in wanted:
+            continue
         print(f"--- {sname} B={args.batch} K={K} N={N} ---", flush=True)
         row = br.bench_shape(sname, K, N, args.batch, "cuda")
         rows.append(row)
@@ -101,8 +107,13 @@ def main() -> int:
                 print(f"  {k:26s} {v}", flush=True)
 
     payload = {"roofline": rows, "env": br.gpu_info(), "batch": args.batch}
-    with open(args.out, "w") as f:
+    out = args.out
+    if len(rows) == 1:
+        base, ext = os.path.splitext(out)
+        out = f"{base}_{rows[0]['shape']}{ext or '.json'}"
+    with open(out, "w") as f:
         json.dump(payload, f, indent=2)
+    print(f"WROTE {out}", flush=True)
     print(f"RESULT JSON: {json.dumps(payload, indent=2)}", flush=True)
     return 0
 
