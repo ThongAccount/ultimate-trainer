@@ -41,6 +41,7 @@ def _ensure_loaded():
 
     _load_tc_if_needed()
     from . import pack_update as pu
+    pu._load_up_tc_v2()  # 64x64 variant: NOT loaded by _load_tc_if_needed()
     pu._load_fused()
     _dx_tc = pu._dx_tc_32_fn if pu._HAS_DX_TC_32 else None
     _dx_tc_64 = pu._dx_tc_fn if pu._HAS_DX_TC else None
@@ -100,11 +101,25 @@ def _backward_dx_tc_fake(W, dY, K):
 @custom_op("packed_ternary::update_tc_v2", mutates_args=("W", "counter"))
 def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
                  X: torch.Tensor, dY: torch.Tensor, threshold: int) -> None:
-    """Fused gradient → counter → bit-flip (TC v2, vectorized counter)."""
+    """Fused gradient → counter → bit-flip (TC v2, vectorized counter).
+
+    Dispatch goes through pack_update._select_update_fn — the load-order-
+    independent selector that owns tile choice and lazy-loads the 64x64 /
+    32x32 variants. The old body read _HAS_UP_TC_V2_64 right after
+    _load_tc_if_needed(), which never loads the 64x64 build, so the flag was
+    always False and every training backward raised
+    "TC update v2 kernel not available".
+    """
     _ensure_loaded()
-    if _update_tc_v2 is None:
+    from . import pack_update as pu
+    fn, _name = pu._select_update_fn(X.size(0), dY.size(1), X.size(1))
+    if fn is not None:
+        fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
+        return
+    pu._load_if_needed()
+    if not pu._HAS_UP:
         raise RuntimeError("TC update v2 kernel not available")
-    _update_tc_v2(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
+    pu._up_fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
 
 
 @custom_op("packed_ternary::backward_update_fused", mutates_args=("W", "counter"))
