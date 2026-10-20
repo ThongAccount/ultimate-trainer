@@ -34,7 +34,7 @@ T = tg.SEQ
 torch.manual_seed(0)
 ids = torch.randint(0, tg.VOCAB, (B, T), device="cuda", dtype=torch.long)
 x = ids[:, :-1].contiguous()
-y = ids[:, 1:].contiguous()
+y = ids.contiguous()  # full seq: train_step_cudagraph shifts y[:, 1:] internally
 
 STEPS = int(os.environ.get("NSTEPS", "300"))
 WARM = 5
