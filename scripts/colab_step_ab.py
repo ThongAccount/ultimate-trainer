@@ -68,7 +68,7 @@ def main():
             url = url.replace("https://", f"https://{tok}@")
         sp.run(["git", "clone", "--quiet", url, d], check=True)
     sp.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=False)
-    sp.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/chore/speedpass"], check=True)
+    sp.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/master"], check=True)
     head = sp.run(["git", "-C", d, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()[:10]
     print(f"commit={head}", flush=True)
 
