@@ -29,6 +29,8 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <cublas_v2.h>
+#include "packed_ternary.cuh"
 
 extern "C" {
 
