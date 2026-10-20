@@ -29,12 +29,6 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cstdint>
-#include <cublas_v2.h>
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include "packed_ternary.cuh"
-
-namespace wmma = nvcuda::wmma;  // (unused; kept minimal)
 
 extern "C" {
 
@@ -69,7 +63,12 @@ extern "C" void packed_ternary_dw_gemm_f32(
     int B, int N, int K, cudaStream_t stream)
 {
     if (B == 0) return;
-    cublasHandle_t handle = at::cuda::getCurrentCUDALibraryHandles().cublas_handle();
+    // Self-managed handle (at::cuda::getCurrentCUDALibraryHandles is not
+    // available under nvcc's include set here); stream set per call.
+    static cublasHandle_t s_handle = nullptr;
+    if (!s_handle) { cublasCreate(&s_handle); }
+    cublasSetStream(s_handle, stream);
+    cublasHandle_t handle = s_handle;
     const float alpha = 1.0f, beta = 0.0f;
     // Row-major torch buffers reinterpreted column-major:
     //   A = X  as [K,B] col-major (OP_N, lda=K)
