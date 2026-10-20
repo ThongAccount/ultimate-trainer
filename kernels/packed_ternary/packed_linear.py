@@ -58,6 +58,17 @@ def _forward_auto(W: torch.Tensor, X: torch.Tensor) -> torch.Tensor:
     N = W.shape[0]       # N=out_features
     # TC WMMA m16n16k16 needs M, N, K all >= 16 AND multiples of 16
     from .pack_update import _tc_ok
+    # PT_BACKEND=cublas (decode + cuBLAS GEMM). MUST be checked before the
+    # tc_64 branch below: that branch returns the raw custom kernel for every
+    # shape with dims >= 64, which made the cublas forward unreachable at all
+    # production shapes (measured 2026-10-20: zero "[dispatch] fwd cublas"
+    # lines across 50 profiled steps, custom fwd kernel = 40.8% of step).
+    from .cublas_backend import use_cublas
+    if use_cublas():
+        if _HAS_CUSTOM_OPS:
+            return co_forward_tc(W, X, K)
+        from .cublas_backend import forward as cublas_fwd
+        return cublas_fwd(W, X, K)
     # 64x64 TC: 4x fewer CTAs for large dimensions
     if B >= 64 and N >= 64 and K >= 64 and _tc_ok(B) and _tc_ok(N) and _tc_ok(K):
         from .pack_forward import has_tc_64, packed_ternary_forward_tc_64
