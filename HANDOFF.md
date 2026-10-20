@@ -994,3 +994,174 @@ CPU-runnable suites pass (counter-clamp 1055 cases, perfgate logic 20).
 4. Still queued from the sweep: fwd instruction bundle (kLUT branchless +
    W-word reg-dedup + half2 X/dY loads), sanitizer one-shot, flip-rate
    convergence test.
+---
+
+## 28. SESSION 2026-10-11/12 — T4 under-utilization campaign (user-brief)
+
+Single deliverable: measure + fix T4 under-utilization. Full report:
+`docs/speedpass/2026-10-11-t4-underutilization.md`. Commits below on
+`chore/speedpass`.
+
+### State: WHAT IS DONE
+
+**Phase 0 — roofline (DONE, the headline)**
+
+B=16384 (production), T4 sm_75 @1155 MHz, cuda-event median-of-20, warmup 10:
+
+| shape | custom fwd | cuBLAS fwd | gap | decode W |
+|---|---|---|---|---|
+| fc1 (K=1024,N=4096) | 86.04 ms / 1.60 TFLOPS | 4.15 ms / 33.15 | 20.7× | 0.105 ms |
+| fc2 (K=4096,N=1024) | (see note) | 4.01 ms / 34.3 | — | 0.109 ms |
+| head (K=1024,N=50272) | (see note) | 50.56 ms / 33.4 | — | 1.02 ms |
+
+Custom dispatch path = **2.5% of T4 FP16 peak**. UPDATE kernel is NOT the
+bottleneck (~46 ms/layer, matches prior baselines, ran healthy on the same
+GPU that faulted on fwd). The 2-bit packing buys no throughput at this
+scale — measured, not argued.
+NOTE on fc2/head custom rows: not measured in this campaign (see the fwd-bug
+saga below); the cuBLAS rows are complete and are the comparison that matters.
+
+**Phase 1 — plumbing (DONE)**
+
+1. Stream plumbing (`d31b4c7`): all 18 `nullptr` launch sites →
+   `c10::cuda::getCurrentCUDAStream()`. All 19 `.cu` launchers already
+   accepted `cudaStream_t`, wrapper-only change.
+2. Dispatch selector (`44aeba5`): the load-order-aliasing bug is REAL — the
+   shared `_up_tc_v2_fn` was overwritten by the 32×32 build whenever
+   `_load_tc_if_needed()` ran, so large-shape calls silently ran the small
+   kernel depending on call order. Fixed with per-tile pointers
+   (`_up_tc_v2_64_fn` / `_up_tc_v2_32_fn` / `_up_tc_v3_32_fn`) + an explicit
+   `_select_update_fn()`. 64 kernels now gated on %16 (not %64) — they carry
+   internal bounds guards, so 80/112 take the wide tile. `PT_VERBOSE_DISPATCH=1`
+   prints the chosen kernel. The brief's "backward_dx calls undefined
+   `_load_dx_tc`" claim was STALE — it exists and dX already had split
+   pointers; recorded in the report.
+3. T4 gate: **84/84 tests passed** (3:25). Includes the two new regression
+   suites: `tests/test_graph_replay_parity.py` (stream plumbing — capture,
+   mutate static input, replay, bit-exact vs eager) and
+   `tests/test_dispatch_order.py` (small-then-large order independence).
+   Two test-expectation bugs of mine were caught and fixed on the way:
+   `_tc_ok_16(48)` IS true (48=3×16), and small shapes correctly select
+   v2_64 under the %16 gate.
+
+**Phase 2 — cublas backend (ACCEPTED; one measurement missing)**
+
+- Decode kernel shipped (`kernels/packed_ternary/pack_decode.py`): GPU decode,
+  0.105 ms at fc1, one thread/element; plus `decode_into` persistent-buffer
+  form (graph-capturable) and `kernels/packed_ternary/scratch.py` (one buffer
+  per (N,K) shape).
+- `PT_BACKEND=cublas|custom` (`eee07bb`) routes fwd/dX through
+  decode-once-scratch + torch.matmul. Update stays on the v2_32 counter kernel.
+- Acceptance measured on T4 (`2635d53`, `tests/probe_pt_backend.py`):
+
+| shape | cublas fwd | TFLOPS | cublas dX | parity |
+|---|---|---|---|---|
+| fc1 | 7.33 ms | **18.74** | 3.97 ms | bit-exact (0.0 max abs) |
+| fc2 | 3.92 ms | **35.10** | 4.32 ms | bit-exact |
+| head | 51.74 ms | **32.60** | 54.02 ms | bit-exact |
+
+  Brief's "fwd >= 10 TFLOPS @16384x4096x4096": PASS (18.74). The fc1 number
+  is the conservative one — K=1024 is a worse cuBLAS tile than fc2's K=4096.
+- Counter-word update kernel (no atomicCAS, `update_counterword.cu`): built
+  clean (REG:52/0 spills) but **PARITY-FAILED** vs v2_32 and parked per the
+  brief's 3-strike rule. Evidence + diagnosis:
+  `docs/speedpass/2026-10-11-counterword-findings.md`.
+
+**The fwd-OOB saga (RESOLVED — it was not a kernel bug)**
+
+`pack_tensor()` ended with `torch.from_numpy(packed.astype(np.int32))` — a
+HOST tensor. Fresh-VM probes/tests passed it straight to the fwd kernel,
+which dereferenced a host pointer as a device pointer → illegal address at
+the first W load. compute-sanitizer pinned it exactly: W `data_ptr`
+0x3ed6cdd0 (host) vs X 0x7da477000000 (device), fault ~4 GB away, 4-byte
+per-lane stride, 63 identical faults at `packed_ternary_tc_kernel+0x6b0`.
+Four parallel mechanical (sonic) agents audited all 19 kernels — the faulting
+kernel has ZERO unguarded global accesses. The roofline bench masked the bug
+because it called `.to(dev)` explicitly. Fixed in `2e86e8b`:
+`pack_tensor` now returns `out.to(fp32_tensor.device)`.
+Verified: 8/8 shapes bit-exact on T4, incl. fc1/fc2 at B=16384.
+
+### State: WHAT IS NOT DONE / RESUME HERE
+
+1. **Whole-step A/B — the last Phase 2 acceptance item. NOT YET RUN.**
+   Everything is committed: `scripts/colab_step_ab.py` is a self-contained
+   `colab run` one-shot that trains the production 6-layer model 300 steps
+   under PT_BACKEND=custom then =cublas and prints median step ms, tok/s,
+   and the loss trajectory. Exact command:
+   ```
+   TOK=$(gh auth token)
+   colab run --gpu T4 -s stepab2 --timeout 5400 \
+     --env "GITHUB_TOKEN=$TOK" --env "NSTEPS=300" scripts/colab_step_ab.py
+   ```
+   Run it from the local box with the bash tool's `async: true` AND
+   `timeout: 3600` — see the tooling notes below. Expect ~30-60 min wall
+   (clone + 2× (5 JIT extension builds + 300 steps)).
+2. **300-step Shakespeare loss vs ~2.54 reference: BLOCKED ON DATA.** No
+   `shakespeare.txt` in the repo; the A/B driver trains on synthetic token
+   batches (deterministic seed), which is valid for the TIMING comparison but
+   not for the loss-scale claim. If real text is wanted, drop the file in and
+   re-run — the trajectory is already printed at steps 1/49/99/final.
+3. **Phase 3 (custom kernel work): NOT STARTED, blocked by design.** ncu is
+   unavailable on hosted VMs (ERR_NVGPUCTRPERM — permission-gated hardware
+   counters), so per the brief's own rule Phase 3 changes are accepted only on
+   measured ≥1.15× speedups, never on reasoning. With the cublas backend at
+   bit-exact parity and 3-4× the custom kernels' throughput, the custom-kernel
+   work is likely moot for fwd/dX. Only revisit if whole-step data shows the
+   update kernel dominating (it doesn't in the per-layer rows).
+
+### TOOLING NOTES — read before running anything on Colab
+
+These cost me ~10 dead sessions' worth of cycles this session. The
+`~/.agents/skills/colab-cli/SKILL.md` skill documents all of it — READ IT.
+
+1. **The bash tool's 300 s default deadline applies even to `async: true`
+   jobs.** A long GPU run needs `async: true` **and an explicit
+   `timeout:`** (e.g. 3600). Without it the job is killed at 300 s and looks
+   like a Colab failure. This is what killed the first A/B attempt.
+2. **Session limit is 1.** Accumulating sessions → `TooManyAssignmentsError`
+   / "Allocation refused". `colab sessions` lists + prunes stale entries.
+   Run `colab sessions` before creating; stop leftovers.
+3. **`colab exec` has no short reply window** — the "Timeout waiting for
+   reply" deaths were `timeout NNN` wrappers on my own CLIENT, not the
+   session. Don't wrap `colab exec` in shell timeouts.
+4. **Prefer one-shot `colab run -f script.py` for long jobs** (new+exec+stop,
+   exit codes propagate, stdout streams live). Use persistent sessions +
+   repeated `exec` only when you want the kernel's cached JIT builds and
+   imports — kernel state PERSISTS across exec, so DON'T re-clone /
+   `reset --hard` on every call (that recreated stale-`.so` races).
+5. **`colab exec -f` reads the LOCAL file** — no /tmp files on the VM needed
+   (and my local /tmp gets cleaned between calls, which broke scripts that
+   sourced helper files).
+6. **Jupyter argv leak**: `colab exec` runs the script inside a kernel that
+   appends `-f <conn.json>` to argv. Every exec-runnable script needs
+   `parse_known_args()`.
+7. **Stale extension cache masks bugs**: the one session where the "fwd bug"
+   didn't reproduce had a warm `~/.cache/torch_extensions` built from older
+   source. When a kernel misbehaves on a fresh VM but not an old session,
+   suspect the cache: `rm -rf /root/.cache/torch_extensions` on the VM.
+
+### Key files
+
+| What | Where |
+|---|---|
+| Campaign report (full roofline tables, 6 brief contradictions) | `docs/speedpass/2026-10-11-t4-underutilization.md` |
+| Counter-word parity-failure evidence | `docs/speedpass/2026-10-11-counterword-findings.md` |
+| Whole-step A/B one-shot (READY TO RUN) | `scripts/colab_step_ab.py` |
+| Backend equivalence + TFLOPS probe | `tests/probe_pt_backend.py` |
+| cublas backend | `kernels/packed_ternary/cublas_backend.py` |
+| Decode kernel + scratch | `kernels/packed_ternary/pack_decode.py`, `scratch.py` |
+| Gate (84 tests) | `colab_pytest.py` + 11 test modules |
+| Bench protocol (10-trial median, A/A null) | `tests/bench_protocol.py` |
+
+### Commits (this campaign, in order)
+
+`d31b4c7` stream plumbing → `44aeba5` dispatch selector → `eee07bb`
+PT_BACKEND=cublas → `2e86e8b` pack_tensor device fix (THE fwd-OOB root cause)
+→ gate/conftest/probe fixes → `2635d53` chunked-cosine probe fix →
+`ba4ece6` whole-step A/B runner.
+
+### Next single action
+
+Run the whole-step A/B command above (with `timeout: 3600`). It produces the
+last Phase 2 acceptance number; everything after that is either blocked
+(ncu) or moot (cublas is already bit-exact and 3-4× faster).
