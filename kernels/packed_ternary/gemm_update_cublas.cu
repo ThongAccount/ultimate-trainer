@@ -90,7 +90,7 @@ extern "C" void packed_ternary_dw_gemm_f32(
                 "cublasGemmEx dw_gemm_f32 failed: ", (int)st);
 }
 
-void launch_update_epilogue(
+extern "C" void launch_update_epilogue(
     uint32_t* W, int16_t* counter, const float* dW,
     int N, int K, int stride_words, int16_t threshold, cudaStream_t stream)
 {
