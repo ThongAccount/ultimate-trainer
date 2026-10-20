@@ -1165,3 +1165,54 @@ PT_BACKEND=cublas → `2e86e8b` pack_tensor device fix (THE fwd-OOB root cause)
 Run the whole-step A/B command above (with `timeout: 3600`). It produces the
 last Phase 2 acceptance number; everything after that is either blocked
 (ncu) or moot (cublas is already bit-exact and 3-4× faster).
+
+---
+
+## 29. SESSION 2026-10-20 — Whole-step A/B LANDED (session 28's next action — DONE)
+
+T4, hosted Colab VM, commit `91ec193`, NSTEPS=300, results log
+`/workspace/stepab_full.log`:
+
+| backend | median step ms | tok/s |
+|---|---|---|
+| custom | 5443.6 | 3004 |
+| cublas | 2942.8 | 5557 |
+
+cublas = 1.85x fewer step ms vs custom on the same VM/seed. Both backends
+print the IDENTICAL trajectory (11.0000 -> 15.2578 -> nan at step 99): the NaN
+is a synthetic-data artifact shared by both, not a backend divergence. Loss-
+scale claims stay blocked on real text (no change to §26).
+
+Three latent bugs fixed en route — the whole-step path had NEVER executed on
+this branch; all 84 gate tests bypass the custom-op path:
+
+1. `dfa603e` — A/B runner reset the VM repo to the deleted
+   `origin/chore/speedpass` -> `origin/master`.
+2. `c07c86c` — driver passed an already-shifted `y`;
+   `train_step_cudagraph` shifts `y[:, 1:]` internally -> cross_entropy
+   16352 vs 16320 crash.
+3. `91ec193` — `update_tc_v2` custom op read `_HAS_UP_TC_V2_64` after
+   `_load_tc_if_needed()`, which never builds the 64x64 variant, so every
+   training backward raised "TC update v2 kernel not available". Now
+   dispatches via `pack_update._select_update_fn`.
+
+Vs the 6,619 ms / 2,475 tok/s baseline: CAVEAT — baseline was a Modal T4, this
+run a hosted Colab T4 (different torch build, python 3.13.15, different
+power state); the same-VM custom<->cublas pair is the acceptance-grade
+comparison. Driver denominator note: tok/s counts 16,352 tok/step (32x511, x
+only) vs the baseline's implied 16,385 (32x512) — 0.2%, immaterial. Ship bar
+(>=5% end-to-end): CLEARED on both readings (custom -17.8% step time,
+cublas -55.6%).
+
+GPU utilization during the run (live nvidia-smi via `colab console`, 24
+samples x 3s during the cublas phase): SM 100% at every sample, mem util
+29-85%, 10,627 MiB / 15,360, 57-69 W of the 70 W cap, SM clock 720-1110 of
+1590 MHz -> power-capped silicon, no idle-GPU dispatch gap to recover. The
+custom phase was NOT sampled live (the sampler launched during the cublas
+phase); the earlier failed attempts have no samples at all.
+
+GO queue after this (per §26): perfgate baseline regen
+(`colab_perfgate.py --update-baseline`) + the fwdspill/fwdswizzle/uppipeline
+probes under the 10-trial protocol. Also parked: `tests/bench_update_v2.py`
+calls the same custom op and must have been broken the same way — worth a
+check before trusting any of its numbers.
