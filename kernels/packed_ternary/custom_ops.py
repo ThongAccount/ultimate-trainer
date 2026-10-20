@@ -8,6 +8,7 @@ Usage:
     # Now torch.compile can trace through these ops
 """
 
+import os
 import torch
 from torch.library import custom_op
 
@@ -110,6 +111,11 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     always False and every training backward raised
     "TC update v2 kernel not available".
     """
+    if os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas":
+        # Ranked item #1: cuBLAS dW (fp32 out) + counter/flip epilogue.
+        from .update_cublas import update_cublas
+        update_cublas(W, counter, X, dY, threshold)
+        return
     _ensure_loaded()
     from . import pack_update as pu
     fn, _name = pu._select_update_fn(X.size(0), dY.size(1), X.size(1))

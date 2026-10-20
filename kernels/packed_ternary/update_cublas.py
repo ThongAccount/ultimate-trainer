@@ -1,0 +1,107 @@
+"""Update re-hosted on cuBLAS (ranked item #1, 2026-10-20).
+
+PT_UPDATE_BACKEND=cublas routes custom_ops.update_tc_v2 here:
+    dW32 = dY^T @ X          # cublasGemmEx, fp16 in / fp32 out (no rounding)
+    epilogue: counter/flip   # exact gemm_update_tc_v2.cu semantics
+
+fp32-out dW is the parity requirement: torch.matmul on fp16 inputs returns
+fp16, which rounds dW and can flip near-zero signs.
+
+Env:
+    PT_UPDATE_BACKEND=cublas|custom (default custom — existing kernel path)
+"""
+import os
+
+import torch
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CUH_PATH = os.path.join(HERE, "packed_ternary.cuh")
+CU_PATH = os.path.join(HERE, "gemm_update_cublas.cu")
+
+_HAS_UPDATE_CUBLAS = False
+_dw_gemm_f32 = None
+_update_epilogue = None
+
+
+def _load_update_cublas():
+    global _HAS_UPDATE_CUBLAS, _dw_gemm_f32, _update_epilogue
+    if _HAS_UPDATE_CUBLAS:
+        return
+    try:
+        from torch.utils.cpp_extension import load_inline
+        with open(CUH_PATH) as f:
+            cuh = f.read()
+        with open(CU_PATH) as f:
+            cu = f.read()
+        combined = cuh + "\n" + cu.replace('#include "packed_ternary.cuh"', "")
+        _lib = load_inline(
+            name="packed_ternary_update_cublas_ext",
+            cpp_sources=r"""
+            #include <cuda_runtime.h>
+            #include <torch/extension.h>
+#include <c10/cuda/CUDAStream.h>
+extern "C" {
+    void packed_ternary_dw_gemm_f32(
+        const void* dY, const void* X, void* dW,
+        int B, int N, int K, cudaStream_t stream);
+    void launch_update_epilogue(
+        void* W, void* counter, const void* dW,
+        int N, int K, int stride_words, int64_t threshold, cudaStream_t stream);
+}
+
+void dw_gemm_f32(torch::Tensor dY, torch::Tensor X, torch::Tensor dW) {
+    int B = dY.size(0), N = dY.size(1), K = X.size(1);
+    packed_ternary_dw_gemm_f32(
+        dY.data_ptr<at::Half>(), X.data_ptr<at::Half>(),
+        dW.data_ptr<float>(),
+        B, N, K, c10::cuda::getCurrentCUDAStream());
+}
+
+void update_epilogue(torch::Tensor W, torch::Tensor counter, torch::Tensor dW,
+                     int64_t threshold) {
+    int N = W.size(0), K = dW.size(1);
+    int stride_words = W.size(1);
+    launch_update_epilogue(
+        W.data_ptr<int32_t>(), counter.data_ptr<int16_t>(), dW.data_ptr<float>(),
+        N, K, stride_words, (int16_t)threshold, c10::cuda::getCurrentCUDAStream());
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("dw_gemm_f32", &dw_gemm_f32, "dW = dY^T @ X, fp16-in/fp32-out cuBLAS");
+    m.def("update_epilogue", &update_epilogue, "counter/flip epilogue (v2_64 semantics)");
+}
+            """,
+            cuda_sources=[combined], verbose=False,
+            extra_cuda_cflags=["-O2"],
+        )
+        _dw_gemm_f32 = _lib.dw_gemm_f32
+        _update_epilogue = _lib.update_epilogue
+        _HAS_UPDATE_CUBLAS = True
+    except Exception as e:
+        print(f"[update_cublas] load failed: {e}")
+
+
+def use_update_cublas() -> bool:
+    return os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas"
+
+
+def update_cublas(W: torch.Tensor, counter: torch.Tensor,
+                  X: torch.Tensor, dY: torch.Tensor, threshold: int = 32):
+    """Re-hosted update: cuBLAS dW (fp32 out) + counter/flip epilogue.
+
+    Same in-place semantics as pack_update.update: W and counter are mutated.
+    """
+    _load_update_cublas()
+    if not _HAS_UPDATE_CUBLAS:
+        raise RuntimeError("update cublas backend not available")
+    assert W.is_contiguous(), "W must be contiguous for in-place update"
+    assert counter.is_contiguous(), "counter must be contiguous"
+    if not (0 <= int(threshold) <= 32767):
+        raise RuntimeError(f"threshold must be in [0, 32767], got {threshold}")
+    X = X.contiguous()
+    dY = dY.contiguous()
+    N, K = W.size(0), X.size(1)
+    dW = torch.empty((N, K), dtype=torch.float32, device=X.device)
+    _dw_gemm_f32(dY, X, dW)
+    _update_epilogue(W, counter, dW, int(threshold))
+    return dW
