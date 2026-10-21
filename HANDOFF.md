@@ -1266,3 +1266,42 @@ baseline) — gated exactly as Researcher set: fp32-out cublasGemmEx shim,
 sign-disagreement count at prod shapes, flip-rate trajectory test, and abort
 the class on any transition-matrix sign failure. bench_update_v2.py stays
 suspect (goes through the op, Part-2 embedding bug).
+
+---
+
+## 31. SESSION 2026-10-21 — #1 LANDED: update reduction re-hosted on cuBLAS
+
+Implementation `f6cb4e1`-`cb30f87` (env-gated `PT_UPDATE_BACKEND=cublas`;
+default path untouched): `kernels/packed_ternary/gemm_update_cublas.cu` —
+cublasGemmEx dW with FP32 out (fp16-out rounds dW and can flip near-zero
+signs) + one-thread-per-element epilogue replicating gemm_update_tc_v2.cu
+lines 186-201 exactly (cnt += sign rule; flip ladder via the shared
+atomicCAS helpers). Verified on upd1 (T4, commit cb30f87):
+
+**Gate 1 (parity, blocking on W):** W bit-EXACT vs the shipped v2_64 on
+fc1/fc2/head from identical state; counter diverges at 3/2 elements (4.2M
+each) on fc1/fc2 — all sign disagreements vs an fp64 reference sit in the
+|dW|<1e-3 noise band (213/51.4M on head, 209 of them in-band).
+
+**Gate 2 (10-trial median per call):** fc1 48.74->5.00 ms (9.75x),
+fc2 46.92->4.07 ms (11.52x), head 606.36->88.28 ms (6.87x). The v2_64 side
+reproduces Researcher's provenance rows (46.5/46.3/596.4).
+
+**Whole step (50-step torch.profiler, both fixes in):** profiled median
+**519 ms** (steps flat 514-524, drift +1%). Op table: cuBLAS GEMMs (fwd+dX+dW)
+39% = 204 ms (~49 TFLOPS, 75% of T4 peak), re-hosted update 22% = 114 ms,
+glue (mul/add/softmax/LN/CE) ~21%, remainder ~17%.
+
+**Trajectory:** 11.0000 -> 15.2500 (step 40) vs the old path's 15.2578 at
+step 49 — near-identical but NO LONGER bit-identical (the disclosed counter
+jitter). On synthetic data immaterial; the flip-rate trajectory gate stays
+pending for real data.
+
+**Day's trajectory of the whole step:** 6,619 baseline -> 2,942.8 (A/B
+cublas) -> 1,696 (forward fix `24a0f28`) -> **519 ms (`cb30f87`)** =
+~12.7-13.2x, all same-protocol measurements.
+
+**BLOCKED:** the official 300-step A/B-format run (RESULTS line with tok/s)
+and the flip-rate gate — the Colab account is at 0.00 compute units and T4
+allocation returns Service Unavailable (2026-10-21 ~00:50). Retry when the
+account has units.
