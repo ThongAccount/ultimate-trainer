@@ -1216,3 +1216,53 @@ GO queue after this (per §26): perfgate baseline regen
 probes under the 10-trial protocol. Also parked: `tests/bench_update_v2.py`
 calls the same custom op and must have been broken the same way — worth a
 check before trusting any of its numbers.
+
+---
+
+## 30. SESSION 2026-10-20 (late) — #2 attribution + cublas-forward bug found & fixed
+
+Item #2 measurement (Researcher's ranked list): 50-step torch.profiler passes
+inside the whole step, 4 fresh hosted T4 sessions (prof2-prof4), cublas branch
+`7d78a44` then fixed `24a0f28`, torch 2.11.0+cu130, py 3.13.15. Logs:
+`docs/speedpass/2026-10-20-step-measurements/`.
+
+**THE FINDING: the accepted cublas backend's forward path had never run.**
+`_forward_auto` tested the 64x64-tile branch BEFORE the custom-op branch, and
+that branch returns the raw custom kernel for every shape with dims >= 64 (=
+all production shapes). Dispatch logs proved it: `[dispatch] dX cublas` x3,
+`[dispatch] fwd cublas` x0, while `packed_ternary_forward_tc_64_kernel` was
+40.8% of self-CUDA time inside the "cublas" step. The A/B's 1.85x was dX alone.
+Fixed in `24a0f28` (use_cublas gate moved ahead of the tc_64 branch).
+
+**Verified fix (prof4, same script/protocol as prof3):**
+- `[dispatch] fwd cublas` fires for fc1/fc2/head
+- step: 2,942.8 ms (A/B) -> prof3 2,828 profiled median -> **prof4 1,696
+  profiled median / 1,621-1,652 ms unprofiled** (~4.0x vs the 6,619 baseline)
+- trajectory bit-identical: step-49 loss 15.2578 = pre-fix cublas loss_50
+  (deterministic seed) — the fix is perf-only
+
+**New step breakdown (prof4, profiled):** update_tc_v2 v2_64 75.8% (1,295 ms,
+99.65 ms x 13 layers — dispatch-confirmed v2_64, so Researcher's v2_32-based
+1,153 ms row is superseded by this in-step re-based number); cuBLAS mm
+(fwd+dX) 12.4% (212 ms); aten::mul (scale) 2.6%; glue ~9%.
+
+**Trend item closed:** 50-step drift is -3.4% (custom, prof2) / -1.2% (cublas,
+prof4): the A/B's 4.0->5.5 s climb was a one-VM allocator/thermal state, not
+systematic growth.
+
+**Environment traps hit on the way (all cost real time):** Colab T4 images
+ship WITHOUT ninja (JIT builds fail; the A/B wrapper installs it, ad-hoc
+scripts must too); a failed build leaves a version record with no .so and
+torch then skips rebuilding forever (needs `rm -rf /root/.cache/
+torch_extensions` WITH ninja present); `colab exec --env` does NOT reliably
+reach the kernel's os.environ — set PT_BACKEND inside the script before repo
+imports; idle sessions get pruned mid-campaign (3 of 4 sessions lost to
+404/401 — budget session churn into vm measurements).
+
+**#1 re-based for the decision:** after `24a0f28` the update kernel is 75.8%
+of ~1.65 s. Same-shape cuBLAS dW rows (5.47/5.68/80.65 ms = 147.6 ms) imply a
+re-hosted reduction + thin epilogue could take the step to ~0.5 s (~13x
+baseline) — gated exactly as Researcher set: fp32-out cublasGemmEx shim,
+sign-disagreement count at prod shapes, flip-rate trajectory test, and abort
+the class on any transition-matrix sign failure. bench_update_v2.py stays
+suspect (goes through the op, Part-2 embedding bug).
