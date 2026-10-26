@@ -50,7 +50,10 @@ sys.path.insert(0, REPO)
 
 import torch
 from kernels.packed_ternary import PackedTernaryLinear, pack_tensor, unpack_tensor
-from kernels.packed_ternary.custom_ops import update_tc_v2 as co_update_tc_v2
+try:
+    from kernels.packed_ternary.custom_ops import update_tc_v2 as co_update_tc_v2
+except Exception:  # custom_ops can fail to register; packed_linear re-exports it
+    from kernels.packed_ternary.packed_linear import co_update_tc_v2
 from tools.flip_rate_verdict import evaluate_flip_rate
 
 STEPS       = int(os.environ.get("FLIP_STEPS", "1000"))
@@ -111,7 +114,7 @@ def build_layer():
     # Perturb one grid step on a random subset: a real residual to correct.
     W = unpack_tensor(layer.W_packed, D_OUT, D_IN, gamma).cuda()
     g = torch.Generator(device="cpu"); g.manual_seed(SEED + 1)
-    sel = torch.rand(D_OUT, D_IN, generator=g) < PERTURB
+    sel = (torch.rand(D_OUT, D_IN, generator=g) < PERTURB).cuda()
     Wp = W.clone()
     Wp[sel & (W > 0)] = 0.0
     Wp[sel & (W < 0)] = 0.0
