@@ -26,6 +26,7 @@ random-token batch), under which the loss NaNs deterministically at step ~99
 Prints RESULTS: lines for each backend so the wrapper summary is parseable.
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -162,28 +163,22 @@ def main():
                "NSTEPS": str(args.nsteps), "DATA_MODE": args.data}
         print(f"--- arm {label} (PT_BACKEND={backend} "
               f"PT_UPDATE_BACKEND={update_backend}) ---", flush=True)
-        proc = subprocess.Popen([sys.executable, "step_ab_driver.py"], cwd=d, env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1)
-        rc = 0
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            print(line, flush=True)
+        sys.path.insert(0, d)
+        from tools.stream_runner import run_streaming
+        rc, out = run_streaming([sys.executable, "step_ab_driver.py"], cwd=d, env=env)
+        for line in out:
             if line.startswith("RESULTS:"):
                 rec = {}
                 for tok in line.split()[1:]:
                     if "=" in tok:
                         k, v = tok.split("=", 1)
                         rec[k] = v
+                try:
+                    rec["median_step_ms"] = float(rec.get("median_step_ms", "nan"))
+                except ValueError:
+                    pass
                 if "label" in rec:
-                    rec["label"] = rec["label"]
-                    try:
-                        rec["median_step_ms"] = float(rec.get("median_step_ms", "nan"))
-                    except ValueError:
-                        pass
                     by[rec["label"]] = rec
-        proc.wait()
-        rc = proc.returncode
         if rc != 0:
             print(f"RESULTS: backend={backend} update_backend={update_backend} "
                   f"label={label} FAILED rc={rc}", flush=True)
@@ -209,6 +204,17 @@ def main():
         print("AB_VERDICT: incomplete (missing baseline or shipped arm) "
               "passed=False", flush=True)
         failures += 1
+
+    # Persist on the VM as well as printing: under a Jupyter kernel the
+    # stdout path is fragile, and the numbers must survive it.
+    outdir = os.path.join(d, "results")
+    os.makedirs(outdir, exist_ok=True)
+    with open(os.path.join(outdir, "whole_step_ab.json"), "w") as fh:
+        json.dump({"commit": head, "nsteps": args.nsteps, "data": args.data,
+                   "ship_bar_pct": SHIP_BAR_PCT,
+                   "historical_baseline_ms": HISTORICAL_BASELINE_MS,
+                   "arms": by}, fh, indent=2, sort_keys=True)
+    print(f"ARTEFACT: {os.path.join(outdir, 'whole_step_ab.json')}", flush=True)
     return 1 if failures else 0
 
 

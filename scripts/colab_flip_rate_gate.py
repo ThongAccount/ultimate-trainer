@@ -38,6 +38,7 @@ Outputs (parsed by scripts/colab_official_suite.py):
   FLIPRATE_GATE: PASS|FAIL overall (shipped backend)
 """
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -268,7 +269,22 @@ def main():
     env = {**os.environ, "REPO_DIR": d, "FLIP_STEPS": str(args.steps),
            "FLIP_THRESHOLD": str(args.threshold), "FLIP_BACKENDS": args.backends,
            "FLIP_SMOKE": "1" if args.smoke else "0"}
-    rc = subprocess.run([sys.executable, "flip_rate_driver.py"], cwd=d, env=env).returncode
+    # The driver must be run through a PIPE and re-printed: a child that
+    # inherits stdout under a Jupyter kernel writes to a descriptor the CLI
+    # never sees (this lost one full T4 allocation on 2026-10-26).
+    sys.path.insert(0, d)
+    from tools.stream_runner import run_streaming
+    rc, out = run_streaming([sys.executable, "flip_rate_driver.py"], cwd=d, env=env)
+
+    outdir = os.path.join(d, "results")
+    os.makedirs(outdir, exist_ok=True)
+    with open(os.path.join(outdir, "flip_rate_gate.log"), "w") as fh:
+        fh.write("\n".join(out) + "\n")
+    with open(os.path.join(outdir, "flip_rate_gate.json"), "w") as fh:
+        json.dump({"commit": head, "steps": args.steps,
+                   "threshold": args.threshold, "rc": rc, "lines": out},
+                  fh, indent=2)
+    print(f"ARTEFACT: {os.path.join(outdir, 'flip_rate_gate.json')}", flush=True)
     return rc
 
 
