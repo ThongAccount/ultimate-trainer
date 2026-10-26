@@ -21,7 +21,9 @@ import os
 import subprocess
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+# NOTE: `colab run` executes this file inside a Jupyter kernel, where
+# __file__ is NOT defined — never reference it here (it cost one T4
+# allocation on 2026-10-26).
 
 
 def main():
