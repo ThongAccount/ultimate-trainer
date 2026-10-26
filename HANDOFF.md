@@ -1305,3 +1305,71 @@ cublas) -> 1,696 (forward fix `24a0f28`) -> **519 ms (`cb30f87`)** =
 and the flip-rate gate — the Colab account is at 0.00 compute units and T4
 allocation returns Service Unavailable (2026-10-21 ~00:50). Retry when the
 account has units.
+
+---
+
+## 32. SESSION 2026-10-26 — OFFICIAL SUITE: A/B PASSED (9.51x), FLIP-RATE GATE FAILED (limit cycle)
+
+Both Phase-2 acceptance items that were blocked since 2026-10-21 were closed
+on ONE T4 allocation, one clone, one set of JIT builds
+(`scripts/colab_official_suite.py`). Measured commit `015763aff0`, real
+FineWeb data (`data/tokenized/samples_512.pt`, 3 fixed 32x512 batches,
+cycled by `step % 3`), seed 0, 300 steps/arm, median of 295 timed steps after
+5 warm-up steps.
+
+**Whole-step A/B (ship bar >=5%):** custom_custom 4,860.5 ms / 3,364 tok/s ->
+cublas_custom 1,696.8 ms / 9,637 tok/s -> cublas_cublas 510.9 ms / 32,005
+tok/s. reduction_pct=89.49, speedup_same_vm=9.51x, speedup_vs_historical_6619
+=12.96x, passed=True. Session-31 numbers reproduce (1,696->1,696.8;
+519->510.9). nan=0 in all arms.
+
+**Loss on real text (new):** 11.0625 -> 33.6875 (step 50) -> 40.4375 (step
+100) -> 22.0312 (final) for custom_custom and cublas_custom (bit-identical
+trajectories); cublas_cublas 11.0625 -> 33.6875 -> 51.3125 -> 35.5312. The
+step-99 NaN was a synthetic-data artefact. No arm converges: the production
+config oscillates.
+
+**Flip-rate trajectory gate: FAIL, real finding.** 1x PackedTernaryLinear
+512x512, threshold 32, 262,144 weights, 1,000 steps, seed 1234, target = the
+layer's own pre-perturbation output (exactly representable), 5% of weights
+moved one grid step, noise injected at the dY gradient level. Criteria
+pre-registered in `tools/flip_rate_verdict.py` (+6 CPU tests) BEFORE the run.
+Main arm noisy 0.014324315 / clean 0.015498409 -> clean/noisy = 1.08197 (M
+requires <=0.10, FAIL). V non-vacuity PASS (>=0.25/T^2 = 0.000244141). C
+control-sustains PASS (1.03522). Identical rates for custom and cublas update
+backends. Per-100-step flip rate rises monotonically 0.00490 -> 0.01569 and
+saturates; residual RMS grows 2.06e-6 -> 3.61e-6.
+
+**Interpretation:** the ternary optimizer does not settle — it enters a LIMIT
+CYCLE (a weight with a consistent residual gradient flips every T steps
+forever, expected rate ~1/T = 3.125%). Removing the noise does not reduce
+the flip activity. Not an implementation bug: both update backends behave
+identically, and the production loss oscillation corroborates it at scale.
+Not a claim that it cannot learn: it did reduce residual and the loss does
+partially recover. The narrow claim is "no settling behaviour at threshold 32
+— no damping". Thresholds were NOT re-tuned after seeing the numbers.
+
+**Tooling (3 allocations lost to these):** (1) `__file__` is undefined under
+`colab run` (Jupyter kernel) -> NameError; (2) a child process that INHERITS
+stdout under a Jupyter kernel writes to the kernel server's fd 1 and the CLI
+captures NOTHING — the full run completed (PHASE1_RC=0, PHASE2_RC=1) and every
+number was lost; fixed with `tools/stream_runner.py` (explicit PIPE +
+readline re-print, NOT iteration — iteration's read-ahead buffer delays
+lines) and artefacts now written to `results/` on the VM as a second line of
+defence; (3) the suite's smoke pass (same scripts, tiny params, same VM) caught
+a CPU/GPU device mismatch in the gate's perturbation mask after ~10 min of
+GPU instead of ~50 min — keep the smoke. Also fixed `colab_pytest.py`, which
+cloned the DELETED `chore/speedpass` branch and hard-required GITHUB_TOKEN:
+now tracks `master` and clones anonymously.
+
+**Written up:** `docs/speedpass/2026-10-26-official-suite.md` + artefacts in
+`results/` (whole_step_ab.json, flip_rate_gate.{json,log},
+official_suite.{json,log}).
+
+**NEXT (open problem, needs a damping design):** the limit cycle. Candidate
+fixes: counter dead zone, LR-like counter scale, flip budget. Any fix must be
+judged on the trajectory AND must keep the shipped speedup. The production
+config does not converge (loss 11.06 -> ~40-51 -> ~22-36), and that loss
+trajectory on real text is now measurable (the "loss track blocked on data"
+item is CLOSED). Phase 3 (custom-kernel work) stays blocked by design (ncu is
+permission-gated on hosted VMs; the update reduction is already on cuBLAS).
