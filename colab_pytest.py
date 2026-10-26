@@ -25,7 +25,10 @@ import time
 
 REPO_URL = "github.com/ThongAccount/ultimate-trainer.git"
 DEFAULT_CLONE = "/content/ultimate-trainer"
-DEFAULT_BRANCH = "chore/speedpass"
+# chore/speedpass was fast-forwarded into master and deleted locally+remote,
+# so cloning it fails with "Remote branch not found". The gate must track
+# master (same fix the A/B runner got in dfa603e).
+DEFAULT_BRANCH = "master"
 
 # Same modules the Modal suite ran, plus the fused/sparse smoke modules touched
 # by the C11 kernel fixes.
@@ -43,24 +46,23 @@ TEST_MODULES = [
     "tests/test_update_semantics.py",
     "tests/test_graph_replay_parity.py",
     "tests/test_dispatch_order.py",
+    # CPU-only: the pre-registered flip-rate trajectory gate criteria.
+    "tests/test_flip_rate_verdict.py",
 ]
 
 
 def clone_repo(branch: str, dest: str, token: str) -> str:
     if os.path.isdir(os.path.join(dest, "kernels", "packed_ternary")):
         return dest
-    if not token:
-        raise SystemExit(
-            "GITHUB_TOKEN not set (pass --env 'GITHUB_TOKEN=$(gh auth token)')"
-        )
-    url = f"https://x-access-token:{token}@{REPO_URL}"
+    # The repo is public, so an anonymous clone works; a token is optional.
+    url = f"https://x-access-token:{token}@{REPO_URL}" if token else f"https://{REPO_URL}"
     r = subprocess.run(
         ["git", "clone", "--depth", "1", "--branch", branch, "--quiet", url, dest],
         capture_output=True,
         text=True,
     )
     if r.returncode != 0:
-        err = (r.stderr or "").replace(token, "<token>")
+        err = (r.stderr or "").replace(token, "<token>") if token else (r.stderr or "")
         raise SystemExit(f"git clone failed (rc={r.returncode}): {err[-600:]}")
     return dest
 
