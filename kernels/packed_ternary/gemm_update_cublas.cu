@@ -38,7 +38,7 @@ __global__ void update_epilogue_kernel(
     uint32_t* __restrict__ W,          // [N, stride_words] packed 2-bit
     int16_t*  __restrict__ counter,    // [N, K] int16
     const float* __restrict__ dW,      // [N, K] fp32
-    int N, int K, int stride_words, int16_t threshold)
+    int N, int K, int stride_words, int16_t threshold, float dead_zone)
 {
     long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= (long)N * K) return;
@@ -47,7 +47,9 @@ __global__ void update_epilogue_kernel(
 
     float g = dW[idx];
     int16_t cnt = counter[idx];
-    cnt += (g > 0.0f) ? -1 : (g < 0.0f) ? 1 : 0;
+    // Counter dead zone: gradients below DEAD_ZONE do not accumulate, breaking
+    // the limit cycle where a consistent residual gradient flips every T steps.
+    cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
 
     uint32_t* w_row = W + (long)n * stride_words;
     if (cnt > threshold) { increment_weight_atomic(w_row, k); cnt = 0; }
@@ -92,11 +94,11 @@ extern "C" void packed_ternary_dw_gemm_f32(
 
 extern "C" void launch_update_epilogue(
     uint32_t* W, int16_t* counter, const float* dW,
-    int N, int K, int stride_words, int16_t threshold, cudaStream_t stream)
+    int N, int K, int stride_words, int16_t threshold, float dead_zone, cudaStream_t stream)
 {
     long total = (long)N * K;
     int threads = 256;
     long blocks = (total + threads - 1) / threads;
     update_epilogue_kernel<<<(unsigned int)blocks, threads, 0, stream>>>(
-        W, counter, dW, N, K, stride_words, threshold);
+        W, counter, dW, N, K, stride_words, threshold, dead_zone);
 }

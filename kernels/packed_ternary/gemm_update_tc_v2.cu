@@ -48,7 +48,8 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
     uint32_t*       __restrict__ W,       // [N, stride] packed
     int16_t*        __restrict__ counter,  // [N, K] int16
     int B, int K, int N, int stride_words,
-    int16_t threshold)
+    int16_t threshold,
+    float dead_zone)
 {
     int super_n0 = blockIdx.x * kSuperM;
     int super_k0 = blockIdx.y * kSuperN;
@@ -185,8 +186,8 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
                 cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
             }
 
-            cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
-            cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
+            cnt0 += (fabsf(g0) < dead_zone) ? 0 : ((g0 > 0.0f) ? -1 : 1);
+            cnt1 += (fabsf(g1) < dead_zone) ? 0 : ((g1 > 0.0f) ? -1 : 1);
 
             uint32_t* w_row = W + gn * stride_words;
             if (cnt0 > threshold) { increment_weight_atomic(w_row, gk); cnt0 = 0; }
@@ -221,7 +222,7 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
                 if (g == 0.0f) continue;
                 int idx = gn * K + last_gk;
                 int16_t cnt = counter[idx];
-                cnt += (g > 0.0f) ? -1 : (g < 0.0f) ? 1 : 0;
+                cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
                 uint32_t* w_row = W + gn * stride_words;
                 if (cnt > threshold) { increment_weight_atomic(w_row, last_gk); cnt = 0; }
                 else if (cnt < -threshold) { decrement_weight_atomic(w_row, last_gk); cnt = 0; }
@@ -237,7 +238,7 @@ extern "C" void launch_packed_ternary_update_tc_v2_64(
     const void* X_ptr, const void* dY_ptr,
     uint32_t* W, int16_t* counter,
     int batch_size, int in_features, int out_features,
-    int stride_words, int16_t threshold,
+    int stride_words, int16_t threshold, float dead_zone,
     cudaStream_t stream)
 {
     const half* X = static_cast<const half*>(X_ptr);
@@ -249,6 +250,6 @@ extern "C" void launch_packed_ternary_update_tc_v2_64(
 
     packed_ternary_update_tc_v2_64_kernel<<<grid, block, 0, stream>>>(
         X, dY, W, counter,
-        batch_size, in_features, out_features, stride_words, threshold
+        batch_size, in_features, out_features, stride_words, threshold, dead_zone
     );
 }

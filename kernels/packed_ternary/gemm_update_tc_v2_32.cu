@@ -38,7 +38,8 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
     int in_features,
     int out_features,
     int stride_words,
-    int16_t threshold)
+    int16_t threshold,
+    float dead_zone)
 {
     int super_c0 = blockIdx.x * kSuperN;
     int super_r0 = blockIdx.y * kSuperM;
@@ -195,9 +196,10 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
             cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
         }
 
-        // Branchless counter update: -1 if grad>0, +1 if grad<0, 0 if grad==0
-        cnt0 += (g0 > 0.0f) ? -1 : (g0 < 0.0f) ? 1 : 0;
-        cnt1 += (g1 > 0.0f) ? -1 : (g1 < 0.0f) ? 1 : 0;
+        // Branchless counter update with dead zone: |g| < dead_zone -> no
+        // accumulate, breaking the limit cycle from a consistent residual.
+        cnt0 += (fabsf(g0) < dead_zone) ? 0 : ((g0 > 0.0f) ? -1 : 1);
+        cnt1 += (fabsf(g1) < dead_zone) ? 0 : ((g1 > 0.0f) ? -1 : 1);
 
         // Saturating clamp BEFORE the threshold check: int16 counters wrap
         // silently at ±32768, making |cnt| > threshold spuriously true and
@@ -259,7 +261,7 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
 
             int idx = gr * in_features + gc;
             int16_t cnt = counter[idx];
-            cnt += (g > 0.0f) ? -1 : (g < 0.0f) ? 1 : 0;
+            cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
             // Saturating clamp before the threshold check (see pair path above).
             cnt = max(-32767, min(32767, cnt));
 
@@ -286,6 +288,7 @@ extern "C" void launch_packed_ternary_update_tc_v2(
     int out_features,
     int stride_words,
     int16_t threshold,
+    float dead_zone,
     cudaStream_t stream)
 {
     const half* X  = static_cast<const half*>(X_ptr);
@@ -297,6 +300,6 @@ extern "C" void launch_packed_ternary_update_tc_v2(
 
     packed_ternary_update_tc_v2_kernel<<<grid, block, 0, stream>>>(
         X, dY, W, counter, batch_size, in_features, out_features,
-        stride_words, threshold
+        stride_words, threshold, dead_zone
     );
 }

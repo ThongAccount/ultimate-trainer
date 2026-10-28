@@ -9,6 +9,11 @@ fp16, which rounds dW and can flip near-zero signs.
 
 Env:
     PT_UPDATE_BACKEND=cublas|custom (default custom — existing kernel path)
+
+Dead zone:
+    DEAD_ZONE_DEFAULT = 1e-3  (pre-registered 2026-10-28; counters only
+    accumulate |dW| >= dead_zone, breaking the limit cycle from a consistent
+    residual gradient.)
 """
 import os
 
@@ -17,6 +22,12 @@ import torch
 HERE = os.path.dirname(os.path.abspath(__file__))
 CUH_PATH = os.path.join(HERE, "packed_ternary.cuh")
 CU_PATH = os.path.join(HERE, "gemm_update_cublas.cu")
+
+# Pre-registered 2026-10-28: counter dead-zone default. |dW| below this does
+# not accumulate, so a consistent residual gradient can no longer drive the
+# counter to threshold every ~T steps. Sensitivity values 1e-4 / 1e-2 to be
+# swept on T4 if the default does not break the limit cycle.
+DEAD_ZONE_DEFAULT = 1e-3
 
 _HAS_UPDATE_CUBLAS = False
 _dw_gemm_f32 = None
@@ -46,7 +57,7 @@ extern "C" {
         int B, int N, int K, cudaStream_t stream);
     void launch_update_epilogue(
         void* W, void* counter, const void* dW,
-        int N, int K, int stride_words, int64_t threshold, cudaStream_t stream);
+        int N, int K, int stride_words, int64_t threshold, float dead_zone, cudaStream_t stream);
 }
 
 void dw_gemm_f32(torch::Tensor dY, torch::Tensor X, torch::Tensor dW) {
@@ -58,12 +69,12 @@ void dw_gemm_f32(torch::Tensor dY, torch::Tensor X, torch::Tensor dW) {
 }
 
 void update_epilogue(torch::Tensor W, torch::Tensor counter, torch::Tensor dW,
-                     int64_t threshold) {
+                     int64_t threshold, float dead_zone) {
     int N = W.size(0), K = dW.size(1);
     int stride_words = W.size(1);
     launch_update_epilogue(
         W.data_ptr<int32_t>(), counter.data_ptr<int16_t>(), dW.data_ptr<float>(),
-        N, K, stride_words, (int16_t)threshold, c10::cuda::getCurrentCUDAStream());
+        N, K, stride_words, (int16_t)threshold, dead_zone, c10::cuda::getCurrentCUDAStream());
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -86,10 +97,13 @@ def use_update_cublas() -> bool:
 
 
 def update_cublas(W: torch.Tensor, counter: torch.Tensor,
-                  X: torch.Tensor, dY: torch.Tensor, threshold: int = 32):
+                  X: torch.Tensor, dY: torch.Tensor, threshold: int = 32,
+                  dead_zone: float = DEAD_ZONE_DEFAULT):
     """Re-hosted update: cuBLAS dW (fp32 out) + counter/flip epilogue.
 
     Same in-place semantics as pack_update.update: W and counter are mutated.
+    dead_zone: gradients with |dW| < dead_zone do not accumulate in the
+    counter, breaking the limit cycle from a consistent residual gradient.
     """
     _load_update_cublas()
     if not _HAS_UPDATE_CUBLAS:
@@ -98,10 +112,12 @@ def update_cublas(W: torch.Tensor, counter: torch.Tensor,
     assert counter.is_contiguous(), "counter must be contiguous"
     if not (0 <= int(threshold) <= 32767):
         raise RuntimeError(f"threshold must be in [0, 32767], got {threshold}")
+    if not (0.0 <= float(dead_zone) <= 1.0):
+        raise RuntimeError(f"dead_zone must be in [0, 1], got {dead_zone}")
     X = X.contiguous()
     dY = dY.contiguous()
     N, K = W.size(0), X.size(1)
     dW = torch.empty((N, K), dtype=torch.float32, device=X.device)
     _dw_gemm_f32(dY, X, dW)
-    _update_epilogue(W, counter, dW, int(threshold))
+    _update_epilogue(W, counter, dW, int(threshold), float(dead_zone))
     return dW

@@ -23,6 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import pack_tensor, compute_stride_words
+from .update_cublas import DEAD_ZONE_DEFAULT
 from .pack_forward import (
     has_forward_kernel,
     packed_ternary_forward,
@@ -131,6 +132,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         counter: torch.Tensor,
         in_features: int,
         threshold: int = 8,
+        dead_zone: float = DEAD_ZONE_DEFAULT,
     ) -> torch.Tensor:
         # Ensure autograd graph hooks this Function even if X has no grad.
         # Without this, PyTorch prunes the graph and backward() is never
@@ -147,6 +149,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         ctx.counter = counter
         ctx.in_features = in_features
         ctx.threshold = threshold
+        ctx.dead_zone = dead_zone
         return _forward_auto(W_packed, X)
 
     @staticmethod
@@ -156,6 +159,7 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         W_packed = ctx.W_packed
         counter = ctx.counter
         threshold = ctx.threshold
+        dead_zone = ctx.dead_zone
         B = dY.size(0)
 
         # Fused backward + update: single kernel when dimensions allow
@@ -171,7 +175,9 @@ class PackedTernaryLinearFn(torch.autograd.Function):
                 # Separate launches: faster for large dimensions
                 if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16:
                     dX = co_backward_dx_tc(W_packed, dY, ctx.in_features)
-                    co_update_tc_v2(W_packed, counter, X.contiguous(), dY.contiguous(), int(threshold))
+                    co_update_tc_v2(
+                        W_packed, counter, X.contiguous(), dY.contiguous(),
+                        int(threshold), float(dead_zone))
                 else:
                     dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
         else:
@@ -207,6 +213,7 @@ class PackedTernaryLinear(nn.Module):
         in_features: int,
         out_features: int,
         threshold: int = 8,
+        dead_zone: float = DEAD_ZONE_DEFAULT,
         bias: bool = True,
         init_scale: float | None = None,
     ):
@@ -214,6 +221,7 @@ class PackedTernaryLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.threshold = threshold
+        self.dead_zone = dead_zone
 
         stride = compute_stride_words(in_features)
 
@@ -253,7 +261,7 @@ class PackedTernaryLinear(nn.Module):
 
         Y = PackedTernaryLinearFn.apply(
             X, self.W_packed, self.counter,
-            self.in_features, self.threshold,
+            self.in_features, self.threshold, self.dead_zone,
         )
 
         if self.bias is not None:

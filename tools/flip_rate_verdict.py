@@ -57,6 +57,23 @@ MAX_CLEAN_TO_NOISY = 0.10
 # own early-window flip rate.
 MIN_CONTROL_RATIO = 0.50
 
+# ── Pre-registered counter dead-zone damping ───────────────────────────────
+# Pre-registered 2026-10-28: counter dead-zone default. |dW| below this does
+# not accumulate, so a consistent residual gradient can no longer drive the
+# counter to threshold every ~T steps. Sensitivity values 1e-4 / 1e-2 to be
+# swept on T4 if the default does not break the limit cycle.
+DEAD_ZONE_DEFAULT = 1e-3
+
+# With dead_zone applied, the clean-window flip rate must be at most this
+# fraction of the clean-window flip rate WITHOUT dead_zone — damping must
+# measurably reduce flip activity beyond the noise schedule alone.
+MAX_DAMPED_CLEAN_RATIO = 0.50
+
+# With dead_zone applied, the clean-window flip rate must meet the original
+# M criterion (decay when noise removed) — damping must restore the decay
+# that the limit cycle destroyed.
+MAX_DAMPED_CLEAN_TO_NOISY = 0.10
+
 
 def _ratio(numerator: float, denominator: float) -> float:
     """Safe ratio: an empty denominator yields +inf (i.e. "no decay")."""
@@ -143,4 +160,70 @@ def evaluate_flip_rate(
             "control_clean": ctrl_clean,
         },
         "non_vacuity_floor": floor,
+    }
+
+
+def evaluate_damping(
+    main_clean_no_dz: float,
+    main_clean_dz: float,
+    main_noisy: float,
+    dead_zone: float = DEAD_ZONE_DEFAULT,
+) -> dict:
+    """Evaluate whether the counter dead zone breaks the limit cycle.
+
+    Args:
+        main_clean_no_dz: clean-window flip rate WITHOUT dead zone (limit
+            cycle keeps this near main_noisy, ratio ~ 1.0).
+        main_clean_dz: clean-window flip rate WITH dead zone — damping should
+            push this toward 0.
+        main_noisy: noisy-window flip rate (same for both, the noise schedule
+            doesn't change between the two measurements).
+        dead_zone: the dead-zone value used for the dz measurement.
+
+    Returns:
+        dict with "passed", "checks" and the measured ratios.
+    """
+    main_clean_no_dz = float(main_clean_no_dz)
+    main_clean_dz = float(main_clean_dz)
+    main_noisy = float(main_noisy)
+
+    dz_ratio = _ratio(main_clean_dz, main_clean_no_dz)
+    dz_to_noisy = _ratio(main_clean_dz, main_noisy)
+
+    checks = [
+        {
+            "name": "D1_damping_reduces_flips",
+            "ok": dz_ratio <= MAX_DAMPED_CLEAN_RATIO,
+            "value": dz_ratio,
+            "threshold": MAX_DAMPED_CLEAN_RATIO,
+            "detail": (
+                f"dead-zone clean/no-clean flip-rate ratio {dz_ratio:.6g} "
+                f"(<= {MAX_DAMPED_CLEAN_RATIO})"
+            ),
+        },
+        {
+            "name": "D2_damped_meets_decay",
+            "ok": dz_to_noisy <= MAX_DAMPED_CLEAN_TO_NOISY,
+            "value": dz_to_noisy,
+            "threshold": MAX_DAMPED_CLEAN_TO_NOISY,
+            "detail": (
+                f"dead-zone clean/noisy flip-rate ratio {dz_to_noisy:.6g} "
+                f"(<= {MAX_DAMPED_CLEAN_TO_NOISY})"
+            ),
+        },
+    ]
+
+    return {
+        "passed": all(c["ok"] for c in checks),
+        "checks": checks,
+        "ratios": {
+            "damped_clean_over_no_dz": dz_ratio,
+            "damped_clean_over_noisy": dz_to_noisy,
+        },
+        "flip_rates": {
+            "main_noisy": main_noisy,
+            "main_clean_no_dz": main_clean_no_dz,
+            "main_clean_dz": main_clean_dz,
+        },
+        "dead_zone": dead_zone,
     }

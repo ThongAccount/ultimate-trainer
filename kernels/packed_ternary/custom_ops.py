@@ -101,7 +101,8 @@ def _backward_dx_tc_fake(W, dY, K):
 
 @custom_op("packed_ternary::update_tc_v2", mutates_args=("W", "counter"))
 def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
-                 X: torch.Tensor, dY: torch.Tensor, threshold: int) -> None:
+                 X: torch.Tensor, dY: torch.Tensor, threshold: int,
+                 dead_zone: float = 1e-3) -> None:
     """Fused gradient → counter → bit-flip (TC v2, vectorized counter).
 
     Dispatch goes through pack_update._select_update_fn — the load-order-
@@ -110,17 +111,19 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     _load_tc_if_needed(), which never loads the 64x64 build, so the flag was
     always False and every training backward raised
     "TC update v2 kernel not available".
+    dead_zone: gradients with |dW| < dead_zone do not accumulate in the
+    counter, breaking the limit cycle from a consistent residual gradient.
     """
     if os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas":
         # Ranked item #1: cuBLAS dW (fp32 out) + counter/flip epilogue.
         from .update_cublas import update_cublas
-        update_cublas(W, counter, X, dY, threshold)
+        update_cublas(W, counter, X, dY, threshold, dead_zone)
         return
     _ensure_loaded()
     from . import pack_update as pu
     fn, _name = pu._select_update_fn(X.size(0), dY.size(1), X.size(1))
     if fn is not None:
-        fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
+        fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold), float(dead_zone))
         return
     pu._load_if_needed()
     if not pu._HAS_UP:

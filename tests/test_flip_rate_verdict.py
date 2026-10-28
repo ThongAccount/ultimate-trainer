@@ -97,3 +97,45 @@ def test_non_vacuity_floor_scales_with_threshold():
     # at T=8 the floor is 0.25/64 = 0.0039, so 0.00098 is below it
     assert not t8["passed"]
     assert t32["passed"]
+
+
+def test_damping_passes_when_dead_zone_breaks_limit_cycle():
+    # Without dead zone: clean ~= noisy (limit cycle, ratio ~ 1.0).
+    # With dead zone: clean drops well below noisy — damping works.
+    from tools.flip_rate_verdict import evaluate_damping
+    res = evaluate_damping(
+        main_clean_no_dz=0.03125,   # limit cycle: clean ~= noisy
+        main_clean_dz=0.001,        # dead zone cuts flips drastically
+        main_noisy=0.03125,
+        dead_zone=1e-3,
+    )
+    assert res["passed"], res["checks"]
+    assert _check(res, "D1_damping_reduces_flips")["ok"]
+    assert _check(res, "D2_damped_meets_decay")["ok"]
+
+
+def test_damping_fails_when_dead_zone_too_small():
+    # Dead zone too small: clean still ~= noisy, no damping.
+    from tools.flip_rate_verdict import evaluate_damping
+    res = evaluate_damping(
+        main_clean_no_dz=0.03125,
+        main_clean_dz=0.025,        # barely any reduction
+        main_noisy=0.03125,
+        dead_zone=1e-6,
+    )
+    assert not res["passed"]
+    assert not _check(res, "D1_damping_reduces_flips")["ok"]
+    assert not _check(res, "D2_damped_meets_decay")["ok"]
+
+
+def test_damping_fails_when_no_reduction():
+    # dead_zone=0 means no damping: clean_dz == clean_no_dz, ratio = 1.0.
+    from tools.flip_rate_verdict import evaluate_damping
+    res = evaluate_damping(
+        main_clean_no_dz=0.03125,
+        main_clean_dz=0.03125,
+        main_noisy=0.03125,
+        dead_zone=0.0,
+    )
+    assert not res["passed"]
+    assert not _check(res, "D1_damping_reduces_flips")["ok"]

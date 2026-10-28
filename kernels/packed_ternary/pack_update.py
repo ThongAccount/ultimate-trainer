@@ -355,18 +355,20 @@ def _load_up_tc_v2():
             extern "C" {
                 void launch_packed_ternary_update_tc_v2_64(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
-                    int B, int K, int N, int stride, int16_t threshold, cudaStream_t s);
+                    int B, int K, int N, int stride, int16_t threshold,
+                    float dead_zone, cudaStream_t s);
             }
             void update_tc_v2_wrapper(
                 torch::Tensor W, torch::Tensor counter,
-                torch::Tensor X, torch::Tensor dY, int16_t threshold)
+                torch::Tensor X, torch::Tensor dY, int16_t threshold,
+                float dead_zone)
             {
                 launch_packed_ternary_update_tc_v2_64(
                     X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    threshold, c10::cuda::getCurrentCUDAStream());
+                    threshold, dead_zone, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v2", &update_tc_v2_wrapper,
@@ -449,17 +451,17 @@ def _load_up_tc_v2_32():
                 void launch_packed_ternary_update_tc_v2(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
                     int batch_size, int in_features, int out_features,
-                    int stride_words, int16_t threshold, cudaStream_t stream);
+                    int stride_words, int16_t threshold, float dead_zone, cudaStream_t stream);
             }
             void up_tc_v2_32_wrapper(torch::Tensor W, torch::Tensor counter,
                                       torch::Tensor X, torch::Tensor dY,
-                                      int64_t threshold) {
+                                      int64_t threshold, float dead_zone) {
                 launch_packed_ternary_update_tc_v2(
                     X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
                     reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                     counter.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    (int16_t)threshold, c10::cuda::getCurrentCUDAStream());
+                    (int16_t)threshold, dead_zone, c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v2_32", &up_tc_v2_32_wrapper, "Update TC 32x32");
