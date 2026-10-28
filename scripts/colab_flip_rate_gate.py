@@ -65,6 +65,7 @@ BATCH       = int(os.environ.get("FLIP_BATCH", "512"))
 PERTURB     = float(os.environ.get("FLIP_PERTURB", "0.05"))
 SEED        = int(os.environ.get("FLIP_SEED", "1234"))
 BACKENDS    = os.environ.get("FLIP_BACKENDS", "custom,cublas").split(",")
+DEAD_ZONE   = float(os.environ.get("FLIP_DEAD_ZONE", "0.0"))
 # Window boundaries (steps): [0, WARM) warm-up, [WARM, NOISY_END) noisy,
 # [NOISY_END, STEPS) clean.  Proportional so a short smoke run still has all
 # three windows; at the official STEPS=1000 this is 300 / 300 / 400.
@@ -152,7 +153,8 @@ def run_arm(arm, update_backend):
                                 dtype=torch.float32)
             dY = (dY_true + ns * ref_rms * noise).half()
             old = layer.W_packed.clone()
-            co_update_tc_v2(layer.W_packed, layer.counter, X, dY, THRESHOLD)
+            co_update_tc_v2(layer.W_packed, layer.counter, X, dY, THRESHOLD,
+                            DEAD_ZONE)
             f = count_flipped_fields(old, layer.W_packed)
 
         window = "noisy" if WARM <= step < NOISY_END else ("clean" if step >= NOISY_END else "warm")
@@ -177,6 +179,7 @@ def run_arm(arm, update_backend):
         "perturb_frac": PERTURB,
         "seed": SEED,
         "ref_rms": ref_rms,
+        "dead_zone": DEAD_ZONE,
         "flip_rates": rates,
         "steps_in_window": steps_in,
         "resid_rms_noisy": (sum(resid_noisy) / len(resid_noisy)) if resid_noisy else 0.0,
@@ -241,6 +244,8 @@ def main():
     ap.add_argument("--steps", type=int, default=1000)
     ap.add_argument("--threshold", type=int, default=32)
     ap.add_argument("--backends", default="custom,cublas")
+    ap.add_argument("--dead-zone", type=float, default=0.0,
+                    help="counter dead-zone default 0.0 (no damping); set 1e-3 for the damping run")
     ap.add_argument("--smoke", action="store_true",
                     help="validate the plumbing only; do not enforce the criteria")
     args, _unknown = ap.parse_known_args()
@@ -268,6 +273,7 @@ def main():
 
     env = {**os.environ, "REPO_DIR": d, "FLIP_STEPS": str(args.steps),
            "FLIP_THRESHOLD": str(args.threshold), "FLIP_BACKENDS": args.backends,
+           "FLIP_DEAD_ZONE": str(args.dead_zone),
            "FLIP_SMOKE": "1" if args.smoke else "0"}
     # The driver must be run through a PIPE and re-printed: a child that
     # inherits stdout under a Jupyter kernel writes to a descriptor the CLI
