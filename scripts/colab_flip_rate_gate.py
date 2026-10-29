@@ -310,13 +310,35 @@ def main():
         subprocess.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/master"], check=True)
     full_head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
                                capture_output=True, text=True).stdout.strip()
-    head = full_head[:10]
+    # Full 40-char sha into the log and the artefact (schema v2 requires it);
+    # the 10-char prefix is kept only for the mismatch message.
+    head = full_head
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    from tools.artefact_provenance import collect_provenance, mark_invalid, write_artefact
+    # Collect provenance BEFORE flip_rate_driver.py is written into the repo
+    # root (an untracked driver would flip git_dirty to true).
+    provenance = collect_provenance(d, extra_config={"config": {
+        "steps": args.steps, "threshold": args.threshold, "backends": args.backends,
+        "dead_zone": args.dead_zone, "flip_budget": args.flip_budget,
+        "smoke": args.smoke, "expect_commit": args.expect_commit or None}})
     if args.expect_commit and not full_head.startswith(args.expect_commit):
-        print(f"commit={head}", flush=True)
-        print(f"COMMIT-MISMATCH: clone HEAD={head} does not match "
+        print(f"commit={head[:10]}", flush=True)
+        print(f"COMMIT-MISMATCH: clone HEAD={head[:10]} does not match "
               f"--expect-commit={args.expect_commit}; refusing to run "
               "(stale clone / driver skew guard, ut-fb-10 root cause #1)",
               flush=True)
+        # rc=2 is INVALID, not a verdict: quarantine the artefact so the refusal
+        # is distinguishable from a real run in the repo.
+        artefact = {"commit": full_head, "provenance": provenance, "rc": 2,
+                    "config": {"expect_commit": args.expect_commit}}
+        mark_invalid(artefact,
+                     f"commit-mismatch refusal (rc=2): HEAD {full_head[:10]} != "
+                     f"--expect-commit {args.expect_commit} (ut-fb-10 root cause #1)",
+                     root_cause_commit=full_head)
+        path = write_artefact(d, "flip_rate_gate.json", artefact,
+                              root_cause_commit=full_head)
+        print(f"ARTEFACT: {path}", flush=True)
         sys.exit(2)
     print(f"commit={head}", flush=True)
 
@@ -330,7 +352,8 @@ def main():
     # The driver must be run through a PIPE and re-printed: a child that
     # inherits stdout under a Jupyter kernel writes to a descriptor the CLI
     # never sees (this lost one full T4 allocation on 2026-10-26).
-    sys.path.insert(0, d)
+    if d not in sys.path:
+        sys.path.insert(0, d)
     from tools.stream_runner import run_streaming
     rc, out = run_streaming([sys.executable, "flip_rate_driver.py"], cwd=d, env=env)
 
@@ -340,16 +363,16 @@ def main():
         # commit line goes INTO the log too — a log-only reader must be able
         # to detect a stale run without opening the json.
         fh.write(f"commit={head}\n" + "\n".join(out) + "\n")
-    with open(os.path.join(outdir, "flip_rate_gate.json"), "w") as fh:
-        # flip_budget/dead_zone/backends belong in the artefact schema: without
-        # them a budgeted run is indistinguishable from a no-budget one
-        # (ut-fb-10 was exactly that).
-        json.dump({"commit": head, "steps": args.steps,
-                   "threshold": args.threshold, "backends": args.backends,
-                   "dead_zone": args.dead_zone, "flip_budget": args.flip_budget,
-                   "rc": rc, "lines": out},
-                  fh, indent=2)
-    print(f"ARTEFACT: {os.path.join(outdir, 'flip_rate_gate.json')}", flush=True)
+    # flip_budget/dead_zone/backends belong in the artefact schema: without
+    # them a budgeted run is indistinguishable from a no-budget one
+    # (ut-fb-10 was exactly that). Routed through write_artefact so the
+    # provenance block is validated in-process.
+    artefact = {"commit": head, "provenance": provenance, "steps": args.steps,
+                "threshold": args.threshold, "backends": args.backends,
+                "dead_zone": args.dead_zone, "flip_budget": args.flip_budget,
+                "rc": rc, "lines": out}
+    path = write_artefact(d, "flip_rate_gate.json", artefact, root_cause_commit=head)
+    print(f"ARTEFACT: {path}", flush=True)
     return rc
 
 
