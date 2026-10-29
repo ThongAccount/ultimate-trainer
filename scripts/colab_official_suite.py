@@ -26,6 +26,7 @@ not a crash: the suite still prints every measurement.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -64,8 +65,15 @@ def main():
                           capture_output=True, text=True).stdout.strip()
     print(f"commit={head}", flush=True)
 
-    sys.path.insert(0, d)
+    if d not in sys.path:
+        sys.path.insert(0, d)
     from tools.stream_runner import run_streaming
+    from tools.artefact_provenance import collect_provenance, mark_invalid, write_artefact
+    # collect while the clone is still clean — phase drivers dirty the tree later
+    provenance = collect_provenance(d, extra_config={"config": {
+        "nsteps": args.nsteps, "flip_steps": args.flip_steps, "data": args.data,
+        "skip_smoke": args.skip_smoke, "skip_ab": args.skip_ab,
+        "skip_flip": args.skip_flip}})
 
     transcript = []
 
@@ -87,11 +95,15 @@ def main():
                           "--no-clone", "--repo", d, "--nsteps", "3", "--data", args.data])
         s_flip_rc, s_flip = phase(
             "SMOKE FLIP", [sys.executable, os.path.join(d, "scripts", "colab_flip_rate_gate.py"),
-                           "--no-clone", "--repo", d, "--steps", "20", "--smoke"])
+                           "--no-clone", "--repo", d, "--steps", "20", "--smoke",
+                           "--expect-commit", head])
         if s_ab_rc != 0 or s_flip_rc != 0:
             print(f"SMOKE: FAILED (ab_rc={s_ab_rc} flip_rc={s_flip_rc}) "
                   "— aborting before the official run", flush=True)
-            _write_artefacts(d, head, transcript, s_ab_rc, s_flip_rc, "smoke_failed")
+            _write_artefacts(d, head, transcript, s_ab_rc, s_flip_rc,
+                             "invalid" if any(_rc_status(r) in ("invalid_commit_mismatch", "crash")
+                                              for r in (s_ab_rc, s_flip_rc)) else "smoke_failed",
+                             provenance=provenance)
             return 1
         print("SMOKE: OK — starting the official measurements", flush=True)
 
@@ -108,29 +120,67 @@ def main():
         print("=== PHASE 2: flip-rate trajectory gate ===", flush=True)
         rc_flip, _ = phase(
             "PHASE 2 FLIP", [sys.executable, os.path.join(d, "scripts", "colab_flip_rate_gate.py"),
-                             "--no-clone", "--repo", d, "--steps", str(args.flip_steps)])
+                             "--no-clone", "--repo", d, "--steps", str(args.flip_steps),
+                             "--expect-commit", head])
         print(f"PHASE2_RC: {rc_flip}", flush=True)
 
+    statuses = [_rc_status(rc_ab), _rc_status(rc_flip)]
+    invalid = any(st in ("invalid_commit_mismatch", "crash") for st in statuses)
     ok = (rc_ab == 0) and (rc_flip == 0)
-    print(f"OFFICIAL_SUITE: {'PASS' if ok else 'FAIL'} "
-          f"ab_rc={rc_ab} flip_rc={rc_flip}", flush=True)
-    _write_artefacts(d, head, transcript, rc_ab, rc_flip,
-                     "pass" if ok else "fail")
+    verdict = "pass" if ok else ("invalid" if invalid else "fail")
+    print(f"OFFICIAL_SUITE: {'PASS' if ok else ('INVALID' if invalid else 'FAIL')} "
+          f"ab_rc={rc_ab} flip_rc={rc_flip} statuses={statuses}", flush=True)
+    _write_artefacts(d, head, transcript, rc_ab, rc_flip, verdict,
+                     provenance=provenance)
     return 0 if ok else 1
 
 
-def _write_artefacts(d, head, transcript, rc_ab, rc_flip, verdict):
+# rc semantics: 0 = pass, 1 = pre-registered gate FAIL (a VALID NEGATIVE result),
+# 2 = commit-mismatch refusal (INVALID), anything else = crash.
+RC_STATUS = {0: "pass", 1: "fail", 2: "invalid_commit_mismatch"}
+
+# threshold may be a float OR the string "> 0" (F0); detail= is split LAST —
+# it contains spaces and '='
+_CHECK_RE = re.compile(
+    r"^FLIPRATE_CHECK: update_backend=(\S+) (\S+) ok=(\S+) value=(\S+) "
+    r"threshold=(.*?) detail=(.*)$")
+
+
+def _rc_status(rc):
+    return RC_STATUS.get(rc, "crash")
+
+
+def _parse_flip_checks(transcript):
+    out = []
+    for ln in transcript:
+        m = _CHECK_RE.match(ln)
+        if m:
+            out.append({"update_backend": m.group(1), "name": m.group(2),
+                        "ok": m.group(3) == "True", "value": float(m.group(4)),
+                        "threshold": m.group(5), "detail": m.group(6)})
+    return out
+
+
+def _write_artefacts(d, head, transcript, rc_ab, rc_flip, verdict, provenance=None):
     """Persist the full transcript + a summary next to the repo on the VM."""
     outdir = os.path.join(d, "results")
     os.makedirs(outdir, exist_ok=True)
     with open(os.path.join(outdir, "official_suite.log"), "w") as fh:
         fh.write(f"commit={head}\n")
         fh.write("\n".join(transcript) + "\n")
-    with open(os.path.join(outdir, "official_suite.json"), "w") as fh:
-        json.dump({"commit": head, "ab_rc": rc_ab, "flip_rc": rc_flip,
-                   "verdict": verdict, "transcript": transcript},
-                  fh, indent=2)
-    print(f"ARTEFACT: {os.path.join(outdir, 'official_suite.json')}", flush=True)
+    checks = _parse_flip_checks(transcript)
+    artefact = {"commit": head, "provenance": provenance, "verdict": verdict,
+                "phases": {"ab": {"rc": rc_ab, "status": _rc_status(rc_ab)},
+                           "flip": {"rc": rc_flip, "status": _rc_status(rc_flip)}},
+                "failed_checks": [c for c in checks if not c["ok"]],
+                "checks": checks,
+                "ab_rc": rc_ab, "flip_rc": rc_flip,  # legacy fields kept
+                "transcript": transcript}
+    if verdict == "invalid":
+        mark_invalid(artefact, f"phase statuses: {artefact['phases']}",
+                     root_cause_commit=head)
+    path = write_artefact(d, "official_suite.json", artefact, root_cause_commit=head)
+    print(f"ARTEFACT: {path}", flush=True)
 
 
 if __name__ == "__main__":
