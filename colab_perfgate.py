@@ -218,7 +218,7 @@ def main() -> int:
     )
     print(f"repo={repo} branch={args.branch} commit={commit}", flush=True)
 
-    from tools.artefact_provenance import collect_provenance, write_artefact
+    from tools.artefact_provenance import collect_provenance, mark_invalid, write_artefact
     # shallow --branch clone is detached -> pass the real branch name;
     # collect BEFORE the baseline write below so git_dirty describes the
     # measured code
@@ -239,6 +239,10 @@ def main() -> int:
               flush=True)
         res = {"suite": "perfgate", "commit": commit, "provenance": provenance,
                "branch": args.branch, "rc": 2, "error": "commit-mismatch"}
+        mark_invalid(res,
+                     f"commit-mismatch refusal (rc=2): HEAD {commit[:10]} != "
+                     f"--expect-commit {expect} (ut-fb-10 root cause #1)",
+                     root_cause_commit=commit)
         path = write_artefact(repo, "perfgate.json", res, root_cause_commit=commit)
         print(f"ARTEFACT: {path}", flush=True)
         return 2

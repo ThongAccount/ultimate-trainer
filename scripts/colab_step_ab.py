@@ -157,7 +157,7 @@ def main():
                           capture_output=True, text=True).stdout.strip()  # full 40-char
     if d not in sys.path:
         sys.path.insert(0, d)
-    from tools.artefact_provenance import collect_provenance, write_artefact
+    from tools.artefact_provenance import collect_provenance, mark_invalid, write_artefact
     # collect BEFORE step_ab_driver.py is written into the repo root (untracked
     # file would flip git_dirty)
     provenance = collect_provenance(d, extra_config={"config": {
@@ -176,6 +176,10 @@ def main():
               flush=True)
         artefact = {"commit": head, "provenance": provenance, "rc": 2,
                     "config": {"expect_commit": expect}}
+        mark_invalid(artefact,
+                     f"commit-mismatch refusal (rc=2): HEAD {head[:10]} != "
+                     f"--expect-commit {expect} (ut-fb-10 root cause #1)",
+                     root_cause_commit=head)
         path = write_artefact(d, "whole_step_ab.json", artefact, root_cause_commit=head)
         print(f"ARTEFACT: {path}", flush=True)
         return 2
