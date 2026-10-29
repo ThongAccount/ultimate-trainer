@@ -21,6 +21,7 @@ env/
 # ── IDE / Editor ──────────────────────────────────────────────────
 .*/
 !.gitignore
+!.github/
 .vscode/
 .idea/
 *.swp

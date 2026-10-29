@@ -1,0 +1,19 @@
+name: commit-lint
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # full history so the PR commit range is lintable
+      # Lints only the PR's commits. Master direct pushes (incl. the legacy
+      # non-conforming subjects) cannot be linted retroactively — grandfathered.
+      - uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: commitlint.config.js
+          failOnWarnings: false

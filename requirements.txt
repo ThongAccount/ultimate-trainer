@@ -1,4 +1,9 @@
-# Core ML stack
+# Core ML stack — LOWER BOUNDS ONLY, not pins.
+# Kernels JIT via torch.utils.cpp_extension.load_inline against the INSTALLED
+# torch ABI, and Colab ships its own torch — pinning torch here would fight the
+# runtime image. The exact known-good environment is committed as
+# requirements-lock.txt (generated on the Colab T4 image — see CONTRIBUTING.md).
+# Reproduce exactly:  pip install -r requirements-lock.txt
 torch>=2.0.0
 numpy>=1.24.0
 
