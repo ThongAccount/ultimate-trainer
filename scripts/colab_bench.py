@@ -18,7 +18,8 @@ REPO_URL = "https://github.com/ThongAccount/ultimate-trainer.git"
 DEST = "/content/ultimate-trainer"
 
 
-def ensure_repo(commit: str = "HEAD", branch: str = "chore/speedpass") -> str:
+def ensure_repo(commit: str = "HEAD", branch: str = "master",
+                expect_commit: str = "") -> str:
     tok = os.environ.get("GITHUB_TOKEN", "")
     if not os.path.isdir(os.path.join(DEST, ".git")):
         url = REPO_URL.replace("https://", f"https://{tok}@") if tok else REPO_URL
@@ -44,6 +45,11 @@ def ensure_repo(commit: str = "HEAD", branch: str = "chore/speedpass") -> str:
     head = subprocess.check_output(
         ["git", "-C", DEST, "rev-parse", "HEAD"], text=True).strip()
     print(f"repo={DEST} branch={branch} commit={head}", flush=True)
+    # Stale-clone guard: exit 2 BEFORE nvidia-smi / any measurement (ut-fb-10).
+    if expect_commit and not head.startswith(expect_commit):
+        print(f"COMMIT-MISMATCH: clone HEAD={head[:10]} != "
+              f"--expect-commit={expect_commit}; refusing to run", flush=True)
+        raise SystemExit(2)
     return DEST
 
 
@@ -61,6 +67,8 @@ def main() -> int:
     ap.add_argument("--phase", default="0", choices=("0", "1"))
     ap.add_argument("--batch", type=int, default=16384)
     ap.add_argument("--commit", default="HEAD")
+    ap.add_argument("--expect-commit", default=os.environ.get("PT_EXPECT_COMMIT", ""),
+                    help="exit 2 unless the clone HEAD matches this sha (prefix ok)")
     ap.add_argument("--out", default="/content/roofline.json")
     ap.add_argument("--shapes", default=None,
                     help="comma list of fc1,fc2,head (default: $PT_SHAPES or fc1)")
@@ -91,7 +99,7 @@ def main() -> int:
     assert cap == (7, 5), f"NOT a T4: {name} cap={cap} — invalid numbers, aborting"
 
     if not args.no_setup:
-        ensure_repo(args.commit)
+        ensure_repo(args.commit, expect_commit=args.expect_commit)
         ensure_deps()
         os.chdir(DEST)
         for p in (DEST, os.path.join(DEST, "tests")):

@@ -9,6 +9,9 @@ set -euo pipefail
 COMMIT="${1:-HEAD}"
 DEST="${2:-/content/ultimate-trainer}"
 REPO_URL="https://github.com/ThongAccount/ultimate-trainer.git"
+# Stale-clone guard: export EXPECT_COMMIT (or PT_EXPECT_COMMIT) to refuse
+# running unless the resulting HEAD matches (prefix ok). Exit 2 = invalid.
+EXPECT_COMMIT="${EXPECT_COMMIT:-${PT_EXPECT_COMMIT:-}}"
 
 echo "---- nvidia-smi ----"
 nvidia-smi --query-gpu=name,compute_cap,clocks.max.sm,clocks.sm,power.limit --format=csv || true
@@ -33,8 +36,16 @@ else
     git clone --quiet "${REPO_URL}" "${DEST}"
 fi
 git -C "${DEST}" checkout --quiet "${COMMIT}"
-git -C "${DEST}" pull --quiet origin "$(git -C "${DEST}" branch --show-current)" || true
-echo "commit: $(git -C "${DEST}" rev-parse HEAD)"
+if [ "${COMMIT}" = "HEAD" ]; then
+    git -C "${DEST}" pull --quiet origin "$(git -C "${DEST}" branch --show-current)" \
+        || { echo "git pull failed" >&2; exit 2; }
+fi
+HEAD_SHA="$(git -C "${DEST}" rev-parse HEAD)"
+if [ -n "${EXPECT_COMMIT}" ] && [ "${HEAD_SHA#"${EXPECT_COMMIT}"}" = "${HEAD_SHA}" ]; then
+    echo "COMMIT-MISMATCH: HEAD=${HEAD_SHA} does not match EXPECT_COMMIT=${EXPECT_COMMIT}; refusing to run" >&2
+    exit 2
+fi
+echo "commit: ${HEAD_SHA}"
 
 echo "---- deps ----"
 pip install -q ninja >/dev/null 2>&1 || pip install -q ninja

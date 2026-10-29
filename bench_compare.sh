@@ -11,10 +11,18 @@
 set -euo pipefail
 
 STEPS="${1:-200}"
+# Stale-clone guard: export EXPECT_COMMIT (or PT_EXPECT_COMMIT) to abort
+# unless HEAD matches (prefix ok). Exit 2 = invalid.
+EXPECT_COMMIT="${EXPECT_COMMIT:-${PT_EXPECT_COMMIT:-}}"
 
 echo "== [1/4] git sync =="
 git fetch origin
 git reset --hard origin/master
+HEAD_SHA="$(git rev-parse HEAD)"
+if [ -n "${EXPECT_COMMIT}" ] && [ "${HEAD_SHA#"${EXPECT_COMMIT}"}" = "${HEAD_SHA}" ]; then
+    echo "COMMIT-MISMATCH: HEAD=${HEAD_SHA} != EXPECT_COMMIT=${EXPECT_COMMIT}; aborting benchmark" >&2
+    exit 2
+fi
 git log --oneline -3
 
 echo "== [2/4] clean torch extension cache =="
