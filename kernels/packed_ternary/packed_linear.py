@@ -130,9 +130,11 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         X: torch.Tensor,
         W_packed: torch.Tensor,
         counter: torch.Tensor,
+        flip_count: torch.Tensor,
         in_features: int,
         threshold: int = 8,
         dead_zone: float = DEAD_ZONE_DEFAULT,
+        flip_budget: int = 0,
     ) -> torch.Tensor:
         # Ensure autograd graph hooks this Function even if X has no grad.
         # Without this, PyTorch prunes the graph and backward() is never
@@ -147,9 +149,11 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         ctx.X_saved = X
         ctx.W_packed = W_packed
         ctx.counter = counter
+        ctx.flip_count = flip_count
         ctx.in_features = in_features
         ctx.threshold = threshold
         ctx.dead_zone = dead_zone
+        ctx.flip_budget = flip_budget
         return _forward_auto(W_packed, X)
 
     @staticmethod
@@ -158,8 +162,10 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         X = ctx.X_saved
         W_packed = ctx.W_packed
         counter = ctx.counter
+        flip_count = ctx.flip_count
         threshold = ctx.threshold
         dead_zone = ctx.dead_zone
+        flip_budget = ctx.flip_budget
         B = dY.size(0)
 
         # Fused backward + update: single kernel when dimensions allow
@@ -176,8 +182,9 @@ class PackedTernaryLinearFn(torch.autograd.Function):
                 if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16:
                     dX = co_backward_dx_tc(W_packed, dY, ctx.in_features)
                     co_update_tc_v2(
-                        W_packed, counter, X.contiguous(), dY.contiguous(),
-                        int(threshold), float(dead_zone))
+                        W_packed, counter, flip_count,
+                        X.contiguous(), dY.contiguous(),
+                        int(threshold), float(dead_zone), int(flip_budget))
                 else:
                     dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
         else:
@@ -204,6 +211,10 @@ class PackedTernaryLinear(nn.Module):
         in_features: Input feature dimension.
         out_features: Output feature dimension.
         threshold: Counter flip threshold (default 64).
+        dead_zone: Gradient magnitudes below this don't accumulate (default 0 = off).
+        flip_budget: Max flips per weight over a run (0 = off, default). After a
+            weight flips flip_budget times its counter freezes and it never flips
+            again — deterministically breaking the limit cycle.
         bias: Whether to include a FP16 bias term.
         init_scale: Weight initialisation scale (gamma parameter).
     """
@@ -214,6 +225,7 @@ class PackedTernaryLinear(nn.Module):
         out_features: int,
         threshold: int = 8,
         dead_zone: float = DEAD_ZONE_DEFAULT,
+        flip_budget: int = 0,
         bias: bool = True,
         init_scale: float | None = None,
     ):
@@ -222,6 +234,7 @@ class PackedTernaryLinear(nn.Module):
         self.out_features = out_features
         self.threshold = threshold
         self.dead_zone = dead_zone
+        self.flip_budget = flip_budget
 
         stride = compute_stride_words(in_features)
 
@@ -233,6 +246,12 @@ class PackedTernaryLinear(nn.Module):
         # int16 counter for the discrete optimizer
         self.register_buffer(
             "counter",
+            torch.zeros(out_features, in_features, dtype=torch.int16),
+        )
+        # int16 per-weight flip budget counter; freezes a weight after
+        # flip_budget flips to deterministically break the limit cycle.
+        self.register_buffer(
+            "flip_count",
             torch.zeros(out_features, in_features, dtype=torch.int16),
         )
 
@@ -260,8 +279,8 @@ class PackedTernaryLinear(nn.Module):
             X = X.detach().requires_grad_(True)
 
         Y = PackedTernaryLinearFn.apply(
-            X, self.W_packed, self.counter,
-            self.in_features, self.threshold, self.dead_zone,
+            X, self.W_packed, self.counter, self.flip_count,
+            self.in_features, self.threshold, self.dead_zone, self.flip_budget,
         )
 
         if self.bias is not None:
@@ -272,8 +291,8 @@ class PackedTernaryLinear(nn.Module):
     def extra_repr(self) -> str:
         return (
             f"in={self.in_features}, out={self.out_features}, "
-            f"threshold={self.threshold}, "
-            f"bias={self.bias is not None}"
+            f"threshold={self.threshold}, dead_zone={self.dead_zone}, "
+            f"flip_budget={self.flip_budget}, bias={self.bias is not None}"
         )
 
     # ── Serialization ──────────────────────────────────────────────────────
@@ -291,6 +310,7 @@ class PackedTernaryLinear(nn.Module):
     def reset_counter(self):
         """Zero out all counters (e.g. start of a new training phase)."""
         self.counter.zero_()
+        self.flip_count.zero_()
 
     def reset_weights(self, init_scale: float = 1.0):
         """Reinitialise weights with Xavier init."""

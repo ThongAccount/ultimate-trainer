@@ -34,12 +34,14 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
     const half*     __restrict__ dY,
     uint32_t*       __restrict__ W,
     int16_t*        __restrict__ counter,
+    int16_t*        __restrict__ flip_count,
     int batch_size,
     int in_features,
     int out_features,
     int stride_words,
     int16_t threshold,
-    float dead_zone)
+    float dead_zone,
+    int16_t flip_budget)
 {
     int super_c0 = blockIdx.x * kSuperN;
     int super_r0 = blockIdx.y * kSuperM;
@@ -196,10 +198,18 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
             cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
         }
 
-        // Branchless counter update with dead zone: |g| < dead_zone -> no
-        // accumulate, breaking the limit cycle from a consistent residual.
-        cnt0 += (fabsf(g0) < dead_zone) ? 0 : ((g0 > 0.0f) ? -1 : 1);
-        cnt1 += (fabsf(g1) < dead_zone) ? 0 : ((g1 > 0.0f) ? -1 : 1);
+        // Branchless counter update with dead zone + flip budget:
+        // |g| < dead_zone -> no accumulate; flip_count >= flip_budget -> frozen.
+        if (flip_budget > 0 && flip_count[idx] >= flip_budget) {
+            // weight frozen: skip accumulation
+        } else {
+            cnt0 += (fabsf(g0) < dead_zone) ? 0 : ((g0 > 0.0f) ? -1 : 1);
+        }
+        if (flip_budget > 0 && flip_count[idx + 1] >= flip_budget) {
+            // weight frozen: skip accumulation
+        } else {
+            cnt1 += (fabsf(g1) < dead_zone) ? 0 : ((g1 > 0.0f) ? -1 : 1);
+        }
 
         // Saturating clamp BEFORE the threshold check: int16 counters wrap
         // silently at ±32768, making |cnt| > threshold spuriously true and
@@ -214,18 +224,22 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
         if (cnt0 > threshold) {
             increment_weight_atomic(w_row, gc);
             cnt0 = 0;
+            if (flip_budget > 0) flip_count[idx] += 1;
         } else if (cnt0 < -threshold) {
             decrement_weight_atomic(w_row, gc);
             cnt0 = 0;
+            if (flip_budget > 0) flip_count[idx] += 1;
         }
 
         // Weight flips for cnt1
         if (cnt1 > threshold) {
             increment_weight_atomic(w_row, gc + 1);
             cnt1 = 0;
+            if (flip_budget > 0) flip_count[idx + 1] += 1;
         } else if (cnt1 < -threshold) {
             decrement_weight_atomic(w_row, gc + 1);
             cnt1 = 0;
+            if (flip_budget > 0) flip_count[idx + 1] += 1;
         }
 
         // Counter store: align-safe int32 or scalar int16
@@ -261,7 +275,11 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
 
             int idx = gr * in_features + gc;
             int16_t cnt = counter[idx];
-            cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
+            if (flip_budget > 0 && flip_count[idx] >= flip_budget) {
+                // weight frozen: skip accumulation
+            } else {
+                cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
+            }
             // Saturating clamp before the threshold check (see pair path above).
             cnt = max(-32767, min(32767, cnt));
 
@@ -269,9 +287,11 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_kernel(
             if (cnt > threshold) {
                 increment_weight_atomic(w_row, gc);
                 cnt = 0;
+                if (flip_budget > 0) flip_count[idx] += 1;
             } else if (cnt < -threshold) {
                 decrement_weight_atomic(w_row, gc);
                 cnt = 0;
+                if (flip_budget > 0) flip_count[idx] += 1;
             }
             counter[idx] = cnt;
         }
@@ -283,12 +303,14 @@ extern "C" void launch_packed_ternary_update_tc_v2(
     const void*     dY_ptr,
     uint32_t*       W,
     int16_t*        counter,
+    int16_t*        flip_count,
     int batch_size,
     int in_features,
     int out_features,
     int stride_words,
     int16_t threshold,
     float dead_zone,
+    int16_t flip_budget,
     cudaStream_t stream)
 {
     const half* X  = static_cast<const half*>(X_ptr);
@@ -299,7 +321,7 @@ extern "C" void launch_packed_ternary_update_tc_v2(
     dim3 block(128);
 
     packed_ternary_update_tc_v2_kernel<<<grid, block, 0, stream>>>(
-        X, dY, W, counter, batch_size, in_features, out_features,
-        stride_words, threshold, dead_zone
+        X, dY, W, counter, flip_count, batch_size, in_features, out_features,
+        stride_words, threshold, dead_zone, flip_budget
     );
 }

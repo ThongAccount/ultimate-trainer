@@ -102,7 +102,9 @@ def _backward_dx_tc_fake(W, dY, K):
 @custom_op("packed_ternary::update_tc_v2", mutates_args=("W", "counter"))
 def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
                  X: torch.Tensor, dY: torch.Tensor, threshold: int,
-                 dead_zone: float = 1e-3) -> None:
+                 dead_zone: float = 1e-3,
+                 flip_count: torch.Tensor | None = None,
+                 flip_budget: int = 0) -> None:
     """Fused gradient → counter → bit-flip (TC v2, vectorized counter).
 
     Dispatch goes through pack_update._select_update_fn — the load-order-
@@ -113,18 +115,31 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     "TC update v2 kernel not available".
     dead_zone: gradients with |dW| < dead_zone do not accumulate in the
     counter, breaking the limit cycle from a consistent residual gradient.
+    flip_count: per-weight flip budget counter (int16 [N, K]); when provided
+    and flip_budget > 0, a weight freezes after flip_budget flips.
+    flip_budget: max flips per weight over a run (0 = off).
     """
     if os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas":
         # Ranked item #1: cuBLAS dW (fp32 out) + counter/flip epilogue.
         from .update_cublas import update_cublas
-        update_cublas(W, counter, X, dY, threshold, dead_zone)
+        update_cublas(W, counter, X, dY, threshold, dead_zone,
+                      flip_count, flip_budget)
         return
     _ensure_loaded()
     from . import pack_update as pu
     fn, _name = pu._select_update_fn(X.size(0), dY.size(1), X.size(1))
     if fn is not None:
-        fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold), float(dead_zone))
-        return
+        if flip_budget > 0:
+            # flip budget only supported by v2_64 and v2_32 wrappers;
+            # v3_32 and v1 fall through to the scalar path below.
+            if _name in ("v2_64", "v2_32"):
+                fn(W, counter, flip_count,
+                   X.contiguous(), dY.contiguous(),
+                   int(threshold), float(dead_zone), int(flip_budget))
+                return
+        else:
+            fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold), float(dead_zone))
+            return
     pu._load_if_needed()
     if not pu._HAS_UP:
         raise RuntimeError("TC update v2 kernel not available")

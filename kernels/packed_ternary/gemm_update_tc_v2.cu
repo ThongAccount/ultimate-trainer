@@ -47,9 +47,11 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
     const half*     __restrict__ dY,      // [B, N] FP16
     uint32_t*       __restrict__ W,       // [N, stride] packed
     int16_t*        __restrict__ counter,  // [N, K] int16
+    int16_t*        __restrict__ flip_count,
     int B, int K, int N, int stride_words,
     int16_t threshold,
-    float dead_zone)
+    float dead_zone,
+    int16_t flip_budget)
 {
     int super_n0 = blockIdx.x * kSuperM;
     int super_k0 = blockIdx.y * kSuperN;
@@ -186,14 +188,27 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
                 cnt1 = (int16_t)((cnt_pair >> 16) & 0xFFFF);
             }
 
-            cnt0 += (fabsf(g0) < dead_zone) ? 0 : ((g0 > 0.0f) ? -1 : 1);
-            cnt1 += (fabsf(g1) < dead_zone) ? 0 : ((g1 > 0.0f) ? -1 : 1);
+            // Flip budget: freeze weights that exhausted their budget.
+            if (flip_budget > 0 && flip_count[idx] >= flip_budget) {
+                // skip accumulation for this weight
+            } else {
+                cnt0 += (fabsf(g0) < dead_zone) ? 0 : ((g0 > 0.0f) ? -1 : 1);
+            }
+            if (flip_budget > 0 && flip_count[idx + 1] >= flip_budget) {
+                // skip accumulation for this weight
+            } else {
+                cnt1 += (fabsf(g1) < dead_zone) ? 0 : ((g1 > 0.0f) ? -1 : 1);
+            }
 
             uint32_t* w_row = W + gn * stride_words;
-            if (cnt0 > threshold) { increment_weight_atomic(w_row, gk); cnt0 = 0; }
-            else if (cnt0 < -threshold) { decrement_weight_atomic(w_row, gk); cnt0 = 0; }
-            if (cnt1 > threshold) { increment_weight_atomic(w_row, gk + 1); cnt1 = 0; }
-            else if (cnt1 < -threshold) { decrement_weight_atomic(w_row, gk + 1); cnt1 = 0; }
+            if (cnt0 > threshold) { increment_weight_atomic(w_row, gk); cnt0 = 0;
+                if (flip_budget > 0) flip_count[idx] += 1; }
+            else if (cnt0 < -threshold) { decrement_weight_atomic(w_row, gk); cnt0 = 0;
+                if (flip_budget > 0) flip_count[idx] += 1; }
+            if (cnt1 > threshold) { increment_weight_atomic(w_row, gk + 1); cnt1 = 0;
+                if (flip_budget > 0) flip_count[idx + 1] += 1; }
+            else if (cnt1 < -threshold) { decrement_weight_atomic(w_row, gk + 1); cnt1 = 0;
+                if (flip_budget > 0) flip_count[idx + 1] += 1; }
 
             // Store
             if ((idx * (int)sizeof(int16_t)) & 3) {
@@ -222,10 +237,16 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
                 if (g == 0.0f) continue;
                 int idx = gn * K + last_gk;
                 int16_t cnt = counter[idx];
-                cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
+                if (flip_budget > 0 && flip_count[idx] >= flip_budget) {
+                    // skip accumulation for this weight
+                } else {
+                    cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
+                }
                 uint32_t* w_row = W + gn * stride_words;
-                if (cnt > threshold) { increment_weight_atomic(w_row, last_gk); cnt = 0; }
-                else if (cnt < -threshold) { decrement_weight_atomic(w_row, last_gk); cnt = 0; }
+                if (cnt > threshold) { increment_weight_atomic(w_row, last_gk); cnt = 0;
+                    if (flip_budget > 0) flip_count[idx] += 1; }
+                else if (cnt < -threshold) { decrement_weight_atomic(w_row, last_gk); cnt = 0;
+                    if (flip_budget > 0) flip_count[idx] += 1; }
                 counter[idx] = cnt;
             }
         }
@@ -236,9 +257,10 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
 
 extern "C" void launch_packed_ternary_update_tc_v2_64(
     const void* X_ptr, const void* dY_ptr,
-    uint32_t* W, int16_t* counter,
+    uint32_t* W, int16_t* counter, int16_t* flip_count,
     int batch_size, int in_features, int out_features,
     int stride_words, int16_t threshold, float dead_zone,
+    int16_t flip_budget,
     cudaStream_t stream)
 {
     const half* X = static_cast<const half*>(X_ptr);
@@ -249,7 +271,8 @@ extern "C" void launch_packed_ternary_update_tc_v2_64(
     dim3 block(128);
 
     packed_ternary_update_tc_v2_64_kernel<<<grid, block, 0, stream>>>(
-        X, dY, W, counter,
-        batch_size, in_features, out_features, stride_words, threshold, dead_zone
+        X, dY, W, counter, flip_count,
+        batch_size, in_features, out_features, stride_words, threshold,
+        dead_zone, flip_budget
     );
 }

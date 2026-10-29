@@ -37,13 +37,20 @@ extern "C" {
 __global__ void update_epilogue_kernel(
     uint32_t* __restrict__ W,          // [N, stride_words] packed 2-bit
     int16_t*  __restrict__ counter,    // [N, K] int16
+    int16_t*  __restrict__ flip_count, // [N, K] int16, per-weight flip budget
     const float* __restrict__ dW,      // [N, K] fp32
-    int N, int K, int stride_words, int16_t threshold, float dead_zone)
+    int N, int K, int stride_words, int16_t threshold, float dead_zone,
+    int16_t flip_budget)
 {
     long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= (long)N * K) return;
     int n = idx / K;
     int k = idx % K;
+
+    // Flip budget: once a weight has flipped flip_budget times, freeze it
+    // permanently — no more counter accumulation, no more flips. This
+    // deterministically breaks the limit cycle.
+    if (flip_budget > 0 && flip_count[idx] >= flip_budget) return;
 
     float g = dW[idx];
     int16_t cnt = counter[idx];
@@ -52,8 +59,16 @@ __global__ void update_epilogue_kernel(
     cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
 
     uint32_t* w_row = W + (long)n * stride_words;
-    if (cnt > threshold) { increment_weight_atomic(w_row, k); cnt = 0; }
-    else if (cnt < -threshold) { decrement_weight_atomic(w_row, k); cnt = 0; }
+    if (cnt > threshold) {
+        increment_weight_atomic(w_row, k);
+        cnt = 0;
+        if (flip_budget > 0) flip_count[idx] += 1;
+    }
+    else if (cnt < -threshold) {
+        decrement_weight_atomic(w_row, k);
+        cnt = 0;
+        if (flip_budget > 0) flip_count[idx] += 1;
+    }
 
     counter[idx] = cnt;
 }
@@ -93,12 +108,14 @@ extern "C" void packed_ternary_dw_gemm_f32(
 }
 
 extern "C" void launch_update_epilogue(
-    uint32_t* W, int16_t* counter, const float* dW,
-    int N, int K, int stride_words, int16_t threshold, float dead_zone, cudaStream_t stream)
+    uint32_t* W, int16_t* counter, int16_t* flip_count, const float* dW,
+    int N, int K, int stride_words, int16_t threshold, float dead_zone,
+    int16_t flip_budget, cudaStream_t stream)
 {
     long total = (long)N * K;
     int threads = 256;
     long blocks = (total + threads - 1) / threads;
     update_epilogue_kernel<<<(unsigned int)blocks, threads, 0, stream>>>(
-        W, counter, dW, N, K, stride_words, threshold, dead_zone);
+        W, counter, flip_count, dW, N, K, stride_words, threshold, dead_zone,
+        flip_budget);
 }

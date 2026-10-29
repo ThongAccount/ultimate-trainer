@@ -56,8 +56,9 @@ extern "C" {
         const void* dY, const void* X, void* dW,
         int B, int N, int K, cudaStream_t stream);
     void launch_update_epilogue(
-        void* W, void* counter, const void* dW,
-        int N, int K, int stride_words, int64_t threshold, float dead_zone, cudaStream_t stream);
+        void* W, void* counter, void* flip_count, const void* dW,
+        int N, int K, int stride_words, int64_t threshold, float dead_zone,
+        int16_t flip_budget, cudaStream_t stream);
 }
 
 void dw_gemm_f32(torch::Tensor dY, torch::Tensor X, torch::Tensor dW) {
@@ -68,13 +69,16 @@ void dw_gemm_f32(torch::Tensor dY, torch::Tensor X, torch::Tensor dW) {
         B, N, K, c10::cuda::getCurrentCUDAStream());
 }
 
-void update_epilogue(torch::Tensor W, torch::Tensor counter, torch::Tensor dW,
-                     int64_t threshold, float dead_zone) {
+void update_epilogue(torch::Tensor W, torch::Tensor counter,
+                     torch::Tensor flip_count, torch::Tensor dW,
+                     int64_t threshold, float dead_zone, int16_t flip_budget) {
     int N = W.size(0), K = dW.size(1);
     int stride_words = W.size(1);
     launch_update_epilogue(
-        W.data_ptr<int32_t>(), counter.data_ptr<int16_t>(), dW.data_ptr<float>(),
-        N, K, stride_words, (int16_t)threshold, dead_zone, c10::cuda::getCurrentCUDAStream());
+        W.data_ptr<int32_t>(), counter.data_ptr<int16_t>(),
+        flip_count.data_ptr<int16_t>(), dW.data_ptr<float>(),
+        N, K, stride_words, (int16_t)threshold, dead_zone, flip_budget,
+        c10::cuda::getCurrentCUDAStream());
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -98,26 +102,38 @@ def use_update_cublas() -> bool:
 
 def update_cublas(W: torch.Tensor, counter: torch.Tensor,
                   X: torch.Tensor, dY: torch.Tensor, threshold: int = 32,
-                  dead_zone: float = DEAD_ZONE_DEFAULT):
+                  dead_zone: float = DEAD_ZONE_DEFAULT,
+                  flip_count: torch.Tensor | None = None,
+                  flip_budget: int = 0):
     """Re-hosted update: cuBLAS dW (fp32 out) + counter/flip epilogue.
 
     Same in-place semantics as pack_update.update: W and counter are mutated.
     dead_zone: gradients with |dW| < dead_zone do not accumulate in the
     counter, breaking the limit cycle from a consistent residual gradient.
+    flip_count: per-weight flip budget counter (int16 [N, K]); when provided
+    and flip_budget > 0, a weight freezes after flip_budget flips.
+    flip_budget: max flips per weight over a run (0 = off).
     """
     _load_update_cublas()
     if not _HAS_UPDATE_CUBLAS:
         raise RuntimeError("update cublas backend not available")
     assert W.is_contiguous(), "W must be contiguous for in-place update"
     assert counter.is_contiguous(), "counter must be contiguous"
+    if flip_count is not None:
+        assert flip_count.is_contiguous(), "flip_count must be contiguous"
     if not (0 <= int(threshold) <= 32767):
         raise RuntimeError(f"threshold must be in [0, 32767], got {threshold}")
     if not (0.0 <= float(dead_zone) <= 1.0):
         raise RuntimeError(f"dead_zone must be in [0, 1], got {dead_zone}")
+    if not (0 <= int(flip_budget) <= 32767):
+        raise RuntimeError(f"flip_budget must be in [0, 32767], got {flip_budget}")
     X = X.contiguous()
     dY = dY.contiguous()
     N, K = W.size(0), X.size(1)
     dW = torch.empty((N, K), dtype=torch.float32, device=X.device)
     _dw_gemm_f32(dY, X, dW)
-    _update_epilogue(W, counter, dW, int(threshold), float(dead_zone))
+    if flip_count is None:
+        flip_count = torch.empty((1,), dtype=torch.int16, device=X.device)
+    _update_epilogue(W, counter, flip_count, dW, int(threshold),
+                     float(dead_zone), int(flip_budget))
     return dW
