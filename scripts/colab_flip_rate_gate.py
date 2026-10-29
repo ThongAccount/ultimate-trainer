@@ -154,8 +154,9 @@ def run_arm(arm, update_backend):
                                 dtype=torch.float32)
             dY = (dY_true + ns * ref_rms * noise).half()
             old = layer.W_packed.clone()
-            co_update_tc_v2(layer.W_packed, layer.counter, layer.flip_count, X, dY,
-                            THRESHOLD, DEAD_ZONE, FLIP_BUDGET)
+            co_update_tc_v2(layer.W_packed, layer.counter, X, dY,
+                            THRESHOLD, DEAD_ZONE,
+                            flip_count=layer.flip_count, flip_budget=FLIP_BUDGET)
             f = count_flipped_fields(old, layer.W_packed)
 
         window = "noisy" if WARM <= step < NOISY_END else ("clean" if step >= NOISY_END else "warm")

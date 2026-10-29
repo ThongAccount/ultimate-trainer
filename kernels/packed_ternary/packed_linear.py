@@ -182,9 +182,9 @@ class PackedTernaryLinearFn(torch.autograd.Function):
                 if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16:
                     dX = co_backward_dx_tc(W_packed, dY, ctx.in_features)
                     co_update_tc_v2(
-                        W_packed, counter, flip_count,
-                        X.contiguous(), dY.contiguous(),
-                        int(threshold), float(dead_zone), int(flip_budget))
+                        W_packed, counter, X.contiguous(), dY.contiguous(),
+                        int(threshold), float(dead_zone),
+                        flip_count=flip_count, flip_budget=int(flip_budget))
                 else:
                     dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
         else:
