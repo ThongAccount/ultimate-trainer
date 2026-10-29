@@ -55,7 +55,7 @@ try:
     from kernels.packed_ternary.custom_ops import update_tc_v2 as co_update_tc_v2
 except Exception:  # custom_ops can fail to register; packed_linear re-exports it
     from kernels.packed_ternary.packed_linear import co_update_tc_v2
-from tools.flip_rate_verdict import evaluate_flip_rate
+from tools.flip_rate_verdict import evaluate_flip_rate, evaluate_flip_budget
 
 STEPS       = int(os.environ.get("FLIP_STEPS", "1000"))
 D_IN        = int(os.environ.get("FLIP_DIN", "512"))
@@ -80,7 +80,7 @@ N_WEIGHTS = D_OUT * D_IN
 
 
 def noise_scale_for(arm, step):
-    sched = NOISE_MAIN if arm == "main" else NOISE_CTRL
+    sched = NOISE_MAIN if arm.startswith("main") else NOISE_CTRL
     if step < WARM:
         return sched[0]
     if step < NOISY_END:
@@ -126,7 +126,7 @@ def build_layer():
     return layer, X, y0, gamma
 
 
-def run_arm(arm, update_backend):
+def run_arm(arm, update_backend, flip_budget=FLIP_BUDGET):
     os.environ["PT_UPDATE_BACKEND"] = update_backend
     layer, X, y0, gamma = build_layer()
     gen = torch.Generator(device="cuda"); gen.manual_seed(SEED + 2)
@@ -156,7 +156,7 @@ def run_arm(arm, update_backend):
             old = layer.W_packed.clone()
             co_update_tc_v2(layer.W_packed, layer.counter, X, dY,
                             THRESHOLD, DEAD_ZONE,
-                            flip_count=layer.flip_count, flip_budget=FLIP_BUDGET)
+                            flip_count=layer.flip_count, flip_budget=flip_budget)
             f = count_flipped_fields(old, layer.W_packed)
 
         window = "noisy" if WARM <= step < NOISY_END else ("clean" if step >= NOISY_END else "warm")
@@ -182,7 +182,7 @@ def run_arm(arm, update_backend):
         "seed": SEED,
         "ref_rms": ref_rms,
         "dead_zone": DEAD_ZONE,
-        "flip_budget": FLIP_BUDGET,
+        "flip_budget": flip_budget,
         "flip_rates": rates,
         "steps_in_window": steps_in,
         "resid_rms_noisy": (sum(resid_noisy) / len(resid_noisy)) if resid_noisy else 0.0,
@@ -225,6 +225,36 @@ for be in BACKENDS:
               f"value={c['value']:.6g} threshold={c['threshold']:.6g} "
               f"detail={c['detail']}", flush=True)
     print(f"FLIPRATE_VERDICT: update_backend={be} passed={v['passed']}", flush=True)
+    if FLIP_BUDGET > 0:
+        # In-run no-budget baseline (main arm, flip_budget=0) so criterion F1
+        # has a same-run denominator. V/M/C above still evaluate the budgeted
+        # run; FLIPRATE_GATE semantics are unchanged (pre-registered V/M/C).
+        base = run_arm("main_base", be, flip_budget=0)
+        results.append(base)
+        print("FLIPRATE: arm={arm} update_backend={ub} steps={steps} threshold={th} "
+              "weights={w} noisy_rate={nr:.8g} clean_rate={cr:.8g} "
+              "resid_noisy={rn:.6g} resid_clean={rc:.6g}".format(
+                  arm=base["arm"], ub=base["update_backend"], steps=base["steps"],
+                  th=base["threshold"], w=base["weights"],
+                  nr=base["flip_rates"]["noisy"], cr=base["flip_rates"]["clean"],
+                  rn=base["resid_rms_noisy"], rc=base["resid_rms_clean"]), flush=True)
+        for (bstep, bf, bres) in base["buckets"]:
+            print(f"FLIPRATE_BUCKET: arm={base['arm']} update_backend={base['update_backend']} "
+                  f"step={bstep} flips_per_step={bf / 100.0:.6g} "
+                  f"flip_rate={bf / (100.0 * base['weights']):.8g} resid_rms={bres:.6g}",
+                  flush=True)
+        fb = evaluate_flip_budget(
+            main_clean_no_budget=base["flip_rates"]["clean"],
+            main_clean_budget=main["flip_rates"]["clean"],
+            main_noisy=main["flip_rates"]["noisy"],
+            budget=FLIP_BUDGET,
+        )
+        for c in fb["checks"]:
+            print(f"FLIPRATE_CHECK: update_backend={be} {c['name']} ok={c['ok']} "
+                  f"value={c['value']:.6g} threshold={c['threshold']:.6g} "
+                  f"detail={c['detail']}", flush=True)
+        print(f"FLIPRATE_BUDGET_VERDICT: update_backend={be} flip_budget={FLIP_BUDGET} "
+              f"passed={fb['passed']}", flush=True)
     if be == BACKENDS[-1]:
         overall_pass = v["passed"]
 

@@ -127,22 +127,36 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
         return
     _ensure_loaded()
     from . import pack_update as pu
+    if flip_budget > 0 and flip_count is None:
+        raise RuntimeError(
+            "flip_budget > 0 requires a real flip_count tensor of shape [N, K]")
     fn, _name = pu._select_update_fn(X.size(0), dY.size(1), X.size(1))
     if fn is not None:
-        if flip_budget > 0:
-            # flip budget only supported by v2_64 and v2_32 wrappers;
-            # v3_32 and v1 fall through to the scalar path below.
-            if _name in ("v2_64", "v2_32"):
-                fn(W, counter, flip_count,
-                   X.contiguous(), dY.contiguous(),
-                   int(threshold), float(dead_zone), int(flip_budget))
-                return
-        else:
-            fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold), float(dead_zone))
+        if _name in ("v2_64", "v2_32"):
+            # 8-param wrappers:
+            # (W, counter, flip_count, X, dY, threshold, dead_zone, flip_budget)
+            fc = flip_count
+            if fc is None:
+                # the wrapper takes data_ptr() unconditionally, but the kernel
+                # only dereferences flip_count when flip_budget > 0 — a dummy
+                # keeps flip_budget == 0 identical to pre-budget behavior
+                fc = torch.empty((1,), dtype=torch.int16, device=W.device)
+            fn(W, counter, fc, X.contiguous(), dY.contiguous(),
+               int(threshold), float(dead_zone), int(flip_budget))
             return
+        if flip_budget > 0:
+            raise RuntimeError(
+                f"flip_budget is only supported on v2_64/v2_32 dispatch, got {_name}")
+        # v3_32 / v1_32 wrappers are 5-param: (W, counter, X, dY, threshold);
+        # their kernels have no dead_zone/flip_budget parameters.
+        fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
+        return
     pu._load_if_needed()
     if not pu._HAS_UP:
         raise RuntimeError("TC update v2 kernel not available")
+    if flip_budget > 0:
+        raise RuntimeError(
+            "flip_budget requires a TC v2 kernel; the scalar fallback does not support it")
     pu._up_fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
 
 
