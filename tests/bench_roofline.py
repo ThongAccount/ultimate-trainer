@@ -7,7 +7,7 @@ Per (K,N) shape from the production model, times:
 Also logs SM clock + torch/CUDA versions + git commit into a JSON block.
 
 Usage (Colab T4):
-    TORCH_CUDA_ARCH_LIST=7.5 python3 tests/bench_roofline.py \
+    python3 tests/bench_roofline.py \
         --batch 16384 --out /content/roofline.json
 
 Protocol: warmup 10, median of >= 20, torch.cuda.Event timing.

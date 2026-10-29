@@ -5,7 +5,7 @@ run in-process, print RESULTS JSON). Avoids `colab run bash -c` (the CLI only
 accepts a script path).
 
 Usage on Colab T4:
-    TORCH_CUDA_ARCH_LIST=7.5 python3 scripts/colab_bench.py --phase 0 \
+    python3 scripts/colab_bench.py --phase 0 \
         --batch 16384 --out /content/roofline.json
 """
 import argparse
@@ -97,8 +97,6 @@ def main() -> int:
         for p in (DEST, os.path.join(DEST, "tests")):
             if p not in sys.path:
                 sys.path.insert(0, p)
-    os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5")
-
     tests_dir = os.path.join(os.getcwd(), "tests") if not args.no_setup else "tests"
     sys.path.insert(0, tests_dir)
     import bench_roofline as br

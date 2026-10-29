@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Colab T4 session setup: clone/pull repo at a pinned commit, install deps,
-# prebuild kernels with TORCH_CUDA_ARCH_LIST=7.5.
+# prebuild kernels (TORCH_CUDA_ARCH_LIST defaults to 7.5 centrally in kernels/common.py).
 #
 # Usage: bash scripts/colab_setup.sh [commit] [repo-dir]
 # Every benchmark record must quote the git commit from the JSON output.
@@ -40,8 +40,7 @@ echo "---- deps ----"
 pip install -q ninja >/dev/null 2>&1 || pip install -q ninja
 pip install -q -r "${DEST}/requirements.txt" >/dev/null 2>&1 || pip install -q -r "${DEST}/requirements.txt"
 
-echo "---- arch pin + import smoke ----"
-export TORCH_CUDA_ARCH_LIST=7.5
+echo "---- import smoke ----"
 cd "${DEST}"
 python3 - <<'EOF'
 import os, sys

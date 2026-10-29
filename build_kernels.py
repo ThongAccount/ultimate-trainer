@@ -20,7 +20,7 @@ import os
 import sys
 import time
 
-os.environ.setdefault("TORCH_CUDA_ARCH_LIST", "7.5")  # T4 — skip other archs
+import kernels.common  # noqa: F401 — sets the central TORCH_CUDA_ARCH_LIST default
 
 import torch
 from torch.utils.cpp_extension import load_inline

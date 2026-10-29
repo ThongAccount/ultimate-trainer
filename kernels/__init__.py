@@ -4,6 +4,8 @@ Import failures are logged with their exception so that a broken kernel
 extension is debuggable instead of silently degrading to CPU fallbacks.
 """
 
+from . import common  # noqa: F401 — must run before submodule imports that JIT kernels
+
 import logging
 
 logger = logging.getLogger(__name__)
