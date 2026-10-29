@@ -107,7 +107,8 @@ extern "C" {
         int B, int K, int N, int stride, int16_t threshold, cudaStream_t s);
     void launch_packed_ternary_update_tc_v2(
         const void* X, const void* dY, uint32_t* W, int16_t* counter,
-        int B, int K, int N, int stride, int16_t threshold, cudaStream_t s);
+        int16_t* flip_count, int B, int K, int N, int stride,
+        int16_t threshold, float dead_zone, int16_t flip_budget, cudaStream_t s);
 }
 
 // ── Forward wrappers ───────────────────────────────────────────────
@@ -169,7 +170,21 @@ torch::Tensor dx_tc(torch::Tensor W, torch::Tensor dY, int K) {
 
 UPD_WRAPPER(upd_scalar,  launch_packed_ternary_update)
 UPD_WRAPPER(upd_tc,       launch_packed_ternary_update_tc)
-UPD_WRAPPER(upd_tc_v2,    launch_packed_ternary_update_tc_v2)
+
+// v2 launcher gained flip_count/dead_zone/flip_budget (13 params) — it needs
+// its own wrapper: dummy flip_count + budget 0 (kernel never dereferences
+// flip_count when flip_budget == 0).
+void upd_tc_v2(torch::Tensor W, torch::Tensor counter,
+               torch::Tensor X, torch::Tensor dY, int16_t threshold) {
+    auto flip_count = torch::empty({1},
+        torch::dtype(torch::kInt16).device(X.device()));
+    launch_packed_ternary_update_tc_v2(
+        X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
+        reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
+        counter.data_ptr<int16_t>(), flip_count.data_ptr<int16_t>(),
+        X.size(0), X.size(1), dY.size(1), W.size(1),
+        threshold, 0.0f, (int16_t)0, nullptr);
+}
 
 #undef UPD_WRAPPER
 

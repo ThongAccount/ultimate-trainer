@@ -99,7 +99,7 @@ def _backward_dx_tc_fake(W, dY, K):
     return torch.empty(B, K, dtype=torch.float16, device=dY.device)
 
 
-@custom_op("packed_ternary::update_tc_v2", mutates_args=("W", "counter"))
+@custom_op("packed_ternary::update_tc_v2", mutates_args=("W", "counter", "flip_count"))
 def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
                  X: torch.Tensor, dY: torch.Tensor, threshold: int,
                  dead_zone: float = 1e-3,
@@ -119,6 +119,16 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     and flip_budget > 0, a weight freezes after flip_budget flips.
     flip_budget: max flips per weight over a run (0 = off).
     """
+    # Guard BEFORE backend dispatch: at flip_budget > 0 with flip_count=None
+    # the cublas epilogue would OOB on its 1-element dummy — fail loudly on
+    # both backends instead of silently mis-measuring.
+    if flip_budget > 0:
+        if flip_count is None:
+            raise RuntimeError(
+                "flip_budget > 0 requires a real flip_count tensor of shape [N, K]")
+        if not (0 < int(flip_budget) <= 32767):
+            raise RuntimeError(
+                f"flip_budget must be in [1, 32767] (int16 counter), got {flip_budget}")
     if os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas":
         # Ranked item #1: cuBLAS dW (fp32 out) + counter/flip epilogue.
         from .update_cublas import update_cublas
@@ -127,9 +137,6 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
         return
     _ensure_loaded()
     from . import pack_update as pu
-    if flip_budget > 0 and flip_count is None:
-        raise RuntimeError(
-            "flip_budget > 0 requires a real flip_count tensor of shape [N, K]")
     fn, _name = pu._select_update_fn(X.size(0), dY.size(1), X.size(1))
     if fn is not None:
         if _name in ("v2_64", "v2_32"):

@@ -57,6 +57,8 @@ __global__ void update_epilogue_kernel(
     // Counter dead zone: gradients below DEAD_ZONE do not accumulate, breaking
     // the limit cycle where a consistent residual gradient flips every T steps.
     cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
+    // Saturating clamp before the threshold check (int16 wrap guard, same as v2_32).
+    cnt = max(-32767, min(32767, cnt));
 
     uint32_t* w_row = W + (long)n * stride_words;
     if (cnt > threshold) {

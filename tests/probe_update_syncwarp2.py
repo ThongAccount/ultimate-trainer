@@ -71,17 +71,21 @@ def build(cu_path, name):
         extern "C" {
             void launch_packed_ternary_update_tc_v2(
                 const void* X, const void* dY, uint32_t* W, int16_t* counter,
-                int batch_size, int in_features, int out_features,
-                int stride_words, int16_t threshold, cudaStream_t stream);
+                int16_t* flip_count, int batch_size, int in_features,
+                int out_features, int stride_words, int16_t threshold,
+                float dead_zone, int16_t flip_budget, cudaStream_t stream);
         }
         void upd(torch::Tensor X, torch::Tensor dY, torch::Tensor W,
                  torch::Tensor counter, int64_t in_features, int64_t threshold) {
+            auto dummy_fc = torch::empty({1},
+                torch::dtype(torch::kInt16).device(X.device()));
             launch_packed_ternary_update_tc_v2(
                 X.data_ptr<at::Half>(), dY.data_ptr<at::Half>(),
                 reinterpret_cast<uint32_t*>(W.data_ptr<int32_t>()),
                 reinterpret_cast<int16_t*>(counter.data_ptr<int16_t>()),
+                dummy_fc.data_ptr<int16_t>(),
                 X.size(0), (int)in_features, (int)W.size(0),
-                (int)W.size(1), (int16_t)threshold, nullptr);
+                (int)W.size(1), (int16_t)threshold, 0.0f, (int16_t)0, nullptr);
         }
         PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("upd", &upd); }
         """,

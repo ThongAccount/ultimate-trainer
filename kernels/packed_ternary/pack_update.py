@@ -353,10 +353,12 @@ def _load_up_tc_v2():
             #include <torch/extension.h>
 #include <c10/cuda/CUDAStream.h>
             extern "C" {
+                // Parameter order must match the .cu launcher exactly:
+                // flip_count sits after counter (gemm_update_tc_v2.cu:258-264).
                 void launch_packed_ternary_update_tc_v2_64(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
-                    int B, int K, int N, int stride, int16_t threshold,
-                    float dead_zone, int16_t* flip_count, int16_t flip_budget,
+                    int16_t* flip_count, int B, int K, int N, int stride,
+                    int16_t threshold, float dead_zone, int16_t flip_budget,
                     cudaStream_t s);
             }
             void update_tc_v2_wrapper(
@@ -371,8 +373,8 @@ def _load_up_tc_v2():
                     counter.data_ptr<int16_t>(),
                     flip_count.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    threshold, dead_zone, flip_count.data_ptr<int16_t>(),
-                    flip_budget, c10::cuda::getCurrentCUDAStream());
+                    threshold, dead_zone, flip_budget,
+                    c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v2", &update_tc_v2_wrapper,
@@ -452,11 +454,13 @@ def _load_up_tc_v2_32():
             #include <torch/extension.h>
 #include <c10/cuda/CUDAStream.h>
             extern "C" {
+                // Parameter order must match the .cu launcher exactly:
+                // flip_count sits after counter (gemm_update_tc_v2_32.cu:301-314).
                 void launch_packed_ternary_update_tc_v2(
                     const void* X, const void* dY, uint32_t* W, int16_t* counter,
-                    int batch_size, int in_features, int out_features,
-                    int stride_words, int16_t threshold, float dead_zone,
-                    int16_t* flip_count, int16_t flip_budget, cudaStream_t stream);
+                    int16_t* flip_count, int batch_size, int in_features,
+                    int out_features, int stride_words, int16_t threshold,
+                    float dead_zone, int16_t flip_budget, cudaStream_t stream);
             }
             void up_tc_v2_32_wrapper(torch::Tensor W, torch::Tensor counter,
                                       torch::Tensor flip_count,
@@ -469,8 +473,8 @@ def _load_up_tc_v2_32():
                     counter.data_ptr<int16_t>(),
                     flip_count.data_ptr<int16_t>(),
                     X.size(0), X.size(1), dY.size(1), W.size(1),
-                    (int16_t)threshold, dead_zone, flip_count.data_ptr<int16_t>(),
-                    flip_budget, c10::cuda::getCurrentCUDAStream());
+                    (int16_t)threshold, dead_zone, flip_budget,
+                    c10::cuda::getCurrentCUDAStream());
             }
             PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
                 m.def("update_tc_v2_32", &up_tc_v2_32_wrapper, "Update TC 32x32");
@@ -651,7 +655,8 @@ def backward_dx(W: torch.Tensor, dY: torch.Tensor, in_features: int) -> torch.Te
 
 
 def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
-           dY: torch.Tensor, threshold: int = 64):
+           dY: torch.Tensor, threshold: int = 64,
+           flip_count: torch.Tensor | None = None, flip_budget: int = 0):
     """Fused gradient -> counter -> bit-flip.  W is updated in-place.
 
     Auto-dispatches to TC (WMMA) when all GEMM dimensions >= 16,
@@ -684,19 +689,40 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
 
     fn, which = _select_update_fn(B, N_out, N_in)
     if fn is not None:
-        fn(W, counter, X, dY, int(threshold))
+        if which in ("v2_64", "v2_32"):
+            # 8-param wrapper: (W, counter, flip_count, X, dY, threshold,
+            # dead_zone, flip_budget). dead_zone stays 0.0 here so legacy
+            # callers keep pre-e19257f behavior.
+            if flip_budget > 0 and flip_count is None:
+                raise RuntimeError(
+                    "flip_budget > 0 requires a real flip_count tensor of shape [N, K]")
+            fc = flip_count
+            if fc is None:
+                # kernel only dereferences flip_count when flip_budget > 0
+                fc = torch.empty((1,), dtype=torch.int16, device=W.device)
+            fn(W, counter, fc, X, dY, int(threshold), 0.0, int(flip_budget))
+        else:
+            if flip_budget > 0:
+                raise RuntimeError(
+                    f"flip_budget is only supported on v2_64/v2_32 dispatch, got {which}")
+            fn(W, counter, X, dY, int(threshold))
         return
 
     # Fallback to scalar
     _load_if_needed()
     if not _HAS_UP:
         raise RuntimeError("update kernel not available")
+    if flip_budget > 0:
+        raise RuntimeError(
+            "flip_budget requires a TC v2 kernel; the scalar fallback does not support it")
     _up_fn(W, counter, X, dY, int(threshold))
 
 
 def backward_update(W: torch.Tensor, counter: torch.Tensor,
                     dY: torch.Tensor, X: torch.Tensor,
-                    in_features: int, threshold: int = 64) -> torch.Tensor:
+                    in_features: int, threshold: int = 64,
+                    flip_count: torch.Tensor | None = None,
+                    flip_budget: int = 0) -> torch.Tensor:
     """Fused backward (dX) + update (counter flip).  One Python call.
 
     Returns dX for upstream gradient.  W and counter are updated in-place.
@@ -733,9 +759,24 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
     N_in = X_c.size(1)
     fn, which = _select_update_fn(B, N_out, N_in)
     if fn is not None:
-        fn(W, counter, X_c, dY_c, int(threshold))
+        if which in ("v2_64", "v2_32"):
+            if flip_budget > 0 and flip_count is None:
+                raise RuntimeError(
+                    "flip_budget > 0 requires a real flip_count tensor of shape [N, K]")
+            fc = flip_count
+            if fc is None:
+                fc = torch.empty((1,), dtype=torch.int16, device=W.device)
+            fn(W, counter, fc, X_c, dY_c, int(threshold), 0.0, int(flip_budget))
+        else:
+            if flip_budget > 0:
+                raise RuntimeError(
+                    f"flip_budget is only supported on v2_64/v2_32 dispatch, got {which}")
+            fn(W, counter, X_c, dY_c, int(threshold))
     else:
         _load_if_needed()
+        if flip_budget > 0:
+            raise RuntimeError(
+                "flip_budget requires a TC v2 kernel; the scalar fallback does not support it")
         _up_fn(W, counter, X_c, dY_c, int(threshold))
 
     return dX

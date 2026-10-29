@@ -173,7 +173,9 @@ class PackedTernaryLinearFn(torch.autograd.Function):
             # Separate backward_dx + update is faster than fused kernel
             # due to atomicAdd contention on dX when many CTAs compete.
             # Use fused only when B, N, K are small.
-            if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16 and B <= 64 and dY.size(1) <= 128 and ctx.in_features <= 128:
+            # The fused kernel has no flip_count/flip_budget parameters — never
+            # take this path on a budgeted run, or the flip args are dropped.
+            if _HAS_CUSTOM_OPS and int(flip_budget) == 0 and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16 and B <= 64 and dY.size(1) <= 128 and ctx.in_features <= 128:
                 from .pack_update import _tc_ok
                 dX = co_backward_update_fused(
                     W_packed, counter, dY, X, ctx.in_features, int(threshold))
@@ -190,7 +192,10 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         else:
             dX = backward_dx(W_packed, dY, ctx.in_features)
 
-        return dX, None, None, None, None
+        # forward takes 8 non-ctx inputs (X, W_packed, counter, flip_count,
+        # in_features, threshold, dead_zone, flip_budget): return one grad slot
+        # per input so autograd's arity check passes.
+        return dX, None, None, None, None, None, None, None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

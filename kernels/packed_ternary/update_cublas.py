@@ -127,6 +127,11 @@ def update_cublas(W: torch.Tensor, counter: torch.Tensor,
         raise RuntimeError(f"dead_zone must be in [0, 1], got {dead_zone}")
     if not (0 <= int(flip_budget) <= 32767):
         raise RuntimeError(f"flip_budget must be in [0, 32767], got {flip_budget}")
+    if flip_budget > 0 and flip_count is None:
+        raise RuntimeError(
+            "flip_budget > 0 requires a real flip_count tensor of shape [N, K] "
+            "(the 1-element dummy below is only safe at flip_budget == 0, where "
+            "the epilogue guards every flip_count deref with flip_budget > 0)")
     X = X.contiguous()
     dY = dY.contiguous()
     N, K = W.size(0), X.size(1)

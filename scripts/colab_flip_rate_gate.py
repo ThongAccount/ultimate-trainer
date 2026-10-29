@@ -283,7 +283,12 @@ def main():
                     help="per-weight flip budget (0 = off); sweep 5/10/20/50 for damping")
     ap.add_argument("--smoke", action="store_true",
                     help="validate the plumbing only; do not enforce the criteria")
-    args, _unknown = ap.parse_known_args()
+    ap.add_argument("--expect-commit", default="",
+                    help="refuse to run unless the clone HEAD matches this sha (prefix ok); "
+                         "guards against stale-origin resets like ut-fb-10")
+    # Strict parse: a stale uploaded script must ERROR on unknown args (e.g.
+    # --flip-budget), not silently ignore them and produce a no-budget run.
+    args = ap.parse_args()
 
     d = args.repo
     # Colab T4 images ship WITHOUT ninja — the JIT extension builds fail
@@ -299,8 +304,16 @@ def main():
             subprocess.run(["git", "clone", "--quiet", url, d], check=True)
         subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=False)
         subprocess.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/master"], check=True)
-    head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
-                          capture_output=True, text=True).stdout.strip()[:10]
+    full_head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
+                               capture_output=True, text=True).stdout.strip()
+    head = full_head[:10]
+    if args.expect_commit and not full_head.startswith(args.expect_commit):
+        print(f"commit={head}", flush=True)
+        print(f"COMMIT-MISMATCH: clone HEAD={head} does not match "
+              f"--expect-commit={args.expect_commit}; refusing to run "
+              "(stale clone / driver skew guard, ut-fb-10 root cause #1)",
+              flush=True)
+        sys.exit(2)
     print(f"commit={head}", flush=True)
 
     with open(os.path.join(d, "flip_rate_driver.py"), "w") as fh:
@@ -320,10 +333,17 @@ def main():
     outdir = os.path.join(d, "results")
     os.makedirs(outdir, exist_ok=True)
     with open(os.path.join(outdir, "flip_rate_gate.log"), "w") as fh:
-        fh.write("\n".join(out) + "\n")
+        # commit line goes INTO the log too — a log-only reader must be able
+        # to detect a stale run without opening the json.
+        fh.write(f"commit={head}\n" + "\n".join(out) + "\n")
     with open(os.path.join(outdir, "flip_rate_gate.json"), "w") as fh:
+        # flip_budget/dead_zone/backends belong in the artefact schema: without
+        # them a budgeted run is indistinguishable from a no-budget one
+        # (ut-fb-10 was exactly that).
         json.dump({"commit": head, "steps": args.steps,
-                   "threshold": args.threshold, "rc": rc, "lines": out},
+                   "threshold": args.threshold, "backends": args.backends,
+                   "dead_zone": args.dead_zone, "flip_budget": args.flip_budget,
+                   "rc": rc, "lines": out},
                   fh, indent=2)
     print(f"ARTEFACT: {os.path.join(outdir, 'flip_rate_gate.json')}", flush=True)
     return rc

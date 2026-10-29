@@ -200,6 +200,12 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
                 cnt1 += (fabsf(g1) < dead_zone) ? 0 : ((g1 > 0.0f) ? -1 : 1);
             }
 
+            // Saturating clamp BEFORE the threshold check: int16 counters wrap
+            // silently at ±32768 (INT16_MIN observable), making |cnt| > threshold
+            // spuriously true. Clamp to ±32767, same as the v2_32 kernel.
+            cnt0 = max(-32767, min(32767, cnt0));
+            cnt1 = max(-32767, min(32767, cnt1));
+
             uint32_t* w_row = W + gn * stride_words;
             if (cnt0 > threshold) { increment_weight_atomic(w_row, gk); cnt0 = 0;
                 if (flip_budget > 0) flip_count[idx] += 1; }
@@ -242,6 +248,8 @@ __global__ __launch_bounds__(128) void packed_ternary_update_tc_v2_64_kernel(
                 } else {
                     cnt += (fabsf(g) < dead_zone) ? 0 : ((g > 0.0f) ? -1 : 1);
                 }
+                // Saturating clamp before the threshold check (see pair path).
+                cnt = max(-32767, min(32767, cnt));
                 uint32_t* w_row = W + gn * stride_words;
                 if (cnt > threshold) { increment_weight_atomic(w_row, last_gk); cnt = 0;
                     if (flip_budget > 0) flip_count[idx] += 1; }
