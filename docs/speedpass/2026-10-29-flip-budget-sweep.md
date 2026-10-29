@@ -77,7 +77,7 @@ Mismatch path: `COMMIT-MISMATCH: clone HEAD=... does not match --expect-commit=.
 |----|---------|-------------------|
 | 0 | gate PASS (V+M+C on shipped backend), or --smoke | yes, rc:0 |
 | 1 | FLIPRATE_GATE: FAIL — a RESULT, not a crash; also unhandled driver crash | yes rc:1 on gate FAIL; no if crash before artefact write |
-| 2 | COMMIT-MISMATCH or argparse unknown-arg — BEFORE driver write and measurement | quarantined: results/quarantine/flip_rate_gate.<sha>.json + INVALID.md line (never results/flip_rate_gate.json) |
+| 2 | COMMIT-MISMATCH only — BEFORE driver write and measurement (argparse unknown-arg exits 2 before any artefact write) | quarantined: results/quarantine/flip_rate_gate.<sha>.json + INVALID.md line (never results/flip_rate_gate.json) |
 
 ## Artefact schema
 results/flip_rate_gate.json: {"commit" (full 40-char), "provenance", "steps", "threshold",

@@ -29,9 +29,21 @@ def _has_cuda():
 # ── Pure selection-logic tests (no CUDA needed) ─────────────────────────
 
 
+def _import_pack_update():
+    """kernels/__init__ pulls in fused_ternary -> top-level torch; on a
+    torch-less CPU CI box that import must skip, not error."""
+    try:
+        from kernels.packed_ternary import pack_update as pu
+
+        return pu
+    except Exception as e:  # noqa: BLE001 — any import failure means "no kernels"
+        pytest.skip(f"kernels package unavailable without torch: {e}")
+
+
 def test_16_gate_accepts_wide_shapes():
     """%16 (not %64): dims need only be 16-aligned for the 64 kernels."""
-    from kernels.packed_ternary.pack_update import _tc_ok_16
+    pu = _import_pack_update()
+    _tc_ok_16 = pu._tc_ok_16
 
     assert _tc_ok_16(80), "80 must be 64-kernel eligible"
     assert _tc_ok_16(112), "112 must be 64-kernel eligible"
@@ -43,7 +55,7 @@ def test_16_gate_accepts_wide_shapes():
 
 def test_selector_returns_64_pointer_not_32():
     """Selector must never return a 32-pointer for a 64-eligible shape."""
-    from kernels.packed_ternary import pack_update as pu
+    pu = _import_pack_update()
 
     # Force-load order: 32-fallback first (the historical poisoning case)
     if pu._HAS_UP_TC_V2_32 is False and pu._HAS_UP_TC_V3_32 is False:
