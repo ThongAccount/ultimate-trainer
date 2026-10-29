@@ -28,6 +28,7 @@ Prints RESULTS: lines for each backend so the wrapper summary is parseable.
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -57,7 +58,7 @@ gpu = torch.cuda.get_device_name(0)
 cap = torch.cuda.get_device_capability(0)
 assert cap == (7, 5), f"NOT a T4: {gpu} {cap}"
 print(f"backend={backend} update_backend={update_backend} label={label} "
-      f"data={data_mode} gpu={gpu}", flush=True)
+      f'data={data_mode} gpu="{gpu}"', flush=True)
 import train_gigatoken as tg
 
 torch.manual_seed(0)
@@ -119,7 +120,7 @@ print(f"RESULTS: backend={backend} update_backend={update_backend} label={label}
       f"median_step_ms={med:.1f} tok_per_s={toks:.0f} "
       f"loss_1={loss_at(1)} loss_50={loss_at(50)} loss_100={loss_at(100)} "
       f"loss_final={losses[-1]:.4f} nan={int(nan_seen)} steps={STEPS} "
-      f"data={data_mode} gpu={gpu}", flush=True)
+      f'data={data_mode} gpu="{gpu}"', flush=True)
 '''
 
 
@@ -148,7 +149,16 @@ def main():
         subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=False)
         subprocess.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/master"], check=True)
     head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
-                          capture_output=True, text=True).stdout.strip()[:10]
+                          capture_output=True, text=True).stdout.strip()  # full 40-char
+    if d not in sys.path:
+        sys.path.insert(0, d)
+    from tools.artefact_provenance import collect_provenance, write_artefact
+    # collect BEFORE step_ab_driver.py is written into the repo root (untracked
+    # file would flip git_dirty)
+    provenance = collect_provenance(d, extra_config={"config": {
+        "nsteps": args.nsteps, "data": args.data, "backends": args.backends,
+        "ship_bar_pct": SHIP_BAR_PCT,
+        "historical_baseline_ms": HISTORICAL_BASELINE_MS}})
     print(f"commit={head}", flush=True)
 
     with open(os.path.join(d, "step_ab_driver.py"), "w") as fh:
@@ -169,7 +179,7 @@ def main():
         for line in out:
             if line.startswith("RESULTS:"):
                 rec = {}
-                for tok in line.split()[1:]:
+                for tok in shlex.split(line)[1:]:  # quoted gpu keeps "Tesla T4"
                     if "=" in tok:
                         k, v = tok.split("=", 1)
                         rec[k] = v
@@ -209,12 +219,12 @@ def main():
     # stdout path is fragile, and the numbers must survive it.
     outdir = os.path.join(d, "results")
     os.makedirs(outdir, exist_ok=True)
-    with open(os.path.join(outdir, "whole_step_ab.json"), "w") as fh:
-        json.dump({"commit": head, "nsteps": args.nsteps, "data": args.data,
-                   "ship_bar_pct": SHIP_BAR_PCT,
-                   "historical_baseline_ms": HISTORICAL_BASELINE_MS,
-                   "arms": by}, fh, indent=2, sort_keys=True)
-    print(f"ARTEFACT: {os.path.join(outdir, 'whole_step_ab.json')}", flush=True)
+    artefact = {"commit": head, "provenance": provenance, "nsteps": args.nsteps,
+                "data": args.data, "ship_bar_pct": SHIP_BAR_PCT,
+                "historical_baseline_ms": HISTORICAL_BASELINE_MS,
+                "arms": by, "failures": failures}
+    path = write_artefact(d, "whole_step_ab.json", artefact, root_cause_commit=head)
+    print(f"ARTEFACT: {path}", flush=True)
     return 1 if failures else 0
 
 
