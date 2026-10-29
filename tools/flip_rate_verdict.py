@@ -75,6 +75,41 @@ MAX_DAMPED_CLEAN_RATIO = 0.50
 MAX_DAMPED_CLEAN_TO_NOISY = 0.10
 
 
+# ── Pre-registered flip-budget damping ─────────────────────────────────────
+# Pre-registered 2026-10-29: per-weight flip budget. Each weight may flip at
+# most FLIP_BUDGET_DEFAULT times over the run; after that its counter freezes
+# (no more flips). This deterministically breaks the limit cycle: no weight
+# can flip every ~T steps forever, because its budget is exhausted.
+#
+# Unlike the counter dead zone (which failed: the dW magnitude distributions
+# in the noisy and clean windows overlap almost completely, so no magnitude
+# threshold satisfies both V and M), the flip budget is count-based. It caps
+# total flips per weight regardless of gradient magnitude.
+#
+# Default: FLIP_BUDGET_DEFAULT = 10 flips per weight per run. Sensitivity
+# values 5 / 20 / 50 to be swept on T4 if the default does not satisfy both
+# V and M.
+#
+# Sweet-spot tension (pre-registered risk): M wants a small budget (bind on
+# residual-driven clean-window flips so they decay toward 0); C wants a large
+# budget (don't over-constrain the constant-noise control arm). If no budget
+# in {5, 10, 20, 50} satisfies V, M and C together, flip budget also cannot
+# satisfy the gate — same negative outcome as dead zone, via a different
+# mechanism. That is a valid pre-registered negative result.
+
+FLIP_BUDGET_DEFAULT = 10
+
+# With flip budget applied, the clean-window flip rate must be at most this
+# fraction of the clean-window flip rate WITHOUT budget — the budget must
+# measurably reduce flip activity beyond the noise schedule alone.
+MAX_BUDGETED_CLEAN_RATIO = 0.50
+
+# With flip budget applied, the clean-window flip rate must meet the original
+# M criterion (decay when noise removed) — the budget must restore the decay
+# that the limit cycle destroyed.
+MAX_BUDGETED_CLEAN_TO_NOISY = 0.10
+
+
 def _ratio(numerator: float, denominator: float) -> float:
     """Safe ratio: an empty denominator yields +inf (i.e. "no decay")."""
     if denominator <= 0.0:
@@ -226,4 +261,71 @@ def evaluate_damping(
             "main_clean_dz": main_clean_dz,
         },
         "dead_zone": dead_zone,
+    }
+
+
+def evaluate_flip_budget(
+    main_clean_no_budget: float,
+    main_clean_budget: float,
+    main_noisy: float,
+    budget: int = FLIP_BUDGET_DEFAULT,
+) -> dict:
+    """Evaluate whether the per-weight flip budget breaks the limit cycle.
+
+    Args:
+        main_clean_no_budget: clean-window flip rate WITHOUT flip budget
+            (limit cycle keeps this near main_noisy, ratio ~ 1.0).
+        main_clean_budget: clean-window flip rate WITH flip budget — the
+            per-weight cap should push this toward 0 as weights exhaust their
+            budget on the residual-only gradient.
+        main_noisy: noisy-window flip rate (same for both, the noise schedule
+            doesn't change between the two measurements).
+        budget: the per-weight flip budget used for the budget measurement.
+
+    Returns:
+        dict with "passed", "checks" and the measured ratios.
+    """
+    main_clean_no_budget = float(main_clean_no_budget)
+    main_clean_budget = float(main_clean_budget)
+    main_noisy = float(main_noisy)
+
+    fb_ratio = _ratio(main_clean_budget, main_clean_no_budget)
+    fb_to_noisy = _ratio(main_clean_budget, main_noisy)
+
+    checks = [
+        {
+            "name": "F1_budget_reduces_flips",
+            "ok": fb_ratio <= MAX_BUDGETED_CLEAN_RATIO,
+            "value": fb_ratio,
+            "threshold": MAX_BUDGETED_CLEAN_RATIO,
+            "detail": (
+                f"flip-budget clean/no-budget flip-rate ratio {fb_ratio:.6g} "
+                f"(<= {MAX_BUDGETED_CLEAN_RATIO})"
+            ),
+        },
+        {
+            "name": "F2_budgeted_meets_decay",
+            "ok": fb_to_noisy <= MAX_BUDGETED_CLEAN_TO_NOISY,
+            "value": fb_to_noisy,
+            "threshold": MAX_BUDGETED_CLEAN_TO_NOISY,
+            "detail": (
+                f"flip-budget clean/noisy flip-rate ratio {fb_to_noisy:.6g} "
+                f"(<= {MAX_BUDGETED_CLEAN_TO_NOISY})"
+            ),
+        },
+    ]
+
+    return {
+        "passed": all(c["ok"] for c in checks),
+        "checks": checks,
+        "ratios": {
+            "budgeted_clean_over_no_budget": fb_ratio,
+            "budgeted_clean_over_noisy": fb_to_noisy,
+        },
+        "flip_rates": {
+            "main_noisy": main_noisy,
+            "main_clean_no_budget": main_clean_no_budget,
+            "main_clean_budget": main_clean_budget,
+        },
+        "flip_budget": budget,
     }

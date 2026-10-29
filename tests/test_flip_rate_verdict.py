@@ -139,3 +139,45 @@ def test_damping_fails_when_no_reduction():
     )
     assert not res["passed"]
     assert not _check(res, "D1_damping_reduces_flips")["ok"]
+
+
+def test_flip_budget_passes_when_budget_breaks_limit_cycle():
+    # Without budget: clean ~= noisy (limit cycle, ratio ~ 1.0).
+    # With budget: clean drops well below noisy — budget works.
+    from tools.flip_rate_verdict import evaluate_flip_budget
+    res = evaluate_flip_budget(
+        main_clean_no_budget=0.03125,   # limit cycle: clean ~= noisy
+        main_clean_budget=0.001,        # budget cuts flips drastically
+        main_noisy=0.03125,
+        budget=10,
+    )
+    assert res["passed"], res["checks"]
+    assert _check(res, "F1_budget_reduces_flips")["ok"]
+    assert _check(res, "F2_budgeted_meets_decay")["ok"]
+
+
+def test_flip_budget_fails_when_budget_too_large():
+    # Budget too large: clean still ~= noisy, no breaking of the cycle.
+    from tools.flip_rate_verdict import evaluate_flip_budget
+    res = evaluate_flip_budget(
+        main_clean_no_budget=0.03125,
+        main_clean_budget=0.025,        # barely any reduction
+        main_noisy=0.03125,
+        budget=50,
+    )
+    assert not res["passed"]
+    assert not _check(res, "F1_budget_reduces_flips")["ok"]
+    assert not _check(res, "F2_budgeted_meets_decay")["ok"]
+
+
+def test_flip_budget_fails_when_no_reduction():
+    # No effective budget: clean_budget == clean_no_budget, ratio = 1.0.
+    from tools.flip_rate_verdict import evaluate_flip_budget
+    res = evaluate_flip_budget(
+        main_clean_no_budget=0.03125,
+        main_clean_budget=0.03125,
+        main_noisy=0.03125,
+        budget=10**9,
+    )
+    assert not res["passed"]
+    assert not _check(res, "F1_budget_reduces_flips")["ok"]
