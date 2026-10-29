@@ -45,6 +45,10 @@ import sys
 
 DRIVER = r'''
 import os, sys, math, json
+
+def _th(t):  # thresholds may be floats OR the string "> 0" (F0); :.6g crashes on str
+    return format(t, ".6g") if isinstance(t, (int, float)) else str(t)
+
 REPO = os.environ.get("REPO_DIR", "/content/ultimate-trainer")
 os.chdir(REPO)
 sys.path.insert(0, REPO)
@@ -222,7 +226,7 @@ for be in BACKENDS:
     )
     for c in v["checks"]:
         print(f"FLIPRATE_CHECK: update_backend={be} {c['name']} ok={c['ok']} "
-              f"value={c['value']:.6g} threshold={c['threshold']:.6g} "
+              f"value={c['value']:.6g} threshold={_th(c['threshold'])} "
               f"detail={c['detail']}", flush=True)
     print(f"FLIPRATE_VERDICT: update_backend={be} passed={v['passed']}", flush=True)
     if FLIP_BUDGET > 0:
@@ -251,7 +255,7 @@ for be in BACKENDS:
         )
         for c in fb["checks"]:
             print(f"FLIPRATE_CHECK: update_backend={be} {c['name']} ok={c['ok']} "
-                  f"value={c['value']:.6g} threshold={c['threshold']:.6g} "
+                  f"value={c['value']:.6g} threshold={_th(c['threshold'])} "
                   f"detail={c['detail']}", flush=True)
         print(f"FLIPRATE_BUDGET_VERDICT: update_backend={be} flip_budget={FLIP_BUDGET} "
               f"passed={fb['passed']}", flush=True)

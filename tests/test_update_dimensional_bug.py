@@ -67,7 +67,9 @@ def test_update_dimensional_bug():
         pytest.fail("CUDA present but TC32 v2 update kernel failed to load")
 
     W_packed_test = W_packed.clone()
-    pu._up_tc_v2_32_fn(W_packed_test, counter_kernel, X, dY, threshold)
+    pu._up_tc_v2_32_fn(W_packed_test, counter_kernel,
+                      torch.empty((1,), dtype=torch.int16, device=W_packed_test.device),
+                      X, dY, int(threshold), 0.0, 0)
 
     # Compare
     diff = (counter_kernel - counter_ref).abs()

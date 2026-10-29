@@ -188,7 +188,11 @@ class PackedTernaryLinearFn(torch.autograd.Function):
                         int(threshold), float(dead_zone),
                         flip_count=flip_count, flip_budget=int(flip_budget))
                 else:
-                    dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold)
+                    # Thread flip args so a budgeted layer cannot silently run
+                    # unbudgeted here; backward_update raises loudly when
+                    # flip_budget>0 on a non-v2/scalar dispatch (pack_update.py).
+                    dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold,
+                                         flip_count=flip_count, flip_budget=int(flip_budget))
         else:
             dX = backward_dx(W_packed, dY, ctx.in_features)
 

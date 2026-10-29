@@ -61,7 +61,9 @@ def run_case(B, N, K, tol_frac=0.0):
     c0 = (torch.randint(-THRESHOLD, THRESHOLD + 1, (N, K), device="cuda")).to(torch.int16)
 
     Wk, ck = W0.clone(), c0.clone()
-    pu._up_tc_v2_fn(Wk, ck, X, dY, THRESHOLD)
+    pu._up_tc_v2_64_fn(Wk, ck,
+                      torch.empty((1,), dtype=torch.int16, device=Wk.device),
+                      X, dY, THRESHOLD, 0.0, 0)
     torch.cuda.synchronize()
 
     Wr, cr = ref_step(W0, c0, X, dY)

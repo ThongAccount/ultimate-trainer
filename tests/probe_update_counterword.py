@@ -46,7 +46,10 @@ def main():
 
     pu._load_up_tc_v2_32()
     assert pu._HAS_UP_TC_V2_32, "v2_32 must load for the comparison arm"
-    up_v2_32 = pu._up_tc_v2_32_fn
+    _v2_32_fn = pu._up_tc_v2_32_fn
+    def up_v2_32(W, counter, X, dY, threshold):  # 8-param wrapper: dummy fc, budget 0
+        fc = torch.empty((1,), dtype=torch.int16, device=W.device)
+        _v2_32_fn(W, counter, fc, X, dY, int(threshold), 0.0, 0)
     cw_mod = counterword_module()
     cw_fn = cw_mod.update_counterword
 

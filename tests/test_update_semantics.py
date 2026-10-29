@@ -102,7 +102,9 @@ def _make_inputs(grad_sign):
 
 
 def _run_kernel(packed_W, counter, X, dY, threshold):
-    pu._up_tc_v2_32_fn(packed_W, counter, X, dY, int(threshold))
+    pu._up_tc_v2_32_fn(packed_W, counter,
+                      torch.empty((1,), dtype=torch.int16, device=packed_W.device),
+                      X, dY, int(threshold), 0.0, 0)
 
 
 def _assert_state(packed_W, counter, W_exp_int8, cnt_exp, label):

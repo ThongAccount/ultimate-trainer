@@ -217,3 +217,20 @@ def test_control_zero_noisy_with_clean_positive_fails():
     )
     assert not res["passed"]
     assert not _check(res, "C_control_sustains_flips")["ok"]
+
+
+def test_all_check_thresholds_are_print_safe():
+    # Regression for the budget-run crash: the gate driver prints
+    # threshold=... and F0_non_vacuity's threshold is the STRING "> 0".
+    # Every check threshold from both evaluators must survive the driver's
+    # formatter (numeric -> .6g, str -> as-is); a str with :.6g raises ValueError.
+    from tools.flip_rate_verdict import evaluate_flip_budget, evaluate_flip_rate
+    v = evaluate_flip_rate(main={"noisy": 0.01, "clean": 0.001},
+                           control={"noisy": 0.01, "clean": 0.009}, threshold=32)
+    fb = evaluate_flip_budget(main_clean_no_budget=0.0155, main_clean_budget=0.0004,
+                              main_noisy=0.0143, budget=10)
+    for res in (v, fb):
+        for c in res["checks"]:
+            t = c["threshold"]
+            rendered = format(t, ".6g") if isinstance(t, (int, float)) else str(t)
+            assert isinstance(rendered, str) and rendered
