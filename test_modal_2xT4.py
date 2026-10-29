@@ -45,6 +45,16 @@ if not os.path.exists("1bit_trainer/config.py"):  # check for repo files, not be
 else:
     print("✅ Repo files already present — skipping clone")
 
+# Stale-clone guard: with PT_EXPECT_COMMIT set, refuse unless HEAD prefix-matches.
+_git_dir = "ultimate-trainer" if os.path.isdir("ultimate-trainer/.git") else "."
+_commit = subprocess.check_output(
+    ["git", "-C", _git_dir, "rev-parse", "HEAD"], text=True).strip()
+_expect = os.environ.get("PT_EXPECT_COMMIT", "")
+if _expect and not _commit.startswith(_expect):
+    raise SystemExit(f"COMMIT-MISMATCH: clone HEAD={_commit[:10]} != "
+                     f"PT_EXPECT_COMMIT={_expect}; refusing to run")
+print(f"commit={_commit}")
+
 # %% [markdown]
 # ## 1. Environment & Sanity Checks
 
