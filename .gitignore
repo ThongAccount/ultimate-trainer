@@ -32,6 +32,8 @@ Thumbs.db
 # ── ML / Data ─────────────────────────────────────────────────────
 checkpoints/
 data/tokenized/*.pt
+# committed evidence — cited in docs/speedpass/2026-10-26-official-suite.md
+!data/tokenized/samples_*.pt
 data/*.json
 !data/tokenizer.json
 !data/fineweb_samples.jsonl
@@ -46,6 +48,8 @@ data/*.json
 
 # ── Logs / Reports ────────────────────────────────────────────────
 *.log
+# committed gate transcripts — cited evidence
+!results/*.log
 ruff_cache/
 .ruff_cache/
 
@@ -56,3 +60,7 @@ temp/
 # ── Session handoff (never commit) ───────────────────────────────
 HANDOFF.md
 diag_*.py
+
+# ── Stray patch / editor-backup files ──────────────────────────────
+*.patch
+*.orig
