@@ -306,7 +306,9 @@ def main():
             url = url.replace("https://", f"https://{tok}@")
         if not os.path.isdir(os.path.join(d, ".git")):
             subprocess.run(["git", "clone", "--quiet", url, d], check=True)
-        subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=False)
+        # check=True: a failed fetch must abort loudly, never silently reset
+        # to a stale origin/master; the rc=2 guard below catches stale HEADs.
+        subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=True)
         subprocess.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/master"], check=True)
     full_head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
                                capture_output=True, text=True).stdout.strip()

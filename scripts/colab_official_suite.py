@@ -46,6 +46,9 @@ def main():
     ap.add_argument("--skip-smoke", action="store_true",
                     help="skip the plumbing smoke pass (NOT recommended: it "
                          "catches script bugs before the official run)")
+    ap.add_argument("--expect-commit", default=os.environ.get("PT_EXPECT_COMMIT", ""),
+                    help="rc=2 unless the clone HEAD matches this sha (prefix ok); "
+                         "stale-clone guard (ut-fb-10 root cause #1)")
     args, _unknown = ap.parse_known_args()
 
     d = args.repo
@@ -59,7 +62,9 @@ def main():
         url = url.replace("https://", f"https://{tok}@")
     if not os.path.isdir(os.path.join(d, ".git")):
         subprocess.run(["git", "clone", "--quiet", url, d], check=True)
-    subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=False)
+    # check=True: a failed fetch must abort loudly, never silently reset to a
+    # stale origin/master (the exact ut-fb-10 burn).
+    subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=True)
     subprocess.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/master"], check=True)
     head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
                           capture_output=True, text=True).stdout.strip()
@@ -73,7 +78,18 @@ def main():
     provenance = collect_provenance(d, extra_config={"config": {
         "nsteps": args.nsteps, "flip_steps": args.flip_steps, "data": args.data,
         "skip_smoke": args.skip_smoke, "skip_ab": args.skip_ab,
-        "skip_flip": args.skip_flip}})
+        "skip_flip": args.skip_flip, "expect_commit": args.expect_commit or None}})
+
+    # Suite-level stale-clone guard: rc=2 + quarantined artefact BEFORE any
+    # phase runs (ut-fb-10 root cause #1).
+    expect = args.expect_commit
+    if expect and not head.startswith(expect):
+        print(f"COMMIT-MISMATCH: clone HEAD={head[:10]} does not match "
+              f"--expect-commit={expect}; refusing to run (stale-clone guard, ut-fb-10)",
+              flush=True)
+        _write_artefacts(d, head, [f"COMMIT-MISMATCH: HEAD={head[:10]} != expect={expect}"],
+                         2, 2, "invalid", provenance=provenance)
+        return 2
 
     transcript = []
 
@@ -92,7 +108,8 @@ def main():
         print("=== SMOKE: validating the plumbing (tiny parameters) ===", flush=True)
         s_ab_rc, s_ab = phase(
             "SMOKE A/B", [sys.executable, os.path.join(d, "scripts", "colab_step_ab.py"),
-                          "--no-clone", "--repo", d, "--nsteps", "3", "--data", args.data])
+                          "--no-clone", "--repo", d, "--nsteps", "3", "--data", args.data,
+                          "--expect-commit", head])
         s_flip_rc, s_flip = phase(
             "SMOKE FLIP", [sys.executable, os.path.join(d, "scripts", "colab_flip_rate_gate.py"),
                            "--no-clone", "--repo", d, "--steps", "20", "--smoke",
@@ -113,7 +130,7 @@ def main():
         rc_ab, _ = phase(
             "PHASE 1 A/B", [sys.executable, os.path.join(d, "scripts", "colab_step_ab.py"),
                             "--no-clone", "--repo", d, "--nsteps", str(args.nsteps),
-                            "--data", args.data])
+                            "--data", args.data, "--expect-commit", head])
         print(f"PHASE1_RC: {rc_ab}", flush=True)
 
     if not args.skip_flip:

@@ -132,6 +132,9 @@ def main():
     ap.add_argument("--nsteps", type=int, default=300)
     ap.add_argument("--data", default="real", choices=["real", "synthetic"])
     ap.add_argument("--backends", default=",".join(lbl for _b, _u, lbl in ARMS))
+    ap.add_argument("--expect-commit", default=os.environ.get("PT_EXPECT_COMMIT", ""),
+                    help="rc=2 unless the clone HEAD matches this sha (prefix ok); "
+                         "stale-clone guard (ut-fb-10 root cause #1)")
     args, _unknown = ap.parse_known_args()
 
     d = args.repo
@@ -146,7 +149,9 @@ def main():
             url = url.replace("https://", f"https://{tok}@")
         if not os.path.isdir(os.path.join(d, ".git")):
             subprocess.run(["git", "clone", "--quiet", url, d], check=True)
-        subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=False)
+        # check=True: a failed fetch must abort loudly, never silently reset
+        # to a stale origin/master (the exact ut-fb-10 burn).
+        subprocess.run(["git", "-C", d, "fetch", "--quiet", "origin"], check=True)
         subprocess.run(["git", "-C", d, "reset", "--hard", "--quiet", "origin/master"], check=True)
     head = subprocess.run(["git", "-C", d, "rev-parse", "HEAD"],
                           capture_output=True, text=True).stdout.strip()  # full 40-char
@@ -158,8 +163,22 @@ def main():
     provenance = collect_provenance(d, extra_config={"config": {
         "nsteps": args.nsteps, "data": args.data, "backends": args.backends,
         "ship_bar_pct": SHIP_BAR_PCT,
-        "historical_baseline_ms": HISTORICAL_BASELINE_MS}})
+        "historical_baseline_ms": HISTORICAL_BASELINE_MS,
+        "expect_commit": args.expect_commit or None}})
     print(f"commit={head}", flush=True)
+
+    # Stale-clone guard: rc=2 + quarantined artefact BEFORE the driver write
+    # and any GPU arm runs (ut-fb-10 root cause #1).
+    expect = args.expect_commit
+    if expect and not head.startswith(expect):
+        print(f"COMMIT-MISMATCH: clone HEAD={head[:10]} does not match "
+              f"--expect-commit={expect}; refusing to run (stale-clone guard, ut-fb-10)",
+              flush=True)
+        artefact = {"commit": head, "provenance": provenance, "rc": 2,
+                    "config": {"expect_commit": expect}}
+        path = write_artefact(d, "whole_step_ab.json", artefact, root_cause_commit=head)
+        print(f"ARTEFACT: {path}", flush=True)
+        return 2
 
     with open(os.path.join(d, "step_ab_driver.py"), "w") as fh:
         fh.write(DRIVER)
