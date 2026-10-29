@@ -6,7 +6,7 @@
 > **GPU-bound (~95%), not dispatch-bound**. See §CORRECTION at the end and
 > HANDOFF.md §16.
 
-The 64×64 backward-dX kernel (`gemm_backward_dx_tc.cu`, fixed in `113b40b`)
+The 64×64 backward-dX kernel (`gemm_backward_dx_tc.cu`, fixed in `b23359b` (original fix commit `113b40b` absent from object DB — unresolvable; fixes carried forward by `b23359b`))
 was loaded but never dispatched: `_load_tc_if_needed()` clobbered `_dx_tc_fn`
 (64×64) with `_dx_tc_32_fn`, so `custom_ops` only ever exposed 32×32 for
 backward dX in training.
@@ -18,7 +18,7 @@ backward dX in training.
 - `custom_ops.py`: expose `_dx_tc_64` separately; `backward_dx_tc` routes to
   64×64 when B, N_out, K are all 64-multiples.
 - Fixed kernel bugs (W_smem transpose, leading-dim, spill race) carried forward
-  from `113b40b`.
+  by `b23359b` (message names the three 113b40b fixes; 113b40b unresolvable at HEAD).
 
 ## Validation (tests/validate_bwd_dx_64.py, Modal T4)
 

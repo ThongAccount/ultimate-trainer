@@ -1,6 +1,6 @@
 # ULTIMATE TRAINER — DEEP PERFORMANCE AUDIT REPORT
 **Date**: 2026-09-07  
-**Branch**: `chore/speedpass` @ commit `042549f`  
+**Branch**: `master` @ commit `042549f` (chore/speedpass ff-merged into master and deleted; 042549f42bc5df7872e976b9a259a36285dc12b7 resolves from master)  
 **Target Architecture**: NVIDIA Tesla T4 (sm_75, Turing architecture, 40 SMs, 64 KB shared memory / SM, 64 K registers / SM, ~320 GB/s HBM peak bandwidth, FP16 Tensor Cores wmma::mma_sync 16x16x16, no cp.async, no async copy)  
 **Historical Context**: 10 optimization sessions completed (baseline: 2,475 tok/s / 6,619 ms/step -> ~4,411 tok/s / ~3,714 ms/step, +78% throughput gain)  
 **Audit Environment**: Local workstation inspection + static compiler analysis (CUDA 13.3 nvcc sm_75 ptxas) + historical profiler trace synthesis. System has no CUDA GPU; all new findings are tagged **[deduced]** or **[hypothesis]** unless directly citing verified **[measured]** benchmarks from sessions 1-10.
@@ -374,7 +374,7 @@ For each K-tile:
 |---|---|---|
 | **Tile-dedup in Update TC32** | Session 7 (`2026-09-05`) | **Regressed +18%** (head 562 -> 666 ms). Duplicate tile loads are already absorbed by L1 broadcast cache. Cooperative load index math added net instruction overhead. |
 | **kSub=4 Batch Sub-Tiling in Update** | Session 7 (`2026-09-05`) | **Regressed 2.3x** (fc1 47 -> 107 ms). Smem expanded to 20.5 KB and regs to 92, collapsing occupancy from 8 to 3 blocks/SM. |
-| **32x64 Tile dX Kernel** | Branch `experiment/32x64-tile` | **691.5% numerical error** failure vs reference. Structure abandoned. |
+| **32x64 Tile dX Kernel** | tag `freeze-experiment-32x64-tile-2026-10-26` (= `2313beda84888f8e8d56aba727d6bfcacdd0a98a`; branch deleted) | **691.5% numerical error** failure vs reference. Structure abandoned. |
 | **Fusing dX into Update Epilogue** | Session 9 (`2026-09-06`) | **Mathematically invalid**: update does NOT consume dX. The shared operand is dY, but update consumes dY^T while dX consumes dY. Fusion causes catastrophic register spilling. |
 | **Residency / cudaMemcpy Optimization** | Session 9 (`2026-09-06`) | **Zero effect (+0.0%)**: Step has 0 memcpys and is 99.9% GPU kernel bound. |
 | **Wiring 64x64 Update Kernel** | Session 8 (`1baa097`) | **Bench-neutral**: Fixing WMMA bug produced bit-exact parity, but kernel was neutral vs 32x32 on T4 due to 16-deep batch loop latency. |

@@ -38,7 +38,7 @@ This is a CUDA C++ research prototype with Python `load_inline` wrappers. Expect
 | v1 | One output/thread, float accum | 15.2 |
 | v2 | 4 outputs/thread, float accum | 19.8 |
 | v3 | 256-thread occupancy boost | 12.2 |
-| **v4** | **Half arithmetic (hadd/hsub)** | **??** |
+| **v4** | **Half arithmetic (hadd/hsub)** | **not benchmarked** — no committed v4 GFLOPS at HEAD; measure with tests/test_gemm_perf.py on T4 |
 
 The limiting factor is memory bandwidth + instruction overhead.  v4 eliminates float conversion in the inner loop.
 
@@ -138,12 +138,12 @@ Standard LLM training has two expensive operators:
 
 The two methods are **co-friendly, not just co-located**: BitNet 2B4T already uses `ReLU²` + `subln`, which produces naturally sparse activations — and NSA's selection branch likes sparse activations. The ternary weights reduce memory; the sparse attention reduces latency. Together they compound.
 
-**Net effect at 1M context (2B params):**
+**Net effect at 1M context (2B params) — analytic estimates, not measured in this repo:**
 
 | Metric | Standard BF16 | Ultimate Trainer | Improvement |
 |---|---|---|---|
 | Weight memory | ~4 GB | **~0.5 GB** | ~8× reduction |
-| Attention prefill @ 1M | ~21 s (FA2 dense) | **~0.4 s** | ~56× faster |
+| Attention prefill @ 1M | ~21 s (FA2 dense) | **~0.4 s** | ~56× faster (paper-reported) |
 | Attention FLOPs @ 1M | O(n²) | **~6.4% of dense** | ~15× reduction |
 | KV cache | BF16 | **INT8** | ~2× cheaper |
 
@@ -160,7 +160,18 @@ From [REPORT.md](REPORT.md):
 - **No GPU required**: CPU-safe pure PyTorch eager `F.linear` fallback for BitLinear; fused Triton path is guarded with `not self.training` to prevent gradient graph severance during training.
 - **Long-context pipeline**: `train_longctx.py --smoke --stage 0 --max-steps 10` runs to completion, supports AMP dtype/autocast, and can save/resume checkpoints without overtraining.
 - **Bug fixes applied (Jul 2026)**: 11 bugs fixed including CRITICAL GPU gradient severance, zero-input NaN crashes, checkpoint resume overtraining, dataset exhaustion crashes, and gate normalization NaN propagation. See [REPORT.md](REPORT.md) for full changelog.
-- **Test coverage**: Expanded from 12 to **157 tests** (~60% coverage) across 8 files, covering all critical code paths.
+- **Test coverage**: **302 test functions in 27 test_*.py files (63 .py files under tests/) at HEAD** (static count; pytest needs torch+CUDA per tests/conftest.py).
+
+### Measured results (sourced to committed artefacts)
+
+From [results/official_suite.json](results/official_suite.json) and
+[docs/speedpass/2026-10-26-official-suite.md](docs/speedpass/2026-10-26-official-suite.md)
+@ commit `015763a`, official suite on Colab T4, 300 steps, real FineWeb data:
+
+- **Whole-step A/B PASS, 9.51× same-VM**: custom_custom 4,860.5 ms → cublas_cublas 510.9 ms (89.49% of step; 3,364 → 32,005 tok/s). The 12.96× vs the historical 6,619 ms Modal number is cross-VM continuity only.
+- **Flip-rate gate FAIL** (limit cycle): criterion M clean/noisy = 1.08197 > 0.10; V and C pass; both backends identical; shipped backend = cublas.
+- **No arm converges**: loss 11.0625 → 33.6875/40.4375 → 22.0312 by step 300 (cublas_cublas 51.3125 → 35.5312, nan=0).
+- **Flip-budget sweep ON HOLD**: criteria pre-registered at `0daf735` (default 10, sweep {5,20,50}, all-four-failing = valid negative); compile fix `07001be`, vacuity guards `6192a47`; no Colab quota since 2026-10-21. Runbook: docs/speedpass/2026-10-29-flip-budget-sweep.md.
 
 ---
 
@@ -197,24 +208,7 @@ ultimate-ai-model/
 │
 ├── kernels/                      # Custom GPU kernels
 │   ├── __init__.py               #   (empty)
-│   └── ternary_matmul.py         #   Fused Triton ternary matmul (5-10× speedup on GPU)
-│
-├── subqsa_trainer/               # SubQSA attention trainer (proper Python package)
-│   ├── __init__.py               #   (empty, makes it importable)
-│   ├── config.py                 #   SubQSAConfig, ModelConfig, TrainingConfig
-│   ├── subqsa.py                 #   SubQSA module: 3-branch attention + gating
-│   ├── model.py                  #   SubQSAModel: LLaMA-like transformer with SubQSA
-│   ├── train.py                  #   SubQSATrainer with staged context extension
-│   └── comparison.py             #   Dense vs SubQSA comparison
-│
-├── ultimate_trainer/             # MERGED trainer: BitLinear + SubQSA (proper Python package)
-│   ├── __init__.py               #   (empty, makes it importable)
-│   ├── config.py                 #   UltimateModelConfig, UltimateTrainingConfig
-│   ├── bitlinear.py              #   2B4T-spec BitLinear (absmax activations)
-│   ├── subqsa.py                 #   SubQSA with BitLinear projections + subln
-│   ├── model.py                  #   UltimateModel: full merged transformer
-│   ├── train.py                  #   Training loop (dummy + real data)
-│   └── comparison.py             #   4-way comparison: FP / BitLinear / SubQSA / Ultimate
+│   └── ternary_matmul.py         #   Fused Triton ternary matmul (claimed 5–10× vs F.linear — unverified, no committed T4 benchmark; see Performance section)
 │
 ├── configs/
 │   └── longctx_config.py         #   ~900M param config for 1M context stress test
@@ -230,7 +224,7 @@ ultimate-ai-model/
 ├── train_longctx.py              # Staged long-context training (4K → 1M)
 ├── benchmark.py                  # Multi-trainer benchmark with TPS/FLOPs estimation
 │
-├── tests/                        # 157 tests, ~60% coverage
+├── tests/                        # 63 .py files / 302 test functions at HEAD
 │   ├── test_bitlinear_parity.py  #   Eager/fused dispatch, eval refresh
 │   ├── test_bitlinear_advanced.py #   STE gradient, NaN guard, quantization math
 │   ├── test_subqsa_selection.py  #   SelectionBranch top-k correctness
@@ -888,7 +882,7 @@ python train_longctx.py --smoke --stage 0 --max-steps 10
 # 5. Write FP32 output → HBM
 ```
 
-**Performance**: ~5–10× faster than `F.linear(x, w_fp32)` on GPU:
+**Performance**: claimed ~5–10× faster than `F.linear(x, w_fp32)` on GPU — **analytic estimate, not measured** (no committed T4 benchmark; tests/test_kernels.py is correctness-only; same claim at kernels/ternary_matmul.py):
 - 4× fewer HBM reads (W read once, not twice)
 - 0 multiplications (adds/subs only)
 - 67% sparsity from zeros skipped automatically
@@ -987,7 +981,7 @@ The data pipeline supports streaming from HuggingFace FineWeb:
 1. **BitNet b1.58 2B4T spec**: Absmax activation quant (8-bit), absmean weight ternary, subln normalization, ReLU² FFN — tracked to the validated 2B4T recipe
 2. **NSA/SubQSA**: 3-branch with compression block=32/stride=16, selection top-k=16, sliding window=512 — matches NSA paper's proven hyperparameters
 3. **No Triton required**: CPU-safe pure PyTorch SDPA for all attention variants — runs anywhere
-4. **Triton optional**: Fused ternary matmul kernel for GPU (5–10× speedup) — progressive enhancement
+4. **Triton optional**: Fused ternary matmul kernel for GPU (claimed 5–10× speedup — unverified) — progressive enhancement
 5. **DDP ready**: All trainers accept `--distributed` / `torchrun` for multi-GPU
 6. **HF Kernels compatible**: `use_kernel_forward_from_hub` decorator for future kernel injection from HuggingFace Hub
 7. **Modular tiers**: 1bit_trainer / subqsa_trainer / ultimate_trainer are independently runnable for ablation studies
@@ -1015,7 +1009,7 @@ The data pipeline supports streaming from HuggingFace FineWeb:
 
 All modules pass:
 - ✅ Syntax checks on all `.py` files
-- ✅ Unit tests: `uv run pytest tests/ -v` → **157 passed, 1 skipped** (CUDA-only parity test skipped on CPU)
+- ✅ Unit tests: `uv run pytest tests/ -v` → collects **302 test functions in 27 files** at HEAD (static count; pass/skip needs a torch+CUDA run)
 - ✅ Model forward/backward runs on CPU (no GPU required)
 - ✅ Training step runs for all variants (1bit, subqsa, ultimate, longctx)
 - ✅ FP vs BitLinear comparison: both reduce loss
@@ -1045,7 +1039,7 @@ Detailed research notes included in the repository:
 
 - **[RESEARCH_SUBQSA.md](RESEARCH_SUBQSA.md)** — NSA/SubQSA derivation:
   - Why subquadratic attention matters (O(n²) breakdown at 1M tokens)
-  - SubQ's SSA: content-dependent routing, 56× speedup at 1M
+  - SubQ's SSA: content-dependent routing, 56.2× speedup at 1M **as reported by the SubQ-1.1 tech report — not measured in this repo**
   - NSA three-branch design: compression, selection, sliding window
   - Selection without separate indexer (reuses compression attention scores)
   - Hardware-aware kernel design: GQA-aware, blockwise, online top-k
@@ -1097,7 +1091,7 @@ Detailed research notes included in the repository:
   title = {Ultimate AI Model: Native 1-Bit Quantization + Subquadratic Sparse Attention},
   year = {2026},
   url = {https://github.com/user/ultimate-ai-model},
-  note = {Combines BitNet b1.58 2B4T with NSA-style SubQSA for 10× memory reduction and 56× attention speedup at 1M context}
+  note = {Combines BitNet b1.58 2B4T with NSA-style SubQSA for 10× memory reduction (analytic) and 56× attention speedup at 1M context (paper-reported, not measured)}
 }
 ```
 

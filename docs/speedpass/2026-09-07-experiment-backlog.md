@@ -1,7 +1,7 @@
 # Experiment Backlog — Ultimate Trainer @ 2026-09-07
 
 **Status**: Discovery only. No production kernels modified. Branch
-`chore/speedpass` remains at `e7c4521` (all docs/sessions).
+`master` @ `e7c4521` (chore/speedpass deleted after ff-merge; e7c4521b3fc6716a0448b25bba7608af29012af6 resolves at HEAD; all docs/sessions).
 
 **Scope**: PackedTernaryLinear WMMA kernels (fwd TC64, bwd dX TC64, update
 TC32) + SubQSA fused combine + sparse ternary, all targeting Modal T4 sm_75.

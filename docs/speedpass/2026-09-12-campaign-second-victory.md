@@ -1,6 +1,6 @@
 # Second Speedpass Campaign — Final Deliverable (2026-09-12)
 
-Branch: chore/speedpass. Start HEAD: 1053807. End HEAD: 0b7de36 (+ kernel d9ba61f).
+Branch: master (was chore/speedpass, deleted after ff-merge). Start HEAD: 1053807. End HEAD: 0b7de36 (+ kernel d9ba61f) — all resolve from master at HEAD.
 
 ## Executive summary
 Re-audited, re-measured, and shipped one real production win: **the forward TC64
