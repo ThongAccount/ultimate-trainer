@@ -180,6 +180,10 @@ def _parse_flip_checks(transcript):
 
 def _write_artefacts(d, head, transcript, rc_ab, rc_flip, verdict, provenance=None):
     """Persist the full transcript + a summary next to the repo on the VM."""
+    # Local import: main() puts the repo root on sys.path before calling us,
+    # and module-level functions cannot see main()'s imports.
+    from tools.artefact_provenance import mark_invalid, write_artefact
+
     outdir = os.path.join(d, "results")
     os.makedirs(outdir, exist_ok=True)
     with open(os.path.join(outdir, "official_suite.log"), "w") as fh:
