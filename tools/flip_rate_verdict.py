@@ -171,7 +171,10 @@ def evaluate_flip_rate(
         },
         {
             "name": "C_control_sustains_flips",
-            "ok": ctrl_ratio >= min_control_ratio,
+            # Non-vacuity: an empty control noisy window (ctrl_noisy <= 0)
+            # must FAIL, not pass via the +inf ratio — otherwise a control
+            # arm that never flips under noise vacuously "sustains" flips.
+            "ok": ctrl_noisy > 0.0 and ctrl_ratio >= min_control_ratio,
             "value": ctrl_ratio,
             "threshold": min_control_ratio,
             "detail": (
@@ -292,7 +295,22 @@ def evaluate_flip_budget(
     fb_ratio = _ratio(main_clean_budget, main_clean_no_budget)
     fb_to_noisy = _ratio(main_clean_budget, main_noisy)
 
+    # Non-vacuity: both F-check denominators must be non-empty, otherwise the
+    # 0/0 -> 0.0 mapping in _ratio lets a vacuous run pass (F1 with
+    # no_budget=0, F2 with noisy=0).
+    non_vacuous = main_noisy > 0.0 and main_clean_no_budget > 0.0
+
     checks = [
+        {
+            "name": "F0_non_vacuity",
+            "ok": non_vacuous,
+            "value": min(main_noisy, main_clean_no_budget),
+            "threshold": "> 0",
+            "detail": (
+                f"budget non-vacuity: main_noisy={main_noisy:.6g}, "
+                f"main_clean_no_budget={main_clean_no_budget:.6g} (both > 0)"
+            ),
+        },
         {
             "name": "F1_budget_reduces_flips",
             "ok": fb_ratio <= MAX_BUDGETED_CLEAN_RATIO,

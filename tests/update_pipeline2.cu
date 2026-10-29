@@ -418,13 +418,21 @@ extern "C" void launch_packed_ternary_update_tc_v2(
     const void*     dY_ptr,
     uint32_t*       W,
     int16_t*        counter,
+    int16_t*        flip_count,
     int batch_size,
     int in_features,
     int out_features,
     int stride_words,
     int16_t threshold,
+    float dead_zone,
+    int16_t flip_budget,
     cudaStream_t stream)
 {
+    // Signature matches the 13-param production launcher
+    // (gemm_update_tc_v2_32.cu) so the pybind embedder's 13-arg call links
+    // cleanly. This probe kernel predates dead_zone/flip_budget, so the new
+    // params are accepted but unused (probes always pass 0).
+    (void)flip_count; (void)dead_zone; (void)flip_budget;
     const half* X  = static_cast<const half*>(X_ptr);
     const half* dY = static_cast<const half*>(dY_ptr);
 

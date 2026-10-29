@@ -32,13 +32,23 @@ from kernels.packed_ternary.pack_forward import (
     packed_ternary_forward_tc,
 )
 
+def _skip_or_exit(msg: str) -> None:
+    # Under pytest: skip the module at collection (a module-level sys.exit
+    # here aborts `pytest tests/` with INTERNALERROR on CPU boxes).
+    # Direct `python` runs without pytest keep the old exit-0 behavior.
+    try:
+        import pytest
+        pytest.skip(msg, allow_module_level=True)
+    except ImportError:
+        print(msg)
+        sys.exit(0)
+
+
 if not torch.cuda.is_available():
-    print("CUDA not available — benchmark requires GPU")
-    sys.exit(0)
+    _skip_or_exit("CUDA not available — benchmark requires GPU")
 
 if not has_forward_kernel():
-    print("Packed ternary forward kernel not loaded")
-    sys.exit(0)
+    _skip_or_exit("Packed ternary forward kernel not loaded")
 
 HAS_V2 = has_forward_kernel_v2()
 

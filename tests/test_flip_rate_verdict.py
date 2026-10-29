@@ -181,3 +181,39 @@ def test_flip_budget_fails_when_no_reduction():
     )
     assert not res["passed"]
     assert not _check(res, "F1_budget_reduces_flips")["ok"]
+
+
+def test_flip_budget_echoes_budget_value():
+    # budget=1 is a valid edge: it must be echoed into the result.
+    from tools.flip_rate_verdict import evaluate_flip_budget
+    res = evaluate_flip_budget(0.03125, 0.001, 0.03125, budget=1)
+    assert res["flip_budget"] == 1
+    assert res["passed"], res["checks"]
+
+
+def test_flip_budget_fails_when_noisy_zero():
+    # F2 denominator empty (noisy=0): 0/0 must not pass vacuously.
+    from tools.flip_rate_verdict import evaluate_flip_budget
+    res = evaluate_flip_budget(0.03, 0.0, 0.0, budget=10)
+    assert not res["passed"]
+    assert not _check(res, "F0_non_vacuity")["ok"]
+
+
+def test_flip_budget_fails_when_no_budget_clean_zero():
+    # F1 denominator empty (no_budget=0): 0/0 must not pass vacuously.
+    from tools.flip_rate_verdict import evaluate_flip_budget
+    res = evaluate_flip_budget(0.0, 0.0, 0.03, budget=10)
+    assert not res["passed"]
+    assert not _check(res, "F0_non_vacuity")["ok"]
+
+
+def test_control_zero_noisy_with_clean_positive_fails():
+    # C must not pass via the +inf ratio when the control noisy window is
+    # empty — a control arm that never flips under noise is vacuous.
+    res = evaluate_flip_rate(
+        main={"noisy": 0.00098, "clean": 0.00002},
+        control={"noisy": 0.0, "clean": 0.001},
+        threshold=32,
+    )
+    assert not res["passed"]
+    assert not _check(res, "C_control_sustains_flips")["ok"]

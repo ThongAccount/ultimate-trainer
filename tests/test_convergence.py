@@ -29,8 +29,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from kernels.packed_ternary import PackedTernaryLinear
 
 if not torch.cuda.is_available():
-    print("CUDA not available")
-    sys.exit(0)
+    # Script-style module with no test functions: under pytest, skip the whole
+    # module instead of aborting collection via module-level sys.exit
+    # (INTERNALERROR on CPU boxes). Direct `python` runs keep the old exit.
+    try:
+        import pytest
+        pytest.skip("requires CUDA", allow_module_level=True)
+    except ImportError:
+        print("CUDA not available")
+        sys.exit(0)
 
 
 # ═══════════════════════════════════════════════════════════════════════
