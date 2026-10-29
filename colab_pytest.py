@@ -53,6 +53,10 @@ TEST_MODULES = [
 
 def clone_repo(branch: str, dest: str, token: str) -> str:
     if os.path.isdir(os.path.join(dest, "kernels", "packed_ternary")):
+        # Reused clone: refresh it so a stale checkout can never be tested.
+        subprocess.run(["git", "-C", dest, "fetch", "--quiet", "origin"], check=True)
+        subprocess.run(["git", "-C", dest, "reset", "--hard", "--quiet",
+                        f"origin/{branch}"], check=True)
         return dest
     # The repo is public, so an anonymous clone works; a token is optional.
     url = f"https://x-access-token:{token}@{REPO_URL}" if token else f"https://{REPO_URL}"
@@ -84,6 +88,18 @@ def main() -> int:
         .strip()
     )
     print(f"repo={repo} branch={branch} commit={commit}", flush=True)
+
+    # Stale-clone guard: rc=2 BEFORE pip/pytest run (ut-fb-10 root cause #1).
+    expect = os.environ.get("PT_EXPECT_COMMIT", "")
+    if expect and not commit.startswith(expect):
+        print(f"COMMIT-MISMATCH: clone HEAD={commit[:10]} != "
+              f"PT_EXPECT_COMMIT={expect}; refusing to run (stale-clone guard, ut-fb-10)",
+              flush=True)
+        res = {"suite": "pytest", "commit": commit, "branch": branch,
+               "returncode": 2, "passed": False,
+               "summary": "COMMIT-MISMATCH refusal (rc=2)"}
+        print("\nRESULTS JSON:", json.dumps(res, indent=2), flush=True)
+        return 2
 
     for pkg in ("ninja", "pytest"):
         subprocess.run(

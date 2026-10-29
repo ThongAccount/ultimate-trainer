@@ -25,7 +25,8 @@ image = (
     memory=4 * 1024,
     timeout=2400,
 )
-def speedpass_benchmark(phase: str = "all", use_gpu: bool = False, rev: str = ""):
+def speedpass_benchmark(phase: str = "all", use_gpu: bool = False, rev: str = "",
+                        expect: str = ""):
     import os
     import subprocess
     import torch
@@ -34,7 +35,9 @@ def speedpass_benchmark(phase: str = "all", use_gpu: bool = False, rev: str = ""
 
     REPO_URL = "https://github.com/ThongAccount/ultimate-trainer.git"
     REPO_DIR = "ultimate-trainer"
-    BRANCH = "chore/speedpass"
+    # chore/speedpass was fast-forwarded into master and deleted remote-side;
+    # checkout/pull of it now crashes on the billed VM. Track master.
+    BRANCH = "master"
 
     print("=" * 70)
     print("MODAL T4 SPEEDPASS BENCHMARK")
@@ -70,6 +73,11 @@ def speedpass_benchmark(phase: str = "all", use_gpu: bool = False, rev: str = ""
 
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
     print(f"Git commit: {commit}")
+    # Stale-clone guard: raise BEFORE any benchmark phase (ut-fb-10 root cause #1).
+    if expect and not commit.startswith(expect):
+        print(f"COMMIT-MISMATCH: clone HEAD={commit[:10]} != expect={expect}; "
+              "refusing to run (stale-clone guard, ut-fb-10)")
+        raise RuntimeError("COMMIT-MISMATCH (expect-commit guard, ut-fb-10)")
 
     results = {
         "commit": commit,

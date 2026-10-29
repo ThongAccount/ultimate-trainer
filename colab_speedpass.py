@@ -33,11 +33,17 @@ import time
 
 REPO_URL = "github.com/ThongAccount/ultimate-trainer.git"
 DEFAULT_CLONE = "/content/ultimate-trainer"
-DEFAULT_BRANCH = "chore/speedpass"
+# chore/speedpass was fast-forwarded into master and deleted remote-side;
+# track master (same fix colab_pytest.py already got).
+DEFAULT_BRANCH = "master"
 
 
 def clone_repo(branch: str, dest: str, token: str) -> str:
     if os.path.isdir(os.path.join(dest, "kernels", "packed_ternary")):
+        # Reused clone: refresh it so a stale checkout can never be measured.
+        subprocess.run(["git", "-C", dest, "fetch", "--quiet", "origin"], check=True)
+        subprocess.run(["git", "-C", dest, "reset", "--hard", "--quiet",
+                        f"origin/{branch}"], check=True)
         return dest
     if not token:
         raise SystemExit(
@@ -97,6 +103,8 @@ def main() -> int:
     )
     ap.add_argument("--branch", default=DEFAULT_BRANCH)
     ap.add_argument("--repo-dir", default=DEFAULT_CLONE)
+    ap.add_argument("--expect-commit", default=os.environ.get("PT_EXPECT_COMMIT", ""),
+                    help="rc=2 unless the clone HEAD matches this sha (prefix ok)")
     args = ap.parse_args()
 
     import torch
@@ -118,6 +126,17 @@ def main() -> int:
         .strip()
     )
     print(f"repo={repo} branch={args.branch} commit={commit}", flush=True)
+
+    # Stale-clone guard: rc=2 BEFORE any probe dispatch (ut-fb-10 root cause #1).
+    expect = args.expect_commit
+    if expect and not commit.startswith(expect):
+        print(f"COMMIT-MISMATCH: clone HEAD={commit[:10]} != "
+              f"--expect-commit={expect}; refusing to run (stale-clone guard, ut-fb-10)",
+              flush=True)
+        res = {"probe": args.probe, "commit": commit, "branch": args.branch,
+               "rc": 2, "error": "commit-mismatch"}
+        print("\nRESULTS JSON:", json.dumps(res, indent=2), flush=True)
+        return 2
 
     ensure_ninja()
     os.chdir(repo)

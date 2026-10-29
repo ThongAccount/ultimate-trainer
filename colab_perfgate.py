@@ -47,7 +47,9 @@ import time
 
 REPO_URL = "github.com/ThongAccount/ultimate-trainer.git"
 DEFAULT_CLONE = "/content/ultimate-trainer"
-DEFAULT_BRANCH = "chore/speedpass"
+# chore/speedpass was fast-forwarded into master and deleted remote-side, so
+# cloning it fails with "Remote branch not found"; track master.
+DEFAULT_BRANCH = "master"
 
 BASELINE_NAME = "tests/perf_baseline_t4.json"
 
@@ -65,6 +67,10 @@ KERNELS = ("fwd", "dx", "update")
 
 def clone_repo(branch: str, dest: str, token: str) -> str:
     if os.path.isdir(os.path.join(dest, "kernels", "packed_ternary")):
+        # Reused clone: refresh it so a stale checkout can never be measured.
+        subprocess.run(["git", "-C", dest, "fetch", "--quiet", "origin"], check=True)
+        subprocess.run(["git", "-C", dest, "reset", "--hard", "--quiet",
+                        f"origin/{branch}"], check=True)
         return dest
     if not token:
         raise SystemExit(
@@ -189,6 +195,9 @@ def main() -> int:
                     help="write fresh numbers back to the baseline file "
                          "(meant for regenerating after a visual inspection "
                          "of the printed per-kernel deltas, then committing)")
+    ap.add_argument("--expect-commit", default=os.environ.get("PT_EXPECT_COMMIT", ""),
+                    help="rc=2 unless the clone HEAD matches this sha (prefix ok); "
+                         "also guards --update-baseline against a wrong commit")
     args = ap.parse_args()
 
     import torch
@@ -218,7 +227,21 @@ def main() -> int:
         "config": {"batch": BATCH, "threshold": THRESHOLD,
                    "shapes": [sh[0] for sh in SHAPES], "kernels": KERNELS,
                    "baseline": args.baseline,
-                   "update_baseline": args.update_baseline}})
+                   "update_baseline": args.update_baseline,
+                    "expect_commit": args.expect_commit or None}})
+
+    # Stale-clone guard: rc=2 + quarantined artefact BEFORE the baseline read,
+    # --update-baseline write, or any measurement (ut-fb-10 root cause #1).
+    expect = args.expect_commit
+    if expect and not commit.startswith(expect):
+        print(f"COMMIT-MISMATCH: clone HEAD={commit[:10]} != "
+              f"--expect-commit={expect}; refusing to run (stale-clone guard, ut-fb-10)",
+              flush=True)
+        res = {"suite": "perfgate", "commit": commit, "provenance": provenance,
+               "branch": args.branch, "rc": 2, "error": "commit-mismatch"}
+        path = write_artefact(repo, "perfgate.json", res, root_cause_commit=commit)
+        print(f"ARTEFACT: {path}", flush=True)
+        return 2
 
     ensure_ninja()
 
