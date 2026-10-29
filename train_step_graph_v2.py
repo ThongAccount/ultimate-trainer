@@ -91,9 +91,18 @@ class TrainStepGraphCUDAGraph:
             Y_out = _forward_op(self.layer.W_packed, X.contiguous(), self.K)
             dY = 2.0 * (Y_out - Y_target) / (self.B * self.N)
 
-        # Update runs outside graph using the computed dY, NOT Y_target
-        _update_op(self.layer.W_packed, self.layer.counter,
-                   X.contiguous(), dY, self.threshold)
+        # Update runs outside graph using the computed dY, NOT Y_target.
+        # Thread the layer's flip budget through: a 5-arg call would silently
+        # run unbudgeted (flip_budget defaults to 0) and mis-measure any
+        # budgeted CUDAGraph run.
+        flip_budget = int(getattr(self.layer, "flip_budget", 0))
+        if flip_budget > 0:
+            _update_op(self.layer.W_packed, self.layer.counter,
+                       X.contiguous(), dY, self.threshold,
+                       flip_count=self.layer.flip_count, flip_budget=flip_budget)
+        else:
+            _update_op(self.layer.W_packed, self.layer.counter,
+                       X.contiguous(), dY, self.threshold)
 
         # Compute loss
         loss_val = (Y_out - Y_target).pow(2).mean().item()
