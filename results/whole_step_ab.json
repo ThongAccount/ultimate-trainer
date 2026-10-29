@@ -50,5 +50,30 @@
   "data": "real",
   "historical_baseline_ms": 6619.0,
   "nsteps": 300,
-  "ship_bar_pct": 5.0
+  "ship_bar_pct": 5.0,
+  "provenance": {
+    "schema_version": 1,
+    "commit": "015763aff006d7b41dd7e03a34808fd7db11c89e",
+    "branch": null,
+    "git_dirty": false,
+    "timestamp_utc": null,
+    "python": null,
+    "torch": null,
+    "cuda": null,
+    "gpu": null,
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null
+    },
+    "valid": true,
+    "inferred_from_log": true,
+    "inferred_fields": [
+      "commit",
+      "git_dirty",
+      "valid"
+    ],
+    "backfilled_at_commit": "c875efb88f196b29b00da804891c1e3ef1d2d398",
+    "note": "legacy artefact committed at 015763a; fields inferred from results/*.log + git, not rewritten; known defect: arms[*].gpu truncated at first whitespace ('Tesla' for 'Tesla T4'); fixed by shlex parsing in the writer adoption"
+  }
 }

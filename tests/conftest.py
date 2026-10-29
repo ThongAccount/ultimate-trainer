@@ -15,9 +15,45 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 
+def _artefact_gate():
+    """Reject committed results/*.json that lack a valid provenance block.
+
+    Runs on CPU AND Colab (before the torch early-return below). The ut-fb-10
+    failure mode was an in-repo artefact indistinguishable from a valid run;
+    only git-TRACKED artefacts are scanned (untracked VM artefacts are covered
+    at write time by tools/artefact_provenance.write_artefact). Escape hatch:
+    SKIP_ARTEFACT_GATE=1 (mirrors OMP_SKIP_KERNEL_GATE).
+    """
+    if os.environ.get("SKIP_ARTEFACT_GATE") == "1":
+        return
+    import json
+    import subprocess
+
+    from tools.artefact_provenance import validate_provenance
+
+    root = os.path.join(os.path.dirname(__file__), "..")
+    r = subprocess.run(["git", "-C", root, "ls-files", "results/*.json"],
+                       capture_output=True, text=True)
+    tracked = [ln for ln in r.stdout.splitlines() if ln.strip()]
+    offenders = []
+    for rel in tracked:
+        with open(os.path.join(root, rel)) as fh:
+            artefact = json.load(fh)
+        problems = validate_provenance(artefact)
+        if problems:
+            offenders.append(f"{rel}: {'; '.join(problems)}")
+    if offenders:
+        pytest.exit(
+            "ARTEFACT GATE: committed results/*.json without valid provenance:\n"
+            + "\n".join(offenders),
+            returncode=1,
+        )
+
+
 def pytest_sessionstart(session):
     if os.environ.get("OMP_SKIP_KERNEL_GATE") == "1":
         return
+    _artefact_gate()
     try:
         import torch
     except ImportError:

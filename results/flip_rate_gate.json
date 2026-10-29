@@ -57,5 +57,36 @@
     "FLIPRATE_CHECK: update_backend=cublas C_control_sustains_flips ok=True value=1.03522 threshold=0.5 detail=control late/early flip-rate ratio 1.03522 (>= 0.5)",
     "FLIPRATE_VERDICT: update_backend=cublas passed=False",
     "FLIPRATE_GATE: FAIL (shipped backend = cublas)"
-  ]
+  ],
+  "dead_zone": 0.0,
+  "flip_budget": 0,
+  "backends": "custom,cublas",
+  "provenance": {
+    "schema_version": 1,
+    "commit": "015763aff006d7b41dd7e03a34808fd7db11c89e",
+    "branch": null,
+    "git_dirty": false,
+    "timestamp_utc": null,
+    "python": null,
+    "torch": null,
+    "cuda": null,
+    "gpu": null,
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null
+    },
+    "valid": true,
+    "inferred_from_log": true,
+    "inferred_fields": [
+      "commit",
+      "git_dirty",
+      "valid",
+      "dead_zone",
+      "flip_budget",
+      "backends"
+    ],
+    "backfilled_at_commit": "c875efb88f196b29b00da804891c1e3ef1d2d398",
+    "note": "legacy artefact committed at 015763a; fields inferred from results/*.log + git, not rewritten"
+  }
 }
