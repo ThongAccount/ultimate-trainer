@@ -122,6 +122,9 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     # Guard BEFORE backend dispatch: at flip_budget > 0 with flip_count=None
     # the cublas epilogue would OOB on its 1-element dummy — fail loudly on
     # both backends instead of silently mis-measuring.
+    if flip_budget < 0:
+        raise RuntimeError(
+            f"flip_budget must be in [0, 32767] (int16 counter), got {flip_budget}")
     if flip_budget > 0:
         if flip_count is None:
             raise RuntimeError(
@@ -129,6 +132,12 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
         if not (0 < int(flip_budget) <= 32767):
             raise RuntimeError(
                 f"flip_budget must be in [1, 32767] (int16 counter), got {flip_budget}")
+        if tuple(flip_count.shape) != tuple(counter.shape):
+            raise RuntimeError(
+                f"flip_count shape {tuple(flip_count.shape)} must equal counter "
+                f"shape {tuple(counter.shape)} ([N, K])")
+        if flip_count.dtype != torch.int16:
+            raise RuntimeError(f"flip_count must be int16, got {flip_count.dtype}")
     if os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas":
         # Ranked item #1: cuBLAS dW (fp32 out) + counter/flip epilogue.
         from .update_cublas import update_cublas

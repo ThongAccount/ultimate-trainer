@@ -16,4 +16,4 @@ jobs:
       # CPU-import-safe modules only (AST-verified, no top-level torch).
       # conftest.py returns early without torch; CUDA tests skipif-skip.
       # The repo's REAL gate is Colab T4 (colab_pytest.py) — this is a PR smoke net.
-      - run: python -m pytest tests/test_artefact_provenance.py tests/test_counter_clamp.py tests/test_decl_arity.py tests/test_dispatch_order.py tests/test_flip_rate_verdict.py tests/test_graph_replay_parity.py tests/test_perfgate_logic.py tests/test_update_dimensional_bug.py -q
+      - run: python -m pytest tests/test_artefact_provenance.py tests/test_counter_clamp.py tests/test_decl_arity.py tests/test_dispatch_order.py tests/test_flip_budget_guards.py tests/test_flip_rate_verdict.py tests/test_graph_replay_parity.py tests/test_perfgate_logic.py tests/test_update_dimensional_bug.py -q

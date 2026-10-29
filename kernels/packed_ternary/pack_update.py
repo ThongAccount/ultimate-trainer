@@ -687,6 +687,9 @@ def update(W: torch.Tensor, counter: torch.Tensor, X: torch.Tensor,
             "kernel stores threshold as int16_t, and any value >= 32768 "
             "truncates to a negative int16, flipping every negative counter")
 
+    if flip_budget < 0:
+        raise RuntimeError(
+            f"flip_budget must be in [0, 32767] (int16 counter), got {flip_budget}")
     fn, which = _select_update_fn(B, N_out, N_in)
     if fn is not None:
         if which in ("v2_64", "v2_32"):
@@ -757,6 +760,9 @@ def backward_update(W: torch.Tensor, counter: torch.Tensor,
 
     # ── Update: dW→sign→counter→flip ──
     N_in = X_c.size(1)
+    if flip_budget < 0:
+        raise RuntimeError(
+            f"flip_budget must be in [0, 32767] (int16 counter), got {flip_budget}")
     fn, which = _select_update_fn(B, N_out, N_in)
     if fn is not None:
         if which in ("v2_64", "v2_32"):
