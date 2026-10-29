@@ -209,6 +209,17 @@ def main() -> int:
     )
     print(f"repo={repo} branch={args.branch} commit={commit}", flush=True)
 
+    from tools.artefact_provenance import collect_provenance, write_artefact
+    # shallow --branch clone is detached -> pass the real branch name;
+    # collect BEFORE the baseline write below so git_dirty describes the
+    # measured code
+    provenance = collect_provenance(repo, extra_config={
+        "branch": args.branch,
+        "config": {"batch": BATCH, "threshold": THRESHOLD,
+                   "shapes": [sh[0] for sh in SHAPES], "kernels": KERNELS,
+                   "baseline": args.baseline,
+                   "update_baseline": args.update_baseline}})
+
     ensure_ninja()
 
     with open(os.path.join(repo, args.baseline)) as f:
@@ -247,6 +258,8 @@ def main() -> int:
 
         fresh = {
             "schema": 1,
+            "commit": commit,
+            "provenance": provenance,
             "gpu": gpu,
             "_meta": {
                 "status": "measured",
@@ -286,6 +299,7 @@ def main() -> int:
     res = {
         "suite": "perfgate",
         "commit": commit,
+        "provenance": provenance,
         "branch": args.branch,
         "gpu": gpu,
         "pytorch": torch.__version__,
@@ -306,6 +320,8 @@ def main() -> int:
         "wall_s": wall,
     }
     print("\nRESULTS JSON:", json.dumps(res, indent=2), flush=True)
+    path = write_artefact(repo, "perfgate.json", res, root_cause_commit=commit)
+    print(f"ARTEFACT: {path}", flush=True)
     return 1 if any_fail else 0
 
 
