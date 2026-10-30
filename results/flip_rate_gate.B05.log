@@ -1,0 +1,84 @@
+commit=b520f912b84b08326c805ec982e7d95de8732ed3
+FLIPRATE: arm=main update_backend=custom steps=1000 threshold=32 weights=262144 noisy_rate=0.0049400965 clean_rate=0.00014529228 resid_noisy=3.19505e-06 resid_clean=3.44277e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=200 flips_per_step=2524.3 flip_rate=0.0096294403 resid_rms=2.74155e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=300 flips_per_step=2431.44 flip_rate=0.0092752075 resid_rms=2.834e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=400 flips_per_step=2164.64 flip_rate=0.0082574463 resid_rms=3.07204e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=500 flips_per_step=1244.12 flip_rate=0.0047459412 resid_rms=3.19506e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=600 flips_per_step=476.29 flip_rate=0.0018169022 resid_rms=3.31805e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=700 flips_per_step=129.67 flip_rate=0.00049465179 resid_rms=3.41556e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=800 flips_per_step=20.61 flip_rate=7.8620911e-05 resid_rms=3.44852e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=900 flips_per_step=2 flip_rate=7.6293945e-06 resid_rms=3.45333e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=1000 flips_per_step=0.07 flip_rate=2.6702881e-07 resid_rms=3.45367e-06
+FLIPRATE: arm=control update_backend=custom steps=1000 threshold=32 weights=262144 noisy_rate=0.0045918655 clean_rate=0.00035089493 resid_noisy=3.01908e-06 resid_clean=3.32151e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=200 flips_per_step=2524.3 flip_rate=0.0096294403 resid_rms=2.74155e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=300 flips_per_step=2431.44 flip_rate=0.0092752075 resid_rms=2.834e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=400 flips_per_step=1873.92 flip_rate=0.0071484375 resid_rms=2.91352e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=500 flips_per_step=1163.18 flip_rate=0.0044371796 resid_rms=3.00619e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=600 flips_per_step=574.09 flip_rate=0.0021899796 resid_rms=3.13754e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=700 flips_per_step=232.68 flip_rate=0.00088760376 resid_rms=3.24835e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=800 flips_per_step=85.4 flip_rate=0.00032577515 resid_rms=3.3158e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=900 flips_per_step=34.34 flip_rate=0.0001309967 resid_rms=3.35125e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=1000 flips_per_step=15.52 flip_rate=5.9204102e-05 resid_rms=3.37064e-06
+FLIPRATE: arm=main update_backend=cublas steps=1000 threshold=32 weights=262144 noisy_rate=0.0049400965 clean_rate=0.00014529228 resid_noisy=3.19505e-06 resid_clean=3.44277e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=200 flips_per_step=2524.3 flip_rate=0.0096294403 resid_rms=2.74155e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=300 flips_per_step=2431.44 flip_rate=0.0092752075 resid_rms=2.834e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=400 flips_per_step=2164.64 flip_rate=0.0082574463 resid_rms=3.07204e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=500 flips_per_step=1244.12 flip_rate=0.0047459412 resid_rms=3.19506e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=600 flips_per_step=476.29 flip_rate=0.0018169022 resid_rms=3.31805e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=700 flips_per_step=129.67 flip_rate=0.00049465179 resid_rms=3.41556e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=800 flips_per_step=20.61 flip_rate=7.8620911e-05 resid_rms=3.44852e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=900 flips_per_step=2 flip_rate=7.6293945e-06 resid_rms=3.45333e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=1000 flips_per_step=0.07 flip_rate=2.6702881e-07 resid_rms=3.45367e-06
+FLIPRATE: arm=control update_backend=cublas steps=1000 threshold=32 weights=262144 noisy_rate=0.0045918655 clean_rate=0.00035089493 resid_noisy=3.01908e-06 resid_clean=3.32151e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=200 flips_per_step=2524.3 flip_rate=0.0096294403 resid_rms=2.74155e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=300 flips_per_step=2431.44 flip_rate=0.0092752075 resid_rms=2.834e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=400 flips_per_step=1873.92 flip_rate=0.0071484375 resid_rms=2.91352e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=500 flips_per_step=1163.18 flip_rate=0.0044371796 resid_rms=3.00619e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=600 flips_per_step=574.09 flip_rate=0.0021899796 resid_rms=3.13754e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=700 flips_per_step=232.68 flip_rate=0.00088760376 resid_rms=3.24835e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=800 flips_per_step=85.4 flip_rate=0.00032577515 resid_rms=3.3158e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=900 flips_per_step=34.34 flip_rate=0.0001309967 resid_rms=3.35125e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=1000 flips_per_step=15.52 flip_rate=5.9204102e-05 resid_rms=3.37064e-06
+FLIPRATE_CHECK: update_backend=custom V_non_vacuity ok=True value=0.0049401 threshold=0.000244141 detail=main noisy-window flip rate 0.0049401 (>= 0.000244141 = 0.25/T^2, T=32)
+FLIPRATE_CHECK: update_backend=custom M_decay_when_noise_removed ok=True value=0.0294108 threshold=0.1 detail=main clean/noisy flip-rate ratio 0.0294108 (<= 0.1)
+FLIPRATE_CHECK: update_backend=custom C_control_sustains_flips ok=False value=0.0764166 threshold=0.5 detail=control late/early flip-rate ratio 0.0764166 (>= 0.5)
+FLIPRATE_VERDICT: update_backend=custom passed=False
+FLIPRATE: arm=main_base update_backend=custom steps=1000 threshold=32 weights=262144 noisy_rate=0.01432401 clean_rate=0.015497971 resid_noisy=3.30671e-06 resid_clean=3.56036e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=200 flips_per_step=2568.2 flip_rate=0.0097969055 resid_rms=2.74181e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=300 flips_per_step=2923.29 flip_rate=0.011151466 resid_rms=2.87754e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=400 flips_per_step=3588.17 flip_rate=0.013687782 resid_rms=3.16813e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=500 flips_per_step=3797.84 flip_rate=0.01448761 resid_rms=3.34071e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=600 flips_per_step=3878.85 flip_rate=0.014796638 resid_rms=3.41129e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=700 flips_per_step=3992.67 flip_rate=0.015230827 resid_rms=3.48934e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=800 flips_per_step=4053.98 flip_rate=0.015464706 resid_rms=3.55047e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=900 flips_per_step=4091.36 flip_rate=0.0156073 resid_rms=3.58867e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=1000 flips_per_step=4112.79 flip_rate=0.015689049 resid_rms=3.61296e-06
+FLIPRATE_CHECK: update_backend=custom F0_non_vacuity ok=True value=0.0049401 threshold=> 0 detail=budget non-vacuity: main_noisy=0.0049401, main_clean_no_budget=0.015498 (both > 0)
+FLIPRATE_CHECK: update_backend=custom F1_budget_reduces_flips ok=True value=0.00937492 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0.00937492 (<= 0.5)
+FLIPRATE_CHECK: update_backend=custom F2_budgeted_meets_decay ok=True value=0.0294108 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0.0294108 (<= 0.1)
+FLIPRATE_BUDGET_VERDICT: update_backend=custom flip_budget=5 passed=True
+FLIPRATE_CHECK: update_backend=cublas V_non_vacuity ok=True value=0.0049401 threshold=0.000244141 detail=main noisy-window flip rate 0.0049401 (>= 0.000244141 = 0.25/T^2, T=32)
+FLIPRATE_CHECK: update_backend=cublas M_decay_when_noise_removed ok=True value=0.0294108 threshold=0.1 detail=main clean/noisy flip-rate ratio 0.0294108 (<= 0.1)
+FLIPRATE_CHECK: update_backend=cublas C_control_sustains_flips ok=False value=0.0764166 threshold=0.5 detail=control late/early flip-rate ratio 0.0764166 (>= 0.5)
+FLIPRATE_VERDICT: update_backend=cublas passed=False
+FLIPRATE: arm=main_base update_backend=cublas steps=1000 threshold=32 weights=262144 noisy_rate=0.01432401 clean_rate=0.015497971 resid_noisy=3.30671e-06 resid_clean=3.56036e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=200 flips_per_step=2568.2 flip_rate=0.0097969055 resid_rms=2.74181e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=300 flips_per_step=2923.29 flip_rate=0.011151466 resid_rms=2.87754e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=400 flips_per_step=3588.17 flip_rate=0.013687782 resid_rms=3.16813e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=500 flips_per_step=3797.84 flip_rate=0.01448761 resid_rms=3.34071e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=600 flips_per_step=3878.85 flip_rate=0.014796638 resid_rms=3.41129e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=700 flips_per_step=3992.67 flip_rate=0.015230827 resid_rms=3.48934e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=800 flips_per_step=4053.98 flip_rate=0.015464706 resid_rms=3.55047e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=900 flips_per_step=4091.36 flip_rate=0.0156073 resid_rms=3.58867e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=1000 flips_per_step=4112.79 flip_rate=0.015689049 resid_rms=3.61296e-06
+FLIPRATE_CHECK: update_backend=cublas F0_non_vacuity ok=True value=0.0049401 threshold=> 0 detail=budget non-vacuity: main_noisy=0.0049401, main_clean_no_budget=0.015498 (both > 0)
+FLIPRATE_CHECK: update_backend=cublas F1_budget_reduces_flips ok=True value=0.00937492 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0.00937492 (<= 0.5)
+FLIPRATE_CHECK: update_backend=cublas F2_budgeted_meets_decay ok=True value=0.0294108 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0.0294108 (<= 0.1)
+FLIPRATE_BUDGET_VERDICT: update_backend=cublas flip_budget=5 passed=True
+FLIPRATE_GATE: FAIL (shipped backend = cublas)
