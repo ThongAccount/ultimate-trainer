@@ -1,0 +1,90 @@
+{
+  "arms": {
+    "cublas_cublas": {
+      "backend": "cublas",
+      "data": "real",
+      "flips_final": "2472",
+      "gpu": "Tesla T4",
+      "label": "cublas_cublas",
+      "loss_1": "11.0625",
+      "loss_100": "10.2344",
+      "loss_50": "9.2891",
+      "loss_final": "9.1562",
+      "median_step_ms": 524.8,
+      "nan": "0",
+      "steps": "150",
+      "tok_per_s": "31159",
+      "update_backend": "cublas"
+    },
+    "cublas_custom": {
+      "backend": "cublas",
+      "data": "real",
+      "flips_final": "2472",
+      "gpu": "Tesla T4",
+      "label": "cublas_custom",
+      "loss_1": "11.0625",
+      "loss_100": "10.2344",
+      "loss_50": "9.2891",
+      "loss_final": "9.1562",
+      "median_step_ms": 1629.0,
+      "nan": "0",
+      "steps": "150",
+      "tok_per_s": "10038",
+      "update_backend": "custom"
+    },
+    "custom_custom": {
+      "backend": "custom",
+      "data": "real",
+      "flips_final": "2472",
+      "gpu": "Tesla T4",
+      "label": "custom_custom",
+      "loss_1": "11.0625",
+      "loss_100": "10.2344",
+      "loss_50": "9.2891",
+      "loss_final": "9.1562",
+      "median_step_ms": 4496.6,
+      "nan": "0",
+      "steps": "150",
+      "tok_per_s": "3637",
+      "update_backend": "custom"
+    }
+  },
+  "commit": "4957fdd4187d61a8b4926388214a47d53952a8a7",
+  "data": "real",
+  "failures": 0,
+  "flip_budget": 5,
+  "historical_baseline_ms": 6619.0,
+  "nsteps": 150,
+  "provenance": {
+    "branch": "master",
+    "commit": "4957fdd4187d61a8b4926388214a47d53952a8a7",
+    "config": {
+      "backends": "custom_custom,cublas_custom,cublas_cublas",
+      "data": "real",
+      "expect_commit": "4957fdd4187d61a8b4926388214a47d53952a8a7",
+      "flip_budget": 5,
+      "historical_baseline_ms": 6619.0,
+      "nsteps": 150,
+      "ship_bar_pct": 5.0
+    },
+    "cuda": "13.0",
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null
+    },
+    "git_dirty": true,
+    "gpu": {
+      "capability": [
+        7,
+        5
+      ],
+      "name": "Tesla T4"
+    },
+    "python": "3.13.16",
+    "schema_version": 2,
+    "timestamp_utc": "2026-10-31T12:11:11+00:00",
+    "torch": "2.11.0+cu130"
+  },
+  "ship_bar_pct": 5.0
+}
