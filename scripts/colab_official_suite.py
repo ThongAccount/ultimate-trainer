@@ -41,6 +41,9 @@ def main():
     ap.add_argument("--nsteps", type=int, default=300)
     ap.add_argument("--flip-steps", type=int, default=1000)
     ap.add_argument("--data", default="real", choices=["real", "synthetic"])
+    ap.add_argument("--flip-budget", default="0",
+                    help="per-weight flip budget for production layers (A/B arms) "
+                         "and the flip gate; 0 = off")
     ap.add_argument("--skip-ab", action="store_true")
     ap.add_argument("--skip-flip", action="store_true")
     ap.add_argument("--skip-smoke", action="store_true",
@@ -77,6 +80,7 @@ def main():
     # collect while the clone is still clean — phase drivers dirty the tree later
     provenance = collect_provenance(d, extra_config={"config": {
         "nsteps": args.nsteps, "flip_steps": args.flip_steps, "data": args.data,
+        "flip_budget": int(args.flip_budget),
         "skip_smoke": args.skip_smoke, "skip_ab": args.skip_ab,
         "skip_flip": args.skip_flip, "expect_commit": args.expect_commit or None}})
 
@@ -109,10 +113,12 @@ def main():
         s_ab_rc, s_ab = phase(
             "SMOKE A/B", [sys.executable, os.path.join(d, "scripts", "colab_step_ab.py"),
                           "--no-clone", "--repo", d, "--nsteps", "3", "--data", args.data,
+                          "--flip-budget", args.flip_budget,
                           "--expect-commit", head])
         s_flip_rc, s_flip = phase(
             "SMOKE FLIP", [sys.executable, os.path.join(d, "scripts", "colab_flip_rate_gate.py"),
                            "--no-clone", "--repo", d, "--steps", "20", "--smoke",
+                           "--flip-budget", args.flip_budget,
                            "--expect-commit", head])
         if s_ab_rc != 0 or s_flip_rc != 0:
             print(f"SMOKE: FAILED (ab_rc={s_ab_rc} flip_rc={s_flip_rc}) "
@@ -130,7 +136,8 @@ def main():
         rc_ab, _ = phase(
             "PHASE 1 A/B", [sys.executable, os.path.join(d, "scripts", "colab_step_ab.py"),
                             "--no-clone", "--repo", d, "--nsteps", str(args.nsteps),
-                            "--data", args.data, "--expect-commit", head])
+                            "--data", args.data, "--flip-budget", args.flip_budget,
+                            "--expect-commit", head])
         print(f"PHASE1_RC: {rc_ab}", flush=True)
 
     if not args.skip_flip:
@@ -138,6 +145,7 @@ def main():
         rc_flip, _ = phase(
             "PHASE 2 FLIP", [sys.executable, os.path.join(d, "scripts", "colab_flip_rate_gate.py"),
                              "--no-clone", "--repo", d, "--steps", str(args.flip_steps),
+                             "--flip-budget", args.flip_budget,
                              "--expect-commit", head])
         print(f"PHASE2_RC: {rc_flip}", flush=True)
 

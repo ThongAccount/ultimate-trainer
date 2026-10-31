@@ -107,7 +107,8 @@ for step in range(STEPS):
     if lv != lv:
         nan_seen = True
     if step in (1, 49, 99, STEPS - 1):
-        print(f"  step {step:4d} loss {lv:8.4f} t {(t1-t0)*1000:7.1f} ms", flush=True)
+        fl = sum(int(l.flip_count.sum().item()) for l in list(model.fc1s) + list(model.fc2s) + [model.head])
+        print(f"  step {step:4d} loss {lv:8.4f} t {(t1-t0)*1000:7.1f} ms flips={fl}", flush=True)
 med = statistics.median(times if times else all_times) * 1000
 toks = x.numel() / (med / 1000)
 
@@ -116,10 +117,11 @@ def loss_at(i):
     return f"{losses[i]:.4f}" if i < len(losses) else "nan"
 
 
+flips_final = sum(int(l.flip_count.sum().item()) for l in list(model.fc1s) + list(model.fc2s) + [model.head])
 print(f"RESULTS: backend={backend} update_backend={update_backend} label={label} "
       f"median_step_ms={med:.1f} tok_per_s={toks:.0f} "
       f"loss_1={loss_at(1)} loss_50={loss_at(50)} loss_100={loss_at(100)} "
-      f"loss_final={losses[-1]:.4f} nan={int(nan_seen)} steps={STEPS} "
+      f"loss_final={losses[-1]:.4f} flips_final={flips_final} nan={int(nan_seen)} steps={STEPS} "
       f'data={data_mode} gpu="{gpu}"', flush=True)
 '''
 
@@ -132,6 +134,9 @@ def main():
     ap.add_argument("--nsteps", type=int, default=300)
     ap.add_argument("--data", default="real", choices=["real", "synthetic"])
     ap.add_argument("--backends", default=",".join(lbl for _b, _u, lbl in ARMS))
+    ap.add_argument("--flip-budget", default=os.environ.get("PT_FLIP_BUDGET", "0"),
+                    help="per-weight flip budget for the production layers "
+                         "(forwarded as PT_FLIP_BUDGET to every arm; 0 = off)")
     ap.add_argument("--expect-commit", default=os.environ.get("PT_EXPECT_COMMIT", ""),
                     help="rc=2 unless the clone HEAD matches this sha (prefix ok); "
                          "stale-clone guard (ut-fb-10 root cause #1)")
@@ -162,6 +167,7 @@ def main():
     # file would flip git_dirty)
     provenance = collect_provenance(d, extra_config={"config": {
         "nsteps": args.nsteps, "data": args.data, "backends": args.backends,
+        "flip_budget": int(args.flip_budget),
         "ship_bar_pct": SHIP_BAR_PCT,
         "historical_baseline_ms": HISTORICAL_BASELINE_MS,
         "expect_commit": args.expect_commit or None}})
@@ -193,7 +199,8 @@ def main():
     for backend, update_backend, label in selected:
         env = {**os.environ, "REPO_DIR": d, "PT_BACKEND": backend,
                "PT_UPDATE_BACKEND": update_backend, "ARM_LABEL": label,
-               "NSTEPS": str(args.nsteps), "DATA_MODE": args.data}
+               "NSTEPS": str(args.nsteps), "DATA_MODE": args.data,
+               "PT_FLIP_BUDGET": str(args.flip_budget)}
         print(f"--- arm {label} (PT_BACKEND={backend} "
               f"PT_UPDATE_BACKEND={update_backend}) ---", flush=True)
         sys.path.insert(0, d)
@@ -243,7 +250,8 @@ def main():
     outdir = os.path.join(d, "results")
     os.makedirs(outdir, exist_ok=True)
     artefact = {"commit": head, "provenance": provenance, "nsteps": args.nsteps,
-                "data": args.data, "ship_bar_pct": SHIP_BAR_PCT,
+                "data": args.data, "flip_budget": int(args.flip_budget),
+                "ship_bar_pct": SHIP_BAR_PCT,
                 "historical_baseline_ms": HISTORICAL_BASELINE_MS,
                 "arms": by, "failures": failures}
     path = write_artefact(d, "whole_step_ab.json", artefact, root_cause_commit=head)

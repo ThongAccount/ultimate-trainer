@@ -20,6 +20,10 @@ N = 1024
 N_LAYERS = 6    # depth
 VOCAB = ((50257 + 31) // 32) * 32  # 50272 — multiple of 32 for TC kernel safety
 THRESHOLD = 32
+# Pre-registered 2026-10-31 (production damping test, see
+# docs/speedpass/2026-10-31-production-b5-prereg.md): per-weight flip budget
+# for the production layers, 0 = off (unchanged default).
+FLIP_BUDGET = int(os.environ.get("PT_FLIP_BUDGET", "0"))
 LR = 1.0        # learning rate (unitless for discrete)
 STEPS = 50
 WARMUP = 5
@@ -32,9 +36,9 @@ def build_model():
             super().__init__()
             self.embed = torch.nn.Embedding(VOCAB, K)
             self.norms = torch.nn.ModuleList([torch.nn.LayerNorm(K) for _ in range(N_LAYERS)])
-            self.fc1s = torch.nn.ModuleList([PackedTernaryLinear(K, 4*K, threshold=THRESHOLD) for _ in range(N_LAYERS)])
-            self.fc2s = torch.nn.ModuleList([PackedTernaryLinear(4*K, K, threshold=THRESHOLD) for _ in range(N_LAYERS)])
-            self.head = PackedTernaryLinear(K, VOCAB, threshold=THRESHOLD)
+            self.fc1s = torch.nn.ModuleList([PackedTernaryLinear(K, 4*K, threshold=THRESHOLD, flip_budget=FLIP_BUDGET) for _ in range(N_LAYERS)])
+            self.fc2s = torch.nn.ModuleList([PackedTernaryLinear(4*K, K, threshold=THRESHOLD, flip_budget=FLIP_BUDGET) for _ in range(N_LAYERS)])
+            self.head = PackedTernaryLinear(K, VOCAB, threshold=THRESHOLD, flip_budget=FLIP_BUDGET)
 
     def forward(self, x):
         B, T = x.shape
