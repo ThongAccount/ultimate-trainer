@@ -9,16 +9,20 @@ FineWeb text, and does the shipped speedup survive the flip counting?
 ## Protocol (fixed)
 
 - One Colab T4 allocation, `scripts/colab_official_suite.py` @ the commit of
-  this prereg, `--nsteps 200 --flip-steps 1000 --data real --flip-budget 5`.
+  this prereg, `--nsteps 150 --flip-steps 1000 --data real --flip-budget 5`.
+  (Amended 2026-10-31 ~11:48 BEFORE any measurement: nsteps 200 -> 150 to fit
+  the remaining free-T4 window after a connection-lost abort of the first
+  attempt, which produced no measurements. Criteria below are unchanged in
+  kind; the A/B comparability points are loss@1/50/100/final + median ms.)
 - Arms: custom_custom / cublas_custom / cublas_cublas (as 2026-10-26), seed 0,
   FineWeb `data/tokenized/samples_512.pt`, 3 fixed 32x512 batches cycled by
   `step % 3`, median of steps 5..199 for timing.
 - Production layers get `flip_budget=5` via `PT_FLIP_BUDGET` (train_gigatoken
   `FLIP_BUDGET`); the flip gate phase runs the synthetic 512x512 layer with
   `--flip-budget 5` and the pre-registered exempt-control semantics
-  (`arm_flip_budget`, d7aa1d1). nsteps 200 (not 300) to fit the Colab window;
-  the A/B comparability points (loss at steps 1/50/100/final, median ms) are
-  unchanged in kind.
+  (`arm_flip_budget`, d7aa1d1). nsteps 150 (not the 300 of 2026-10-26) to fit
+  the Colab window; the A/B comparability points (loss at steps 1/50/100/final,
+  median ms) are unchanged in kind.
 - Smoke pass runs first (same VM, tiny params); a smoke failure aborts before
   the official measurements.
 
@@ -29,7 +33,7 @@ FineWeb text, and does the shipped speedup survive the flip counting?
   C 1.035 >= 0.50).
 - **P1 (damping on real config)**: in EVERY A/B arm, the cumulative production
   flip count decays late vs mid run: `flips_final - flips@99 < flips@99 - flips@49`
-  (budget B=5 exhausts per-weight budgets inside 200 steps; the unbudgeted
+  (budget B=5 exhausts per-weight budgets inside the run; the unbudgeted
   2026-10-26 run sustained instead), AND no late loss blowup:
   `loss_final <= loss@100 + 1.0`.
 - **P2 (speed survives)**: `AB_VERDICT` ship bar unchanged —
