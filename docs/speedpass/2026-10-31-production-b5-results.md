@@ -16,8 +16,10 @@ FineWeb samples_512.pt, seed 0) + PHASE2 flip gate. **OFFICIAL_SUITE: PASS**
   exhausts and the flip rate decays); loss_final 9.1562 <= loss@100 10.2344+1.0.
   All three arms bit-identical (same losses, same flips_final=2472) — damping
   is backend-independent. For contrast, the unbudgeted 2026-10-26 run
-  oscillated (loss 11.06 -> 40.4 @100 -> 22.0 @300); here loss decreases
-  monotonically 11.06 -> 10.42 -> 9.20 -> 9.16 over 150 steps.
+  oscillated (loss 11.06 -> 40.4 @100 -> 22.0 @300); here the oscillation amplitude
+  collapses to ~0.5: 11.06 -> 10.42 -> 9.20 -> 9.16 over 150 steps, final
+  loss 9.16 is the run minimum (not strictly monotonic at the sampled
+  points — step 100 ticks up to 10.23).
 - **P2 speed survives — PASS**: `AB_VERDICT` reduction_pct=88.33 >= 5.0 ship
   bar; same-VM speedup 8.57x (4496.6 -> 524.8 ms); shipped arm 524.8 ms <=
   1.25 x 510.9 ms (2026-10-26 reference). Flip counting at B=5 costs nothing
