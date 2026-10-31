@@ -109,6 +109,26 @@ MAX_BUDGETED_CLEAN_RATIO = 0.50
 # that the limit cycle destroyed.
 MAX_BUDGETED_CLEAN_TO_NOISY = 0.10
 
+# ── Pre-registered 2026-10-31: control arm is EXEMPT from the flip budget ──
+# The 2026-10-29/30 sweep {5,10,20,50} @ b520f91 budgeted the control arm too,
+# so C failed at B=5 (control clean/noisy 0.0764 < 0.50) because the budget
+# capped the very flips C exists to observe. C's role is to show that
+# CONSTANT noise sustains flip activity; capping the control defeats the
+# control by construction. Pre-registered BEFORE any re-run: when a flip
+# budget is active, the control arm runs UNBUDGETED (budget 0). The main arm
+# keeps the budget under test. This changes which arm carries the budget, not
+# any threshold; V/M/C and F0/F1/F2 semantics are unchanged.
+CONTROL_ARM_BUDGET_EXEMPT = True
+
+
+def arm_flip_budget(arm: str, budget: int) -> int:
+    """Flip budget for a gate arm. Pre-registered 2026-10-31: the control arm
+    is exempt (runs unbudgeted) so criterion C measures uncapped sustainment;
+    the main arm carries the budget under test. With budget 0 both are 0."""
+    if arm == "control" and CONTROL_ARM_BUDGET_EXEMPT:
+        return 0
+    return int(budget)
+
 
 def _ratio(numerator: float, denominator: float) -> float:
     """Safe ratio: an empty denominator yields +inf (i.e. "no decay")."""

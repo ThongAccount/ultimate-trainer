@@ -234,3 +234,16 @@ def test_all_check_thresholds_are_print_safe():
             t = c["threshold"]
             rendered = format(t, ".6g") if isinstance(t, (int, float)) else str(t)
             assert isinstance(rendered, str) and rendered
+
+
+def test_control_arm_is_exempt_from_flip_budget():
+    # Pre-registered 2026-10-31: the control arm runs UNBUDGETED so criterion
+    # C measures uncapped sustainment; the main arm carries the budget.
+    from tools.flip_rate_verdict import arm_flip_budget
+    assert arm_flip_budget("main", 5) == 5
+    assert arm_flip_budget("main_base", 5) == 5
+    assert arm_flip_budget("control", 5) == 0
+    assert arm_flip_budget("control", 50) == 0
+    # budget off: everything is 0 anyway
+    assert arm_flip_budget("main", 0) == 0
+    assert arm_flip_budget("control", 0) == 0

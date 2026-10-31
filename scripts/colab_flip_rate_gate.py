@@ -59,7 +59,9 @@ try:
     from kernels.packed_ternary.custom_ops import update_tc_v2 as co_update_tc_v2
 except Exception:  # custom_ops can fail to register; packed_linear re-exports it
     from kernels.packed_ternary.packed_linear import co_update_tc_v2
-from tools.flip_rate_verdict import evaluate_flip_rate, evaluate_flip_budget
+from tools.flip_rate_verdict import (
+    arm_flip_budget, evaluate_flip_rate, evaluate_flip_budget,
+)
 
 STEPS       = int(os.environ.get("FLIP_STEPS", "1000"))
 D_IN        = int(os.environ.get("FLIP_DIN", "512"))
@@ -199,7 +201,10 @@ def run_arm(arm, update_backend, flip_budget=FLIP_BUDGET):
 results = []
 for be in BACKENDS:
     for arm in ("main", "control"):
-        r = run_arm(arm, be)
+        # Pre-registered 2026-10-31: control arm is exempt from the flip
+        # budget (tools.flip_rate_verdict.arm_flip_budget); only the main
+        # arm carries the budget under test.
+        r = run_arm(arm, be, flip_budget=arm_flip_budget(arm, FLIP_BUDGET))
         results.append(r)
         print("FLIPRATE: arm={arm} update_backend={ub} steps={steps} threshold={th} "
               "weights={w} noisy_rate={nr:.8g} clean_rate={cr:.8g} "
