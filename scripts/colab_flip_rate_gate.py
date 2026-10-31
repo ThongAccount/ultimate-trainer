@@ -322,6 +322,11 @@ def main():
     head = full_head
     if d not in sys.path:
         sys.path.insert(0, d)
+    # Prebuilt kernels from the kernels-latest release: skips on-VM nvcc JIT
+    # (free GPU minutes). Falls back to JIT on any failure. Must run before
+    # any load_inline so TORCH_EXTENSIONS_DIR is set for this process and children.
+    from tools.fetch_prebuilt import ensure_prebuilt
+    ensure_prebuilt(d)
     from tools.artefact_provenance import collect_provenance, mark_invalid, write_artefact
     # Collect provenance BEFORE flip_rate_driver.py is written into the repo
     # root (an untracked driver would flip git_dirty to true).

@@ -51,6 +51,16 @@ echo "---- deps ----"
 pip install -q ninja >/dev/null 2>&1 || pip install -q ninja
 pip install -q -r "${DEST}/requirements.txt" >/dev/null 2>&1 || pip install -q -r "${DEST}/requirements.txt"
 
+echo "---- prebuilt kernels (release tag kernels-latest, CI-built) ----"
+# Extract the CI-built extension cache so load_inline skips nvcc on the VM.
+# UT_PREBUILT=0 disables (JIT fallback). Any failure falls back to JIT.
+export TORCH_EXTENSIONS_DIR="${TORCH_EXTENSIONS_DIR:-$HOME/.cache/torch_extensions}"
+if [ "${UT_PREBUILT:-1}" = "1" ]; then
+  python3 "${DEST}/tools/fetch_prebuilt.py" --repo-dir "${DEST}" || echo "PREBUILT: JIT fallback"
+else
+  echo "PREBUILT: disabled (UT_PREBUILT=0)"
+fi
+
 echo "---- import smoke ----"
 cd "${DEST}"
 python3 - <<'EOF'

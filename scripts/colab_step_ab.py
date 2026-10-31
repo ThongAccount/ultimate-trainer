@@ -162,6 +162,11 @@ def main():
                           capture_output=True, text=True).stdout.strip()  # full 40-char
     if d not in sys.path:
         sys.path.insert(0, d)
+    # Prebuilt kernels from the kernels-latest release: skips on-VM nvcc JIT
+    # (free GPU minutes). Falls back to JIT on any failure. Must run before
+    # any child process triggers load_inline so they inherit TORCH_EXTENSIONS_DIR.
+    from tools.fetch_prebuilt import ensure_prebuilt
+    ensure_prebuilt(d)
     from tools.artefact_provenance import collect_provenance, mark_invalid, write_artefact
     # collect BEFORE step_ab_driver.py is written into the repo root (untracked
     # file would flip git_dirty)

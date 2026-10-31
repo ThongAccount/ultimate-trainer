@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Download the pre-built CUDA extension bundle (GitHub release tag
+`kernels-latest`, built by .github/workflows/build-kernels.yml) and extract
+it into TORCH_EXTENSIONS_DIR so every load_inline call finds a matching
+cached build and skips nvcc — on-VM JIT compilation was burning free Colab
+GPU minutes (2-5 min per extension per fresh VM).
+
+ABI contract (checked hard before extracting): the bundle's manifest must
+match the local torch version and the local extension tag pyXY_cuZZ. A
+commit mismatch is only a warning (doc-only pushes may post-date the
+bundle); the run's own --expect-commit guard pins the clone, and the P0
+flip-gate bit-reproduction is the end-to-end correctness check.
+
+Fallback semantics: ANY failure (no token, no release, sha256 mismatch, ABI
+mismatch, unsafe tar member) prints `PREBUILT: SKIP <reason>` and returns
+False — the caller falls back to on-VM JIT exactly as before. Never blocks
+a run unless --strict. Sets UT_PREBUILT=1/0 in the environment so artefact
+provenance records which path was taken.
+
+Usage:
+    python tools/fetch_prebuilt.py --repo-dir /content/ultimate-trainer
+    python tools/fetch_prebuilt.py --repo-dir . --tag kernels-latest --strict
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import urllib.request
+
+OWNER_REPO = "ThongAccount/ultimate-trainer"
+BUNDLE = "kernels-bundle.tar.gz"
+SHA_ASSET = BUNDLE + ".sha256"
+MANIFEST = "manifest.json"
+DEFAULT_TAG = "kernels-latest"
+
+
+def ext_root() -> str:
+    """TORCH_EXTENSIONS_DIR, defaulting (and exporting) the torch default."""
+    root = os.environ.get("TORCH_EXTENSIONS_DIR")
+    if not root:
+        root = os.path.join(os.path.expanduser("~"), ".cache", "torch_extensions")
+        os.environ["TORCH_EXTENSIONS_DIR"] = root
+    return root
+
+
+def local_tag() -> tuple[str, str]:
+    """(py_tag, torch_version) computed exactly like torch's cpp_extension."""
+    import torch  # local import: version read only, no extension builds here
+
+    tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+    cu = getattr(torch.version, "cuda", None)
+    if cu:
+        tag += "_cu" + cu.replace(".", "")
+    return tag, torch.__version__
+
+
+def _api(url: str, token: str, accept: str = "application/vnd.github+json"):
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": accept,
+        "User-Agent": "ut-fetch-prebuilt",
+    })
+    return urllib.request.urlopen(req, timeout=120)
+
+
+def _download(url: str, token: str, dest: str) -> None:
+    with _api(url, token, accept="application/octet-stream") as r, open(dest, "wb") as f:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+
+
+def _git_head(repo_dir: str) -> str:
+    try:
+        return subprocess.run(["git", "-C", repo_dir, "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False) -> bool:
+    """Fetch + verify + extract the bundle. Returns True iff prebuilt is active."""
+    os.environ.setdefault("UT_PREBUILT", "1")
+    root = ext_root()
+    if os.environ.get("UT_PREBUILT") == "0":
+        print("PREBUILT: SKIP disabled (UT_PREBUILT=0) — JIT fallback", flush=True)
+        return False
+    try:
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            raise RuntimeError("GITHUB_TOKEN not set")
+        local_py_tag, local_torch = local_tag()
+        rel = json.load(_api(
+            f"https://api.github.com/repos/{OWNER_REPO}/releases/tags/{tag}", token))
+        assets = {a["name"]: a for a in rel.get("assets", [])}
+        for name in (BUNDLE, SHA_ASSET, MANIFEST):
+            if name not in assets:
+                raise RuntimeError(f"release {tag} has no asset {name}")
+        manifest = json.load(_api(assets[MANIFEST]["url"], token))
+        if manifest.get("torch") != local_torch:
+            raise RuntimeError(
+                f"torch mismatch: bundle {manifest.get('torch')} != local {local_torch}")
+        if manifest.get("py_tag") != local_py_tag:
+            raise RuntimeError(
+                f"ext-tag mismatch: bundle {manifest.get('py_tag')} != local {local_py_tag}")
+        head = _git_head(repo_dir)
+        if head and manifest.get("commit") and head != manifest["commit"]:
+            print(f"PREBUILT: WARN bundle commit {manifest['commit'][:10]} != "
+                  f"clone HEAD {head[:10]} (doc-only drift; P0 gate is the check)",
+                  flush=True)
+
+        tmp = root + ".fetch-tmp"
+        os.makedirs(tmp, exist_ok=True)
+        bpath = os.path.join(tmp, BUNDLE)
+        spath = os.path.join(tmp, SHA_ASSET)
+        _download(assets[BUNDLE]["url"], token, bpath)
+        _download(assets[SHA_ASSET]["url"], token, spath)
+        want = open(spath).read().split()[0]
+        got = hashlib.sha256(open(bpath, "rb").read()).hexdigest()
+        if got != want:
+            raise RuntimeError(f"sha256 mismatch: {got} != {want}")
+
+        with tarfile.open(bpath, "r:gz") as tf:
+            for m in tf.getmembers():
+                parts = m.name.split("/")
+                if m.name.startswith("/") or ".." in parts:
+                    raise RuntimeError(f"unsafe tar member: {m.name}")
+            tf.extractall(root)
+
+        n_so = sum(f.endswith(".so") for _, _, files in os.walk(root) for f in files)
+        print(f"PREBUILT: OK tag={tag} commit={str(manifest.get('commit'))[:10]} "
+              f"torch={local_torch} ext_tag={local_py_tag} .so={n_so} -> {root}",
+              flush=True)
+        os.environ["UT_PREBUILT"] = "1"
+        shutil.rmtree(tmp, ignore_errors=True)
+        return True
+    except Exception as e:  # noqa: BLE001 — fallback, never block unless strict
+        print(f"PREBUILT: SKIP {e!r} — JIT fallback", flush=True)
+        os.environ["UT_PREBUILT"] = "0"
+        if strict:
+            raise
+        return False
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repo-dir", default=".")
+    ap.add_argument("--tag", default=os.environ.get("UT_KERNELS_TAG", DEFAULT_TAG))
+    ap.add_argument("--strict", action="store_true",
+                    help="fail instead of falling back to JIT")
+    args = ap.parse_args()
+    ok = ensure_prebuilt(args.repo_dir, tag=args.tag, strict=args.strict)
+    return 0 if ok or not args.strict else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

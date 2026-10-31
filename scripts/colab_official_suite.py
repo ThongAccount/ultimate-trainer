@@ -75,6 +75,11 @@ def main():
 
     if d not in sys.path:
         sys.path.insert(0, d)
+    # Prebuilt kernels from the kernels-latest release: skips on-VM nvcc JIT
+    # (free GPU minutes). Falls back to JIT on any failure. Must run before
+    # any phase child triggers load_inline so they inherit TORCH_EXTENSIONS_DIR.
+    from tools.fetch_prebuilt import ensure_prebuilt
+    ensure_prebuilt(d)
     from tools.stream_runner import run_streaming
     from tools.artefact_provenance import collect_provenance, mark_invalid, write_artefact
     # collect while the clone is still clean — phase drivers dirty the tree later

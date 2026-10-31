@@ -1,0 +1,65 @@
+name: build-kernels
+
+# Builds every load_inline CUDA extension on CI and publishes the torch
+# extension cache as a release asset (tag `kernels-latest`) so Colab T4 VMs
+# download prebuilt .so files instead of paying nvcc JIT time out of free GPU
+# session minutes. See docs/speedpass/2026-10-31-prebuilt-kernels.md.
+#
+# ABI contract: the container's toolchain must match the Colab VM exactly —
+# python 3.13, torch==2.11.0+cu130, CUDA 13.0 nvcc, TORCH_CUDA_ARCH_LIST=7.5
+# (set by kernels/common.py). The extension tag py313_cu130 must equal the
+# VM's; tools/fetch_prebuilt.py hard-fails the download on mismatch.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "kernels/**"
+      - "build_kernels.py"
+      - "tools/build_kernel_bundle.py"
+      - "tools/fetch_prebuilt.py"
+      - "requirements.txt"
+      - ".github/workflows/build-kernels.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write  # release asset upload
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:13.0.1-devel-ubuntu24.04  # nvcc 13.0, gcc, glibc for py3.13 wheels
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"  # must equal the Colab VM python (3.13.16)
+
+      - name: deps (torch cu130 + build tools)
+        run: |
+          df -h /
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir torch==2.11.0+cu130 \
+            --index-url https://download.pytorch.org/whl/cu130 \
+            --extra-index-url https://pypi.org/simple
+          pip install --no-cache-dir ninja numpy setuptools "triton>=3.0.0"
+          nvcc --version | tail -1
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
+
+      - name: build kernel bundle
+        run: python tools/build_kernel_bundle.py --out dist
+
+      - name: publish release assets (tag kernels-latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha256sum dist/kernels-bundle.tar.gz > dist/kernels-bundle.tar.gz.sha256
+          gh release view kernels-latest >/dev/null 2>&1 \
+            || gh release create kernels-latest --prerelease \
+                 --title "kernels-latest (auto-built)" \
+                 --notes "Auto-built load_inline extension bundle (py313_cu130, sm_75). Do not edit; overwritten by the build-kernels workflow."
+          gh release upload kernels-latest \
+            dist/kernels-bundle.tar.gz dist/kernels-bundle.tar.gz.sha256 dist/manifest.json \
+            --clobber
+          gh release view kernels-latest --json assets --jq '.assets[].name'
