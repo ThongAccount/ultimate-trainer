@@ -49,8 +49,12 @@ def _torch_info():
             gpu = {"name": torch.cuda.get_device_name(0), "capability": [maj, min_]}
     except Exception:
         gpu = None
-    return {"torch": torch.__version__,
-            "cuda": getattr(torch.version, "cuda", None), "gpu": gpu}
+    # getattr: a stubbed torch module in sys.modules (e.g. the minimal stub
+    # installed by tests/test_flip_budget_guards.py on torch-free CI boxes)
+    # has no __version__/version — provenance must degrade, not crash.
+    return {"torch": getattr(torch, "__version__", None),
+            "cuda": getattr(getattr(torch, "version", None), "cuda", None),
+            "gpu": gpu}
 
 
 def collect_provenance(repo_dir, extra_config: dict | None = None) -> dict:

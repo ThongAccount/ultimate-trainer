@@ -119,6 +119,12 @@ def _install_torch_stub():
 
     mod.empty = empty
     mod.zeros = zeros
+    # Real-torch attributes other modules probe (tools/artefact_provenance
+    # reads torch.__version__/torch.version.cuda and torch.cuda.*): give the
+    # stub the same surface so importing it never breaks unrelated modules.
+    mod.__version__ = "0.0.0+cpu-stub"
+    mod.version = types.SimpleNamespace(cuda=None)
+    mod.cuda = types.SimpleNamespace(is_available=lambda: False)
 
     library = types.ModuleType("torch.library")
 
