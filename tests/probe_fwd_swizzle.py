@@ -162,7 +162,10 @@ def main():
         return
 
     dev = "cuda"
-    from tests.bench_protocol import ab_median, report_line
+    # repo root has no tests/__init__.py, so `tests.` is a namespace package
+    # that a dist-packages regular `tests` package shadows — import the module
+    # directly (the script's own dir is on sys.path), like probe_fwd_spill.py.
+    from bench_protocol import ab_median, report_line
 
     print("building OLD (prod) ...", flush=True)
     old = build("fwd_swizzle_old", OLD_CU,

@@ -59,3 +59,29 @@ on the first shape for sigma_null. A variant counts as a win/loss only when
 `colab download` before `colab stop`. rc: 0 = all gates pass, 1 = a gate
 failed (valid result), 2 = commit-mismatch refusal (invalid; never commit
 rc=2 artefacts).
+
+## Addendum 2026-11-01 (run 1 → run 2; committed before the run-2 allocation)
+
+Run 1 (`ut-c13-probes`, tag `d1485f8d`) exposed three pre-existing plumbing
+bugs on master — none touched kernel code or any threshold:
+
+1. `tests/probe_fwd_swizzle.py` / `tests/probe_update_pipeline.py` imported
+   `tests.bench_protocol`, but the repo root has no `tests/__init__.py`, so a
+   dist-packages regular `tests` package shadows the namespace package →
+   ModuleNotFoundError. Fixed to import `bench_protocol` directly (script dir
+   is on sys.path), matching `probe_fwd_spill.py`. Steps did not measure.
+2. `colab_perfgate.py` called `co.update_tc_v2(W, C, X, dY, THRESHOLD)` without
+   `flip_count`, a mutated arg of the custom op → IndexError under no_grad
+   redispatch (torch 2.11). Fixed to pass `flip_count=zeros, flip_budget=0`,
+   matching the canonical call in `packed_linear.py`.
+3. `tests/test_dispatch_order.py` called the raw launcher with the pre-flip-
+   budget 5-arg signature → TypeError. Fixed to the 8-arg signature
+   `(W, counter, flip_count, X, dY, threshold, dead_zone, flip_budget)`.
+
+Run 1 valid results (kept, NOT re-measured — predictions unchanged):
+**fwdspill WIN** (bit-exact; fc1 −14.36%, fc2 −13.97%, head −7.00%, all above
+the max(2σ_null, 1%) bar) and **fwdwdedup LOSS** (bit-exact; +9.2/+10.4/+9.9%
+slower — W-dedup class falsified). Run 2 (`ut-c13-probes2`) re-runs smoke,
+pytest, fwdswizzle, uppipeline, perfgate_check, perfgate_regen with
+`--skip fwdspill,fwdwdedup`; the driver now counts only executed steps as
+gates.

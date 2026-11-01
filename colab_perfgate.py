@@ -117,6 +117,7 @@ def make_case(name: str, inn: int, out: int):
     W0 = torch.randint(0, 4, (out, (inn + 15) // 16), device=dev, dtype=torch.int32)
     W0 = torch.where(W0 == 3, 0, W0)  # ternary codes: no 3
     C0 = torch.zeros(out, inn, device=dev, dtype=torch.int16)
+    FC0 = torch.zeros(out, inn, device=dev, dtype=torch.int16)
 
     W = W0.clone()
     C = C0.clone()
@@ -140,10 +141,14 @@ def make_case(name: str, inn: int, out: int):
         prepare=None,          # dX is pure compute
     )
     cases["update"] = solo_median(
-        lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+        # flip_count is a mutated arg of the custom op (mutates_args) — it must
+        # be passed explicitly or the adinplaceorview redispatch crashes with
+        # IndexError under no_grad (torch 2.11).
+        lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD,
+                                flip_count=FC0, flip_budget=0),
         prepare=prep,          # W + counter state restored per trial
     )
-    del X, dY, W, C, W0, C0
+    del X, dY, W, C, W0, C0, FC0
     torch.cuda.empty_cache()
     return cases
 

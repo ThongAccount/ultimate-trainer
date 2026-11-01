@@ -93,8 +93,9 @@ def main():
     if not torch.cuda.is_available():
         raise SystemExit("CUDA required: this probe times the T4 update kernel")
 
-    from tests.bench_protocol import ab_median, report_line
-    from tests.probe_reference_gate import run_reference_gate
+    # `tests.` namespace-package shadowing — see probe_fwd_swizzle.py.
+    from bench_protocol import ab_median, report_line
+    from probe_reference_gate import run_reference_gate
 
     dev = "cuda"
     torch.manual_seed(0)

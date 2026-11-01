@@ -126,10 +126,11 @@ def main() -> int:
         ("uppipeline", "tests/probe_update_pipeline.py"),
         ("fwdwdedup", "tests/probe_fwd_wdedup.py"),
     ]
-    if "probes" not in skip:
-        for name, rel in probes:
-            rc, _ = step(name, [sys.executable, os.path.join(d, rel)])
-            results[name] = rc
+    for name, rel in probes:
+        if "probes" in skip or name in skip:
+            continue
+        rc, _ = step(name, [sys.executable, os.path.join(d, rel)])
+        results[name] = rc
 
     # ── 6-7. perf gate: check vs committed baseline, then regen ────────────
     if "perfgate" not in skip:
@@ -143,9 +144,9 @@ def main() -> int:
             "--update-baseline"])
         results["perfgate_regen"] = rc
 
-    gates = [results.get("smoke", 0), results.get("pytest", 0)] + \
-            [results[n] for n, _ in probes] + [results.get("perfgate_check", 0)]
-    ok = all(r == 0 for r in gates)
+    # only steps that actually ran this session count as gates
+    gates = [v for k, v in results.items() if k != "perfgate_regen"]
+    ok = all(r == 0 for r in gates) and len(gates) > 0
     verdict = "pass" if ok else "fail"
     print(f"PROBE_BATCH: {'PASS' if ok else 'FAIL'} results={results}", flush=True)
     return _finish(d, tag, head, transcript, results, verdict, provenance)

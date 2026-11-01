@@ -89,11 +89,14 @@ def test_small_then_large_dispatch_stays_64():
         N_out, B, N_in = shape
         W = pack_tensor(torch.zeros(N_out, N_in, device="cuda"))
         counter = torch.zeros(N_out, N_in, dtype=torch.int16, device="cuda")
+        flip_count = torch.zeros(N_out, N_in, dtype=torch.int16, device="cuda")
         X = torch.randn(B, N_in, device="cuda", dtype=torch.float16) * 0.1
         dY = torch.randn(B, N_out, device="cuda", dtype=torch.float16) * 0.1
         fn, name = pu._select_update_fn(B, N_out, N_in)
         assert name == expect_name, f"{shape}: expected {expect_name}, got {name}"
-        fn(W, counter, X, dY, 32)
+        # Raw launcher signature since the flip-budget change:
+        # (W, counter, flip_count, X, dY, threshold, dead_zone, flip_budget).
+        fn(W, counter, flip_count, X, dY, 32, 1e-3, 0)
         return W, counter
 
     # 1) small shape FIRST. With the %16 gate the 64x64 kernel is eligible at
