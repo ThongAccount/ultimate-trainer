@@ -61,6 +61,15 @@ jobs:
       - name: build kernel bundle
         run: python tools/build_kernel_bundle.py --out dist
 
+      - name: install gh CLI (absent in the CUDA container)
+        run: |
+          VER=$(python -c "import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/repos/cli/cli/releases/latest'))['tag_name'])")
+          echo "gh ${VER}"
+          curl -sL "https://github.com/cli/cli/releases/download/${VER}/gh_${VER#v}_linux_amd64.tar.gz" -o /tmp/gh.tgz
+          tar xzf /tmp/gh.tgz -C /tmp
+          ln -sf "/tmp/gh_${VER#v}_linux_amd64/bin/gh" /usr/local/bin/gh
+          gh --version | head -1
+
       - name: publish release assets (tag kernels-latest)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
