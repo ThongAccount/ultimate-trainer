@@ -107,11 +107,35 @@ def main() -> int:
     n = force_builds()
     dt = time.time() - t0
 
+    # Layout note: on a GPU-less runner torch 2.11 builds extensions FLAT
+    # under TORCH_EXTENSIONS_DIR (no py313_cu130 tag dir); on a GPU VM it may
+    # use the tagged layout. The bundle is packed AS BUILT; fetch_prebuilt.py
+    # probes the VM's real layout via torch's own _get_build_directory and
+    # places the extensions accordingly.
     tag = py_tag()
-    if not os.path.isdir(os.path.join(ext_root, tag)):
-        print(f"FATAL: expected extension tag dir {tag} under {ext_root}; "
-              f"found {os.listdir(ext_root) if os.path.isdir(ext_root) else 'none'}")
+    entries = os.listdir(ext_root) if os.path.isdir(ext_root) else []
+    layout = "tagged" if tag in entries else "flat"
+
+    # Production-critical extensions: every A/B arm + the flip-budget update
+    # path must have a built .so, otherwise the bundle is useless.
+    critical = {
+        "packed_ternary_forward_ext", "packed_ternary_tc_64_ext",
+        "packed_ternary_update_tc_v2_ext", "packed_ternary_update_cublas_ext",
+    }
+    missing = []
+    for ext in critical:
+        d = os.path.join(ext_root, tag, ext) if layout == "tagged" \
+            else os.path.join(ext_root, ext)
+        if not (os.path.isdir(d) and any(f.endswith(".so") for f in os.listdir(d))):
+            missing.append(ext)
+    if missing:
+        print(f"FATAL: critical extensions missing/incomplete: {missing}")
         return 1
+    n_so = sum(f.endswith(".so") for base in ([os.path.join(ext_root, tag)]
+                                              if layout == "tagged" else [ext_root])
+               for _, _, files in os.walk(base) for f in files)
+    print(f"layout={layout} ext_dirs={len(entries)} .so={n_so} "
+          f"loaders_ok={n} build_s={dt:.0f}", flush=True)
 
     commit = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"],
                             capture_output=True, text=True).stdout.strip()
@@ -139,6 +163,8 @@ def main() -> int:
         "nvcc": nvcc,
         "extensions_built": n,
         "build_seconds": round(dt, 1),
+        "layout": layout,
+        "so_count": n_so,
     }
     with open(os.path.join(args.out, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
@@ -146,7 +172,8 @@ def main() -> int:
     sha = hashlib.sha256(open(bundle, "rb").read()).hexdigest()
     size_mb = os.path.getsize(bundle) / 1e6
     print(f"BUNDLE: {bundle} sha256={sha} size={size_mb:.1f}MB exts={n} "
-          f"build_s={dt:.0f} py_tag={tag} commit={commit[:10]}", flush=True)
+          f"so={n_so} build_s={dt:.0f} layout={layout} commit={commit[:10]}",
+          flush=True)
     shutil.rmtree(work, ignore_errors=True)
     return 0
 

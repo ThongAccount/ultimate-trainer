@@ -48,6 +48,16 @@ jobs:
           nvcc --version | tail -1
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
 
+      - name: expose CUDA headers to host c++ compiles (CPATH self-heal)
+        run: |
+          ls -l /usr/local/cuda/include/cuda_runtime.h 2>/dev/null \
+            || echo "note: cuda_runtime.h not at /usr/local/cuda/include"
+          HDR=$(dirname "$(find /usr/local/cuda* -name cuda_runtime.h 2>/dev/null | head -1)")
+          echo "cuda header dir: ${HDR:-NONE}"
+          if [ -n "$HDR" ]; then
+            echo "CPATH=$HDR${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
+          fi
+
       - name: build kernel bundle
         run: python tools/build_kernel_bundle.py --out dist
 

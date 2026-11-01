@@ -49,14 +49,27 @@ def ext_root() -> str:
     return root
 
 
-def local_tag() -> tuple[str, str]:
-    """(py_tag, torch_version) computed exactly like torch's cpp_extension."""
+def local_layout() -> tuple[str | None, str]:
+    """(tag_dir_or_None, torch_version) using torch's own build-dir logic.
+
+    torch 2.11 builds extensions FLAT under TORCH_EXTENSIONS_DIR when no GPU
+    is present and under a pyXY_cuZZ tag dir when one is; probing
+    _get_build_directory on the VM gives the exact layout load_inline will
+    use there, so the bundle can be placed correctly regardless.
+    """
     import torch  # local import: version read only, no extension builds here
 
-    tag = f"py{sys.version_info.major}{sys.version_info.minor}"
-    cu = getattr(torch.version, "cuda", None)
-    if cu:
-        tag += "_cu" + cu.replace(".", "")
+    try:
+        from torch.utils.cpp_extension import _get_build_directory
+        probe = _get_build_directory("ut_prebuilt_probe", False)
+        parent = os.path.dirname(os.path.abspath(probe))
+        root = os.path.abspath(ext_root())
+        tag = os.path.basename(parent) if parent != root else None
+    except Exception:  # noqa: BLE001 — fall back to the version-based guess
+        tag = f"py{sys.version_info.major}{sys.version_info.minor}"
+        cu = getattr(torch.version, "cuda", None)
+        if cu:
+            tag += "_cu" + cu.replace(".", "")
     return tag, torch.__version__
 
 
@@ -97,7 +110,7 @@ def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False)
         token = os.environ.get("GITHUB_TOKEN", "")
         if not token:
             raise RuntimeError("GITHUB_TOKEN not set")
-        local_py_tag, local_torch = local_tag()
+        local_tag, local_torch = local_layout()
         rel = json.load(_api(
             f"https://api.github.com/repos/{OWNER_REPO}/releases/tags/{tag}", token))
         assets = {a["name"]: a for a in rel.get("assets", [])}
@@ -108,9 +121,6 @@ def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False)
         if manifest.get("torch") != local_torch:
             raise RuntimeError(
                 f"torch mismatch: bundle {manifest.get('torch')} != local {local_torch}")
-        if manifest.get("py_tag") != local_py_tag:
-            raise RuntimeError(
-                f"ext-tag mismatch: bundle {manifest.get('py_tag')} != local {local_py_tag}")
         head = _git_head(repo_dir)
         if head and manifest.get("commit") and head != manifest["commit"]:
             print(f"PREBUILT: WARN bundle commit {manifest['commit'][:10]} != "
@@ -128,17 +138,31 @@ def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False)
         if got != want:
             raise RuntimeError(f"sha256 mismatch: {got} != {want}")
 
+        # Place extensions where THIS torch will look: if the local layout is
+        # tagged (pyXY_cuZZ/) but the CI bundle is flat, move the extracted
+        # extension dirs under the tag dir.
         with tarfile.open(bpath, "r:gz") as tf:
-            for m in tf.getmembers():
+            members = tf.getmembers()
+            for m in members:
                 parts = m.name.split("/")
                 if m.name.startswith("/") or ".." in parts:
                     raise RuntimeError(f"unsafe tar member: {m.name}")
-            tf.extractall(root)
+            tf.extractall(tmp)
+        dest = os.path.join(root, local_tag) if local_tag else root
+        os.makedirs(dest, exist_ok=True)
+        moved = 0
+        for entry in os.listdir(tmp):
+            if entry in (BUNDLE, SHA_ASSET):
+                continue
+            os.rename(os.path.join(tmp, entry), os.path.join(dest, entry))
+            moved += 1
 
-        n_so = sum(f.endswith(".so") for _, _, files in os.walk(root) for f in files)
-        print(f"PREBUILT: OK tag={tag} commit={str(manifest.get('commit'))[:10]} "
-              f"torch={local_torch} ext_tag={local_py_tag} .so={n_so} -> {root}",
-              flush=True)
+        n_so = sum(f.endswith(".so") for _, _, files in os.walk(dest) for f in files)
+        if n_so < 10:
+            raise RuntimeError(f"only {n_so} .so files landed under {dest}")
+        print(f"PREBUILT: OK release={tag} commit={str(manifest.get('commit'))[:10]} "
+              f"torch={local_torch} layout_tag={local_tag or 'flat'} "
+              f"exts={moved} .so={n_so} -> {dest}", flush=True)
         os.environ["UT_PREBUILT"] = "1"
         shutil.rmtree(tmp, ignore_errors=True)
         return True
