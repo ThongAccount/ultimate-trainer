@@ -39,11 +39,12 @@ jobs:
       - name: deps (torch cu130 + build tools)
         run: |
           df -h /
+          # bare `pip` is NOT on PATH in container jobs — always `python -m pip`
           python -m pip install --upgrade pip
-          pip install --no-cache-dir torch==2.11.0+cu130 \
+          python -m pip install --no-cache-dir torch==2.11.0+cu130 \
             --index-url https://download.pytorch.org/whl/cu130 \
             --extra-index-url https://pypi.org/simple
-          pip install --no-cache-dir ninja numpy setuptools "triton>=3.0.0"
+          python -m pip install --no-cache-dir ninja numpy setuptools "triton>=3.0.0"
           nvcc --version | tail -1
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
 
