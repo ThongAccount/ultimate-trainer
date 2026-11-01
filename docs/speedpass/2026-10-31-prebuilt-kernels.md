@@ -4,8 +4,12 @@ Problem: every `load_inline` kernel compiled with nvcc on the Colab VM at run
 start, costing 2-5 min of free T4 session time per extension per fresh VM.
 Fix: GitHub Actions builds the whole torch extension cache once per kernel
 change and publishes it as a release asset; the VM downloads and extracts it,
-and `load_inline` then finds a matching cached build (same `version` hash)
-and skips nvcc entirely.
+and `load_inline` then skips nvcc entirely. The cache hit is ninja
+mtime-based in torch 2.11: `load_inline` rewrites main.cpp/cuda.cu only when
+their content changes (`_maybe_write`), so with the bundle extracted and the
+.so files touched newer than the sources, `ninja` reports "no work to do"
+and the prebuilt .so is dlopened (the bundle MUST therefore include the .o
+and .ninja_deps files — without them ninja recompiles everything).
 
 ## Pipeline
 
@@ -20,11 +24,14 @@ and skips nvcc entirely.
   No GPU is needed to compile.
 - `tools/build_kernel_bundle.py` imports the full production kernel surface
   and forces every lazy `_load*`/`_ensure_loaded`, building all extensions
-  into a scratch `TORCH_EXTENSIONS_DIR`, then tars it (minus `.o/.ptx/.cubin`
-  intermediates) to `dist/kernels-bundle.tar.gz` + `manifest.json`
+  into a scratch `TORCH_EXTENSIONS_DIR`, then tars it (minus .ptx/.cubin
+  intermediates only — .o/.ninja_deps/.ninja_log must ship, see above) to
+  `dist/kernels-bundle.tar.gz` + `manifest.json`
   (commit, torch, cuda, python, py_tag, nvcc, ext count).
 - Assets `kernels-bundle.tar.gz`, `.sha256`, `manifest.json` are uploaded
-  with `--clobber` to release tag **`kernels-latest`** (prerelease).
+  (clobber same-name assets) to release tag **`kernels-latest`** (prerelease)
+  by `tools/publish_bundle.py` (stdlib only — the CUDA container has no
+  curl/gh).
 
 ## VM side
 
