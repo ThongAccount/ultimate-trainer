@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 
 OWNER_REPO = "ThongAccount/ultimate-trainer"
@@ -176,6 +177,13 @@ def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False)
         n_so = sum(f.endswith(".so") for _, _, files in os.walk(dest) for f in files)
         if n_so < 10:
             raise RuntimeError(f"only {n_so} .so files landed under {dest}")
+        # Guarantee ninja sees every .so as newer than the sources (the cache
+        # hit is mtime-based in torch 2.11), regardless of tar mtime quirks.
+        now = time.time()
+        for dirpath, _, files in os.walk(dest):
+            for f in files:
+                if f.endswith(".so"):
+                    os.utime(os.path.join(dirpath, f), (now, now))
         with open(marker, "w") as f:
             f.write(f"{tag} {manifest.get('commit', '?')} torch={local_torch}\n")
         print(f"PREBUILT: OK release={tag} commit={str(manifest.get('commit'))[:10]} "

@@ -55,8 +55,12 @@ KERNEL_MODULES = [
     "kernels.packed_ternary.cublas_backend",
 ]
 
-# Intermediates that slim the bundle but are never needed to *load* a build.
-_EXCLUDE_SUFFIXES = (".o", ".ptx", ".cubin", ".fatbin", ".ninja_deps", ".ninja_log")
+# NOTE: do NOT exclude .o/.ninja_deps/.ninja_log — torch 2.11's cross-process
+# cache hit is ninja mtime-based (sources are only rewritten when changed via
+# _maybe_write, then ninja sees .so newer than .o newer than sources and does
+# nothing). Missing .o files force a full nvcc recompile on the VM.
+# Only exclude non-ninja-tracked PTX intermediates.
+_EXCLUDE_SUFFIXES = (".ptx", ".cubin", ".fatbin")
 
 
 def force_builds() -> int:
