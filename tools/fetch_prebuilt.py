@@ -106,6 +106,15 @@ def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False)
     if os.environ.get("UT_PREBUILT") == "0":
         print("PREBUILT: SKIP disabled (UT_PREBUILT=0) — JIT fallback", flush=True)
         return False
+    # Idempotency: a previous process on this VM already extracted the bundle
+    # (child drivers re-run ensure_prebuilt after the parent). Marker file
+    # records release tag + manifest commit; hit -> no re-download.
+    marker = os.path.join(root, f".ut-prebuilt-{tag}")
+    if os.path.isfile(marker):
+        print(f"PREBUILT: OK (cached) marker={open(marker).read().strip()} -> {root}",
+              flush=True)
+        os.environ["UT_PREBUILT"] = "1"
+        return True
     try:
         token = os.environ.get("GITHUB_TOKEN", "")
         if not token:
@@ -158,12 +167,17 @@ def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False)
         for entry in os.listdir(tmp):
             if entry in (BUNDLE, SHA_ASSET):
                 continue
-            os.rename(os.path.join(tmp, entry), os.path.join(dest, entry))
+            target = os.path.join(dest, entry)
+            if os.path.exists(target):  # already extracted by an earlier process
+                continue
+            os.rename(os.path.join(tmp, entry), target)
             moved += 1
 
         n_so = sum(f.endswith(".so") for _, _, files in os.walk(dest) for f in files)
         if n_so < 10:
             raise RuntimeError(f"only {n_so} .so files landed under {dest}")
+        with open(marker, "w") as f:
+            f.write(f"{tag} {manifest.get('commit', '?')} torch={local_torch}\n")
         print(f"PREBUILT: OK release={tag} commit={str(manifest.get('commit'))[:10]} "
               f"torch={local_torch} layout_tag={local_tag or 'flat'} "
               f"exts={moved} .so={n_so} -> {dest}", flush=True)
