@@ -117,7 +117,11 @@ def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False)
         for name in (BUNDLE, SHA_ASSET, MANIFEST):
             if name not in assets:
                 raise RuntimeError(f"release {tag} has no asset {name}")
-        manifest = json.load(_api(assets[MANIFEST]["url"], token))
+        # NB: asset API urls need Accept: application/octet-stream for the raw
+        # file; the default +json accept returns asset METADATA (no "torch").
+        with _api(assets[MANIFEST]["url"], token,
+                  accept="application/octet-stream") as r:
+            manifest = json.load(r)
         if manifest.get("torch") != local_torch:
             raise RuntimeError(
                 f"torch mismatch: bundle {manifest.get('torch')} != local {local_torch}")
