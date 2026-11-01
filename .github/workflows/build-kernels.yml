@@ -18,6 +18,7 @@ on:
       - "build_kernels.py"
       - "tools/build_kernel_bundle.py"
       - "tools/fetch_prebuilt.py"
+      - "tools/publish_bundle.py"
       - "requirements.txt"
       - ".github/workflows/build-kernels.yml"
   workflow_dispatch:
@@ -61,25 +62,7 @@ jobs:
       - name: build kernel bundle
         run: python tools/build_kernel_bundle.py --out dist
 
-      - name: install gh CLI (absent in the CUDA container)
-        run: |
-          VER=$(python -c "import json,urllib.request; print(json.load(urllib.request.urlopen('https://api.github.com/repos/cli/cli/releases/latest'))['tag_name'])")
-          echo "gh ${VER}"
-          curl -sL "https://github.com/cli/cli/releases/download/${VER}/gh_${VER#v}_linux_amd64.tar.gz" -o /tmp/gh.tgz
-          tar xzf /tmp/gh.tgz -C /tmp
-          ln -sf "/tmp/gh_${VER#v}_linux_amd64/bin/gh" /usr/local/bin/gh
-          gh --version | head -1
-
-      - name: publish release assets (tag kernels-latest)
+      - name: publish release assets (tag kernels-latest, stdlib python — no curl/gh in container)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          sha256sum dist/kernels-bundle.tar.gz > dist/kernels-bundle.tar.gz.sha256
-          gh release view kernels-latest >/dev/null 2>&1 \
-            || gh release create kernels-latest --prerelease \
-                 --title "kernels-latest (auto-built)" \
-                 --notes "Auto-built load_inline extension bundle (py313_cu130, sm_75). Do not edit; overwritten by the build-kernels workflow."
-          gh release upload kernels-latest \
-            dist/kernels-bundle.tar.gz dist/kernels-bundle.tar.gz.sha256 dist/manifest.json \
-            --clobber
-          gh release view kernels-latest --json assets --jq '.assets[].name'
+        run: python tools/publish_bundle.py dist
