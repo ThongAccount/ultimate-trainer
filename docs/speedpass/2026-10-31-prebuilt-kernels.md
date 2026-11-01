@@ -67,3 +67,25 @@ The 300-step production run's P0 phase (synthetic flip gate at B=5) must
 bit-reproduce the JIT-built B05x/B05prod values (V 0.00494, M 0.0294,
 C 1.035) — that is the proof the prebuilt .so files are equivalent to the
 on-VM JIT builds.
+
+**Validated 2026-11-01**: fresh-T4 smoke (`ut-prebuilt-smoke`, clone
+53ad0e1, bundle @ 268907b) ran the 20-step flip gate with
+`PREBUILT: OK ... .so=23` and artefact provenance `UT_PREBUILT=1` — whole
+run wall ~11 min including VM boot/clone/download vs ~15 min of pure nvcc
+JIT in the earlier smoke, i.e. zero on-VM compilation. Artefacts:
+`results/flip_rate_gate.smoke-prebuilt.{json,log}`. The 300-step production
+run @ a7fa910c6f (B05prod300) additionally bit-reproduced every JIT-built
+gate value (V 0.0049401, M 0.0294108, C 1.03524) — though its kernels were
+VM-JIT-built (first bundle lacked .o files; fixed in 268907b).
+
+## CI gotchas hit on 2026-10-31 (do not regress)
+
+- Container jobs have no bare `pip`/`curl`/`gh` on PATH — use `python -m pip`
+  and `tools/publish_bundle.py` (stdlib urllib) for the release upload.
+- The CUDA 13 image keeps headers at
+  `/usr/local/cuda-13.0/targets/x86_64-linux/include`, not
+  `/usr/local/cuda/include` — the workflow exports CPATH from a `find` probe.
+- The CUDA container has no `git` binary — the builder reads `GITHUB_SHA`.
+- torch 2.11 GPU-less builds go FLAT under TORCH_EXTENSIONS_DIR; the VM
+  layout is probed at runtime via `_get_build_directory` and the bundle is
+  placed accordingly.

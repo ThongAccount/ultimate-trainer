@@ -1,0 +1,68 @@
+{
+  "backends": "custom,cublas",
+  "commit": "53ad0e108c1e47be513c613f38516cee27436511",
+  "dead_zone": 0.0,
+  "flip_budget": 5,
+  "lines": [
+    "FLIPRATE: arm=main update_backend=custom steps=20 threshold=32 weights=262144 noisy_rate=0 clean_rate=0 resid_noisy=1.71076e-06 resid_clean=1.71076e-06",
+    "FLIPRATE: arm=control update_backend=custom steps=20 threshold=32 weights=262144 noisy_rate=0 clean_rate=0 resid_noisy=1.71076e-06 resid_clean=1.71076e-06",
+    "FLIPRATE: arm=main update_backend=cublas steps=20 threshold=32 weights=262144 noisy_rate=0 clean_rate=0 resid_noisy=1.71076e-06 resid_clean=1.71076e-06",
+    "FLIPRATE: arm=control update_backend=cublas steps=20 threshold=32 weights=262144 noisy_rate=0 clean_rate=0 resid_noisy=1.71076e-06 resid_clean=1.71076e-06",
+    "FLIPRATE_CHECK: update_backend=custom V_non_vacuity ok=False value=0 threshold=0.000244141 detail=main noisy-window flip rate 0 (>= 0.000244141 = 0.25/T^2, T=32)",
+    "FLIPRATE_CHECK: update_backend=custom M_decay_when_noise_removed ok=True value=0 threshold=0.1 detail=main clean/noisy flip-rate ratio 0 (<= 0.1)",
+    "FLIPRATE_CHECK: update_backend=custom C_control_sustains_flips ok=False value=0 threshold=0.5 detail=control late/early flip-rate ratio 0 (>= 0.5)",
+    "FLIPRATE_VERDICT: update_backend=custom passed=False",
+    "FLIPRATE: arm=main_base update_backend=custom steps=20 threshold=32 weights=262144 noisy_rate=0 clean_rate=0 resid_noisy=1.71076e-06 resid_clean=1.71076e-06",
+    "FLIPRATE_CHECK: update_backend=custom F0_non_vacuity ok=False value=0 threshold=> 0 detail=budget non-vacuity: main_noisy=0, main_clean_no_budget=0 (both > 0)",
+    "FLIPRATE_CHECK: update_backend=custom F1_budget_reduces_flips ok=True value=0 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0 (<= 0.5)",
+    "FLIPRATE_CHECK: update_backend=custom F2_budgeted_meets_decay ok=True value=0 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0 (<= 0.1)",
+    "FLIPRATE_BUDGET_VERDICT: update_backend=custom flip_budget=5 passed=False",
+    "FLIPRATE_CHECK: update_backend=cublas V_non_vacuity ok=False value=0 threshold=0.000244141 detail=main noisy-window flip rate 0 (>= 0.000244141 = 0.25/T^2, T=32)",
+    "FLIPRATE_CHECK: update_backend=cublas M_decay_when_noise_removed ok=True value=0 threshold=0.1 detail=main clean/noisy flip-rate ratio 0 (<= 0.1)",
+    "FLIPRATE_CHECK: update_backend=cublas C_control_sustains_flips ok=False value=0 threshold=0.5 detail=control late/early flip-rate ratio 0 (>= 0.5)",
+    "FLIPRATE_VERDICT: update_backend=cublas passed=False",
+    "FLIPRATE: arm=main_base update_backend=cublas steps=20 threshold=32 weights=262144 noisy_rate=0 clean_rate=0 resid_noisy=1.71076e-06 resid_clean=1.71076e-06",
+    "FLIPRATE_CHECK: update_backend=cublas F0_non_vacuity ok=False value=0 threshold=> 0 detail=budget non-vacuity: main_noisy=0, main_clean_no_budget=0 (both > 0)",
+    "FLIPRATE_CHECK: update_backend=cublas F1_budget_reduces_flips ok=True value=0 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0 (<= 0.5)",
+    "FLIPRATE_CHECK: update_backend=cublas F2_budgeted_meets_decay ok=True value=0 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0 (<= 0.1)",
+    "FLIPRATE_BUDGET_VERDICT: update_backend=cublas flip_budget=5 passed=False",
+    "FLIPRATE_GATE: FAIL (shipped backend = cublas)",
+    "FLIPRATE_GATE: SMOKE (criteria not evaluated)"
+  ],
+  "provenance": {
+    "branch": "master",
+    "commit": "53ad0e108c1e47be513c613f38516cee27436511",
+    "config": {
+      "backends": "custom,cublas",
+      "dead_zone": 0.0,
+      "expect_commit": "53ad0e108c1e47be513c613f38516cee27436511",
+      "flip_budget": 5,
+      "smoke": true,
+      "steps": 20,
+      "threshold": 32
+    },
+    "cuda": "13.0",
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null,
+      "TORCH_EXTENSIONS_DIR": "/root/.cache/torch_extensions",
+      "UT_PREBUILT": "1"
+    },
+    "git_dirty": false,
+    "gpu": {
+      "capability": [
+        7,
+        5
+      ],
+      "name": "Tesla T4"
+    },
+    "python": "3.13.16",
+    "schema_version": 2,
+    "timestamp_utc": "2026-11-01T03:02:12+00:00",
+    "torch": "2.11.0+cu130"
+  },
+  "rc": 0,
+  "steps": 20,
+  "threshold": 32
+}
