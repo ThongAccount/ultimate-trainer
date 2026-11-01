@@ -85,3 +85,30 @@ slower — W-dedup class falsified). Run 2 (`ut-c13-probes2`) re-runs smoke,
 pytest, fwdswizzle, uppipeline, perfgate_check, perfgate_regen with
 `--skip fwdspill,fwdwdedup`; the driver now counts only executed steps as
 gates.
+
+## Addendum 2026-11-01 (run 2 results, committed before the run-3 allocation)
+
+Run 2 (`ut-c13-probes2`, tag `ff7d76cc`): smoke PASS, **pytest PASS
+(102 passed)** after the dispatch-test signature fix.
+
+- **fwdswizzle: not measured** — probe compile bug: its generated C++ wrapper
+  was named identically to the `extern "C"` launcher, making `&fn` ambiguous
+  ("unresolved overloaded function type"). Fixed by renaming wrappers to
+  `{fn}_py`; call sites unchanged.
+- **uppipeline: pre-registered gate FAIL (valid negative)** — the double-
+  buffer variant fails the reference-transition gate (counter got=1 want=0 at
+  4 probed positions: the variant drops the dead_zone semantics). Not a
+  timing result: the ±2% falsifier is only reached after a bit-exact gate
+  passes. The pipelining class is therefore NOT formally closed, but this
+  variant is not shippable.
+- **perfgate: two pre-existing bugs, both fixed** — (a) `co.forward_tc` is the
+  32×32 kernel for every shape, while the model runs tc_64 at all production
+  dims, so perfgate's fwd lines showed a bogus +180–192% "FAIL" vs the
+  tc_64-derived baseline; fwd now goes through the production dispatch
+  `_forward_auto`. (b) `bench_step` built x/y as [B, SEQ] but
+  `train_step_cudagraph` expects [B, SEQ−1] / [B, SEQ] (it slices y[:, 1:])
+  → ValueError 16384 vs 16352. The committed baseline is provisional
+  schema-1; run 3's `--update-baseline` replaces it with 10-trial numbers.
+
+Run 3 (`ut-c13-probes3`) runs smoke, pytest, fwdswizzle, perfgate_check,
+perfgate_regen with `--skip fwdspill,fwdwdedup,uppipeline`.

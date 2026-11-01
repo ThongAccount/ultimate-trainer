@@ -52,7 +52,7 @@ def build(name, cu_path, funcs):
     )
     wraps = "\n".join(
         f"""
-        torch::Tensor {fn}(torch::Tensor W, torch::Tensor X) {{
+        torch::Tensor {fn}_py(torch::Tensor W, torch::Tensor X) {{
             auto Y = torch::empty({{X.size(0), W.size(0)}}, torch::dtype(torch::kFloat16).device(X.device()));
             {fn}(
                 reinterpret_cast<const uint32_t*>(W.data_ptr<int32_t>()),
@@ -62,7 +62,10 @@ def build(name, cu_path, funcs):
         }}"""
         for fn in funcs
     )
-    binds = "\n".join(f'        m.def("{fn}", &{fn});' for fn in funcs)
+    # Bind the WRAPPER, not the raw launcher: a wrapper named {fn} would
+    # overload the extern "C" launcher and make &{fn} ambiguous (unresolved
+    # overloaded function type, run ut-c13-probes2).
+    binds = "\n".join(f'        m.def("{fn}", &{fn}_py);' for fn in funcs)
 
     from torch.utils.cpp_extension import load_inline
 
