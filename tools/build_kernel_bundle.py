@@ -137,8 +137,15 @@ def main() -> int:
     print(f"layout={layout} ext_dirs={len(entries)} .so={n_so} "
           f"loaders_ok={n} build_s={dt:.0f}", flush=True)
 
-    commit = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"],
-                            capture_output=True, text=True).stdout.strip()
+    # The CUDA container has no git binary (checkout used the REST API), so
+    # prefer the Actions-provided sha; fall back to git, then "unknown".
+    commit = os.environ.get("GITHUB_SHA", "")
+    if not commit:
+        try:
+            commit = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"],
+                                    capture_output=True, text=True).stdout.strip()
+        except FileNotFoundError:
+            commit = "unknown"
     nvcc = "n/a"
     if shutil.which("nvcc"):
         nvcc = subprocess.run(["nvcc", "--version"], capture_output=True,
