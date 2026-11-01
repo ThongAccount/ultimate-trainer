@@ -1,0 +1,14 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_swizzle.py
+rc=1
+coverage ok: M= 16384 N= 50272 tiles 256x786 (prod/A/B all bijective)
+coverage ok: M= 16384 N=  4096 tiles 256x64 (prod/A/B all bijective)
+coverage ok: M=   512 N=    64 tiles 8x1 (prod/A/B all bijective)
+COVERAGE PROOF PASSED (all (m,n) tiles computed exactly once, both formulations)
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_fwd_swizzle.py", line 241, in <module>
+    main()
+    ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_fwd_swizzle.py", line 165, in main
+    from tests.bench_protocol import ab_median, report_line
+ModuleNotFoundError: No module named 'tests.bench_protocol'

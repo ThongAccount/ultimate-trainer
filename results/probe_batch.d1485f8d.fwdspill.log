@@ -1,0 +1,17 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_spill.py
+rc=0
+building OLD (prod 16KB spill + CTA cooperative copy) ...
+built OLD ok
+building NEW (warp-private 4KB spill, dX pattern) ...
+built NEW ok
+
+name      in    out     old_err   new_err  old==new
+fc1     1024   4096   7.812e-03 7.812e-03      True
+fwdspill/fc1 A=   36.74ms B=   31.46ms delta=-14.36% (thresh 2.57%) -> WIN sigma_null=1.29%
+fc2     4096   1024   3.125e-02 3.125e-02      True
+fwdspill/fc2 A=   37.13ms B=   31.95ms delta=-13.97% (thresh 1.00%) -> WIN
+head    1024  50272   1.562e-02 1.562e-02      True
+fwdspill/head A=  438.91ms B=  408.18ms delta=-7.00% (thresh 1.00%) -> WIN
+
+RESULTS {"fc1": {"old_ms": 36.739, "new_ms": 31.462, "delta_pct": -14.362, "sigma_null_pct": 1.287}, "fc2": {"old_ms": 37.135, "new_ms": 31.946, "delta_pct": -13.973, "sigma_null_pct": null}, "head": {"old_ms": 438.906, "new_ms": 408.183, "delta_pct": -7.0, "sigma_null_pct": null}}

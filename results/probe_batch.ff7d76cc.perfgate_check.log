@@ -1,0 +1,41 @@
+commit=ff7d76cc4342bf2c883472af5cc6426fd7deb450
+cmd=/usr/bin/python3 /content/ultimate-trainer/colab_perfgate.py --branch feat/c13-probe-batch --repo-dir /content/ultimate-trainer --expect-commit ff7d76cc4342bf2c883472af5cc6426fd7deb450
+rc=1
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=ff7d76cc4342bf2c883472af5cc6426fd7deb450
+fc1/fwd: FAIL +180.21% vs baseline 32.20ms sigma_null=0.52%
+fc1/dx: FAIL +7.16% vs baseline 41.03ms
+fc1/update: FAIL +6.15% vs baseline 45.40ms
+fc2/fwd: FAIL +183.50% vs baseline 32.70ms
+fc2/dx: FAIL +8.56% vs baseline 41.03ms
+fc2/update: ok -2.50% vs baseline 47.16ms
+head/fwd: FAIL +191.81% vs baseline 401.40ms
+head/dx: FAIL +16.46% vs baseline 520.46ms
+head/update: FAIL +20.41% vs baseline 557.80ms
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/colab_perfgate.py", line 361, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 285, in main
+    step_ms, step_trials = bench_step(repo)
+                           ~~~~~~~~~~^^^^^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 179, in bench_step
+    step()
+    ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 174, in step
+    loss = tg.train_step_cudagraph(model, x, y, profile=False)
+  File "/content/ultimate-trainer/train_gigatoken.py", line 121, in train_step_cudagraph
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, VOCAB), y[:, 1:].contiguous().view(-1),
+        reduction='mean')
+  File "/usr/local/lib/python3.13/dist-packages/torch/nn/functional.py", line 3504, in cross_entropy
+    return torch._C._nn.cross_entropy_loss(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        input,
+        ^^^^^^
+    ...<5 lines>...
+        label_smoothing,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+ValueError: Expected input batch_size (16384) to match target batch_size (16352).

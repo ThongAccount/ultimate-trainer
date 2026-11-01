@@ -1,0 +1,43 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+cmd=/usr/bin/python3 /content/ultimate-trainer/colab_perfgate.py --branch feat/c13-probe-batch --repo-dir /content/ultimate-trainer --expect-commit d1485f8da2edbe2374f18d774be10f1e21d710cf
+rc=1
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/colab_perfgate.py", line 356, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 264, in main
+    cases = make_case(name, inn, out)
+  File "/content/ultimate-trainer/colab_perfgate.py", line 142, in make_case
+    cases["update"] = solo_median(
+                      ~~~~~~~~~~~^
+        lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        prepare=prep,          # W + counter state restored per trial
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/content/ultimate-trainer/tests/bench_protocol.py", line 153, in solo_median
+    run()
+    ~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 143, in <lambda>
+    lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+            ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/custom_ops.py", line 698, in __call__
+    return self._opoverload(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_ops.py", line 865, in __call__
+    return self._op(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/autograd.py", line 112, in autograd_impl
+    result = forward_no_grad(*args, Metadata(keyset, keyword_only_args))
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/autograd.py", line 41, in forward_no_grad
+    result = op.redispatch(keyset & _C._after_autograd_keyset, *args, **kwargs)
+  File "/usr/local/lib/python3.13/dist-packages/torch/_ops.py", line 872, in redispatch
+    return self._handle.redispatch_boxed(keyset, *args, **kwargs)  # type: ignore[return-value]
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/custom_ops.py", line 658, in adinplaceorview_impl
+    increment_version(args[idx])
+                      ~~~~^^^^^
+IndexError: tuple index out of range

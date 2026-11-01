@@ -1,0 +1,250 @@
+[colab] Creating session 'ut-c13-probes3'...
+[colab] Session READY (ut-c13-probes3). Executing scripts/colab_probe_batch.py...
+commit=ee9cefe60d029475c68bac5a43a6f4bb1d4eea29 branch=feat/c13-probe-batch tag=ee9cefe6
+PREBUILT: WARN bundle commit 268907bd85 != clone HEAD ee9cefe60d (doc-only drift; P0 gate is the check)
+PREBUILT: OK release=kernels-latest commit=268907bd85 torch=2.11.0+cu130 layout_tag=flat exts=26 .so=23 -> /root/.cache/torch_extensions
+=== STEP smoke: /usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_spill.py --probe fwdspill --skip-timing ===
+building OLD (prod 16KB spill + CTA cooperative copy) ...
+built OLD ok
+building NEW (warp-private 4KB spill, dX pattern) ...
+built NEW ok
+
+name      in    out     old_err   new_err  old==new
+fc1     1024   4096   7.812e-03 7.812e-03      True
+fc2     4096   1024   3.125e-02 3.125e-02      True
+head    1024  50272   1.562e-02 1.562e-02      True
+STEP_RC: smoke 0
+=== STEP pytest: /usr/bin/python3 -m pytest -q --tb=short tests/test_packed_linear.py tests/test_gemm_update.py tests/test_kernels.py tests/test_packed_ternary.py tests/test_gemm_fused.py tests/test_speedpass_kernels.py tests/test_update_dimensional_bug.py tests/test_update64_dimensional_bug.py tests/test_update_semantics.py tests/test_graph_replay_parity.py tests/test_dispatch_order.py tests/test_flip_rate_verdict.py ===
+........................................................................ [ 70%]
+..............................                                           [100%]
+102 passed in 234.73s (0:03:54)
+STEP_RC: pytest 0
+=== STEP fwdswizzle: /usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_swizzle.py ===
+coverage ok: M= 16384 N= 50272 tiles 256x786 (prod/A/B all bijective)
+coverage ok: M= 16384 N=  4096 tiles 256x64 (prod/A/B all bijective)
+coverage ok: M=   512 N=    64 tiles 8x1 (prod/A/B all bijective)
+COVERAGE PROOF PASSED (all (m,n) tiles computed exactly once, both formulations)
+building OLD (prod) ...
+building NEW (swizzle A + xpose B) ...
+built ok
+
+PARITY (must be torch.equal — bit-exact):
+  head  B=16384 K= 1024 N= 50272  swizzle=BIT-EXACT  xpose=BIT-EXACT
+  fc2   B=16384 K= 4096 N=  1024  swizzle=BIT-EXACT  xpose=BIT-EXACT
+  fc1   B=16384 K= 1024 N=  4096  swizzle=BIT-EXACT  xpose=BIT-EXACT
+  edge  B=  512 K= 64 N= 64  swizzle=BIT-EXACT  xpose=BIT-EXACT
+  edge  B=  100 K= 48 N= 80  swizzle=BIT-EXACT  xpose=BIT-EXACT
+  edge  B=    1 K= 16 N= 16  swizzle=BIT-EXACT  xpose=BIT-EXACT
+
+PARITY PASSED
+
+TIMING (ab_median: 10 trials, median, null arm on first shape):
+  head/swz A=  429.27ms B=  347.64ms delta=-19.02% (thresh 1.00%) -> WIN sigma_null=0.43%
+    (null arm: sigma_null=0.43%, decision threshold=1.00%)
+  head/xps A=  442.03ms B=  354.08ms delta=-19.90% (thresh 1.00%) -> WIN
+  fc2/swz A=   32.96ms B=   32.55ms delta=-1.25% (thresh 1.00%) -> WIN
+  fc2/xps A=   32.91ms B=   32.17ms delta=-2.26% (thresh 1.00%) -> WIN
+  fc1/swz A=   32.70ms B=   32.42ms delta=-0.84% (thresh 1.00%) -> NOISE
+  fc1/xps A=   32.52ms B=   32.13ms delta=-1.20% (thresh 1.00%) -> WIN
+
+Done. Ship whichever formulation wins with identical ptxas resources (see report: swizzle adds an integer divide in the CTA prologue; xpose is resource-identical by construction).
+STEP_RC: fwdswizzle 0
+=== STEP perfgate_check: /usr/bin/python3 /content/ultimate-trainer/colab_perfgate.py --branch feat/c13-probe-batch --repo-dir /content/ultimate-trainer --expect-commit ee9cefe60d029475c68bac5a43a6f4bb1d4eea29 ===
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=ee9cefe60d029475c68bac5a43a6f4bb1d4eea29
+fc1/fwd: FAIL +13.11% vs baseline 32.20ms sigma_null=1.06%
+fc1/dx: FAIL +11.21% vs baseline 41.03ms
+fc1/update: FAIL +11.30% vs baseline 45.40ms
+fc2/fwd: FAIL +13.57% vs baseline 32.70ms
+fc2/dx: FAIL +12.68% vs baseline 41.03ms
+fc2/update: FAIL +6.87% vs baseline 47.16ms
+head/fwd: FAIL +14.35% vs baseline 401.40ms
+head/dx: FAIL +15.49% vs baseline 520.46ms
+head/update: FAIL +17.42% vs baseline 557.80ms
+
+RESULTS JSON: {
+  "suite": "perfgate",
+  "commit": "ee9cefe60d029475c68bac5a43a6f4bb1d4eea29",
+  "provenance": {
+    "schema_version": 2,
+    "commit": "ee9cefe60d029475c68bac5a43a6f4bb1d4eea29",
+    "branch": "feat/c13-probe-batch",
+    "git_dirty": true,
+    "timestamp_utc": "2026-11-01T05:23:55+00:00",
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "gpu": {
+      "name": "Tesla T4",
+      "capability": [
+        7,
+        5
+      ]
+    },
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null,
+      "TORCH_EXTENSIONS_DIR": "/root/.cache/torch_extensions",
+      "UT_PREBUILT": "1"
+    },
+    "config": {
+      "batch": 16384,
+      "threshold": 32,
+      "shapes": [
+        "fc1",
+        "fc2",
+        "head"
+      ],
+      "kernels": [
+        "fwd",
+        "dx",
+        "update"
+      ],
+      "baseline": "tests/perf_baseline_t4.json",
+      "update_baseline": false,
+      "expect_commit": "ee9cefe60d029475c68bac5a43a6f4bb1d4eea29"
+    }
+  },
+  "branch": "feat/c13-probe-batch",
+  "gpu": "Tesla T4",
+  "pytorch": "2.11.0+cu130",
+  "baseline_status": "provisional",
+  "update_baseline": false,
+  "kernels": {
+    "fc1": {
+      "fwd_ms": 36.421,
+      "dx_ms": 45.628,
+      "update_ms": 50.532
+    },
+    "fc2": {
+      "fwd_ms": 37.137,
+      "dx_ms": 46.234,
+      "update_ms": 50.4
+    },
+    "head": {
+      "fwd_ms": 458.999,
+      "dx_ms": 601.068,
+      "update_ms": 654.978
+    }
+  },
+  "step_ms": 4893.371,
+  "deltas": [
+    "fc1/fwd: FAIL +13.11% vs baseline 32.20ms",
+    "fc1/dx: FAIL +11.21% vs baseline 41.03ms",
+    "fc1/update: FAIL +11.30% vs baseline 45.40ms",
+    "fc2/fwd: FAIL +13.57% vs baseline 32.70ms",
+    "fc2/dx: FAIL +12.68% vs baseline 41.03ms",
+    "fc2/update: FAIL +6.87% vs baseline 47.16ms",
+    "head/fwd: FAIL +14.35% vs baseline 401.40ms",
+    "head/dx: FAIL +15.49% vs baseline 520.46ms",
+    "head/update: FAIL +17.42% vs baseline 557.80ms"
+  ],
+  "any_fail": true,
+  "passed": false,
+  "returncode": 1,
+  "wall_s": 327.9
+}
+ARTEFACT: /content/ultimate-trainer/results/perfgate.json
+STEP_RC: perfgate_check 1
+=== STEP perfgate_regen: /usr/bin/python3 /content/ultimate-trainer/colab_perfgate.py --branch feat/c13-probe-batch --repo-dir /content/ultimate-trainer --expect-commit ee9cefe60d029475c68bac5a43a6f4bb1d4eea29 --update-baseline ===
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=ee9cefe60d029475c68bac5a43a6f4bb1d4eea29
+fc1/fwd: FAIL +24.93% vs baseline 32.20ms sigma_null=2.05%
+fc1/dx: FAIL +24.82% vs baseline 41.03ms
+fc1/update: FAIL +22.74% vs baseline 45.40ms
+fc2/fwd: FAIL +26.72% vs baseline 32.70ms
+fc2/dx: FAIL +23.51% vs baseline 41.03ms
+fc2/update: FAIL +16.37% vs baseline 47.16ms
+head/fwd: FAIL +24.52% vs baseline 401.40ms
+head/dx: FAIL +24.76% vs baseline 520.46ms
+head/update: FAIL +25.57% vs baseline 557.80ms
+baseline written: /content/ultimate-trainer/tests/perf_baseline_t4.json — INSPECT the deltas above, then commit if they look sane
+
+RESULTS JSON: {
+  "suite": "perfgate",
+  "commit": "ee9cefe60d029475c68bac5a43a6f4bb1d4eea29",
+  "provenance": {
+    "schema_version": 2,
+    "commit": "ee9cefe60d029475c68bac5a43a6f4bb1d4eea29",
+    "branch": "feat/c13-probe-batch",
+    "git_dirty": true,
+    "timestamp_utc": "2026-11-01T05:29:26+00:00",
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "gpu": {
+      "name": "Tesla T4",
+      "capability": [
+        7,
+        5
+      ]
+    },
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null,
+      "TORCH_EXTENSIONS_DIR": "/root/.cache/torch_extensions",
+      "UT_PREBUILT": "1"
+    },
+    "config": {
+      "batch": 16384,
+      "threshold": 32,
+      "shapes": [
+        "fc1",
+        "fc2",
+        "head"
+      ],
+      "kernels": [
+        "fwd",
+        "dx",
+        "update"
+      ],
+      "baseline": "tests/perf_baseline_t4.json",
+      "update_baseline": true,
+      "expect_commit": "ee9cefe60d029475c68bac5a43a6f4bb1d4eea29"
+    }
+  },
+  "branch": "feat/c13-probe-batch",
+  "gpu": "Tesla T4",
+  "pytorch": "2.11.0+cu130",
+  "baseline_status": "provisional",
+  "update_baseline": true,
+  "kernels": {
+    "fc1": {
+      "fwd_ms": 40.226,
+      "dx_ms": 51.214,
+      "update_ms": 55.724
+    },
+    "fc2": {
+      "fwd_ms": 41.437,
+      "dx_ms": 50.677,
+      "update_ms": 54.879
+    },
+    "head": {
+      "fwd_ms": 499.841,
+      "dx_ms": 649.306,
+      "update_ms": 700.429
+    }
+  },
+  "step_ms": 4810.507,
+  "deltas": [
+    "fc1/fwd: FAIL +24.93% vs baseline 32.20ms",
+    "fc1/dx: FAIL +24.82% vs baseline 41.03ms",
+    "fc1/update: FAIL +22.74% vs baseline 45.40ms",
+    "fc2/fwd: FAIL +26.72% vs baseline 32.70ms",
+    "fc2/dx: FAIL +23.51% vs baseline 41.03ms",
+    "fc2/update: FAIL +16.37% vs baseline 47.16ms",
+    "head/fwd: FAIL +24.52% vs baseline 401.40ms",
+    "head/dx: FAIL +24.76% vs baseline 520.46ms",
+    "head/update: FAIL +25.57% vs baseline 557.80ms"
+  ],
+  "any_fail": true,
+  "passed": false,
+  "returncode": 1,
+  "wall_s": 328.1
+}
+ARTEFACT: /content/ultimate-trainer/results/perfgate.json
+STEP_RC: perfgate_regen 1
+PROBE_BATCH: FAIL results={'smoke': 0, 'pytest': 0, 'fwdswizzle': 0, 'perfgate_check': 1, 'perfgate_regen': 1}
+ARTEFACT: /content/ultimate-trainer/results/probe_batch.ee9cefe6.json

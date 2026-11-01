@@ -1,0 +1,45 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+cmd=/usr/bin/python3 -m pytest -q --tb=short tests/test_packed_linear.py tests/test_gemm_update.py tests/test_kernels.py tests/test_packed_ternary.py tests/test_gemm_fused.py tests/test_speedpass_kernels.py tests/test_update_dimensional_bug.py tests/test_update64_dimensional_bug.py tests/test_update_semantics.py tests/test_graph_replay_parity.py tests/test_dispatch_order.py tests/test_flip_rate_verdict.py
+rc=1
+........................................................................ [ 70%]
+...........F..................                                           [100%]
+=================================== FAILURES ===================================
+___________________ test_small_then_large_dispatch_stays_64 ____________________
+tests/test_dispatch_order.py:116: in test_small_then_large_dispatch_stays_64
+    W, counter = run((64, 16384, 1024), "v2_64")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_dispatch_order.py:96: in run
+    fn(W, counter, X, dY, 32)
+E   TypeError: update_tc_v2(): incompatible function arguments. The following argument types are supported:
+E       1. (arg0: torch.Tensor, arg1: torch.Tensor, arg2: torch.Tensor, arg3: torch.Tensor, arg4: torch.Tensor, arg5: typing.SupportsInt, arg6: typing.SupportsFloat, arg7: typing.SupportsInt) -> None
+E   
+E   Invoked with: tensor([[0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           ...,
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0]], device='cuda:0', dtype=torch.int32), tensor([[0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           ...,
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0]], device='cuda:0', dtype=torch.int16), tensor([[ 0.0241,  0.0557, -0.0836,  ..., -0.0353,  0.0451,  0.2415],
+E           [ 0.0642, -0.0629, -0.0062,  ..., -0.1311, -0.1848,  0.0933],
+E           [-0.0717,  0.0477,  0.0815,  ...,  0.1558,  0.0027, -0.0226],
+E           ...,
+E           [-0.0098,  0.0944, -0.0345,  ...,  0.0228,  0.0389, -0.1149],
+E           [-0.0392, -0.0609, -0.0200,  ..., -0.0085,  0.0054, -0.0734],
+E           [ 0.1487, -0.0527,  0.1339,  ...,  0.0305, -0.0649, -0.0840]],
+E          device='cuda:0', dtype=torch.float16), tensor([[ 0.0006,  0.1246,  0.1082,  ...,  0.0887,  0.0431,  0.0637],
+E           [ 0.0524,  0.1038, -0.1292,  ..., -0.0605, -0.1804,  0.1320],
+E           [-0.0297, -0.0605, -0.1853,  ...,  0.1283,  0.0538,  0.0995],
+E           ...,
+E           [-0.0375, -0.0881, -0.0397,  ...,  0.1296,  0.1360, -0.1057],
+E           [-0.0527, -0.1378,  0.0610,  ..., -0.1429, -0.2229, -0.0703],
+E           [-0.2139,  0.0217,  0.0305,  ...,  0.1078,  0.0806,  0.1982]],
+E          device='cuda:0', dtype=torch.float16), 32
+=========================== short test summary info ============================
+FAILED tests/test_dispatch_order.py::test_small_then_large_dispatch_stays_64
+1 failed, 101 passed in 208.70s (0:03:28)

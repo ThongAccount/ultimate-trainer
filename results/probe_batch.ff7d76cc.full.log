@@ -1,0 +1,220 @@
+[colab] Creating session 'ut-c13-probes2'...
+[colab] Session READY (ut-c13-probes2). Executing scripts/colab_probe_batch.py...
+commit=ff7d76cc4342bf2c883472af5cc6426fd7deb450 branch=feat/c13-probe-batch tag=ff7d76cc
+PREBUILT: WARN bundle commit 268907bd85 != clone HEAD ff7d76cc43 (doc-only drift; P0 gate is the check)
+PREBUILT: OK release=kernels-latest commit=268907bd85 torch=2.11.0+cu130 layout_tag=flat exts=26 .so=23 -> /root/.cache/torch_extensions
+=== STEP smoke: /usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_spill.py --probe fwdspill --skip-timing ===
+building OLD (prod 16KB spill + CTA cooperative copy) ...
+built OLD ok
+building NEW (warp-private 4KB spill, dX pattern) ...
+built NEW ok
+
+name      in    out     old_err   new_err  old==new
+fc1     1024   4096   7.812e-03 7.812e-03      True
+fc2     4096   1024   3.125e-02 3.125e-02      True
+head    1024  50272   1.562e-02 1.562e-02      True
+STEP_RC: smoke 0
+=== STEP pytest: /usr/bin/python3 -m pytest -q --tb=short tests/test_packed_linear.py tests/test_gemm_update.py tests/test_kernels.py tests/test_packed_ternary.py tests/test_gemm_fused.py tests/test_speedpass_kernels.py tests/test_update_dimensional_bug.py tests/test_update64_dimensional_bug.py tests/test_update_semantics.py tests/test_graph_replay_parity.py tests/test_dispatch_order.py tests/test_flip_rate_verdict.py ===
+........................................................................ [ 70%]
+..............................                                           [100%]
+102 passed in 207.79s (0:03:27)
+STEP_RC: pytest 0
+=== STEP fwdswizzle: /usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_swizzle.py ===
+coverage ok: M= 16384 N= 50272 tiles 256x786 (prod/A/B all bijective)
+coverage ok: M= 16384 N=  4096 tiles 256x64 (prod/A/B all bijective)
+coverage ok: M=   512 N=    64 tiles 8x1 (prod/A/B all bijective)
+COVERAGE PROOF PASSED (all (m,n) tiles computed exactly once, both formulations)
+building OLD (prod) ...
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/dist-packages/torch/utils/cpp_extension.py", line 2774, in _run_ninja_build
+    subprocess.run(
+    ~~~~~~~~~~~~~~^
+        command,
+        ^^^^^^^^
+    ...<4 lines>...
+        check=True,
+        ^^^^^^^^^^^
+        env=env)
+        ^^^^^^^^
+  File "/usr/lib/python3.13/subprocess.py", line 578, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['ninja', '-v']' returned non-zero exit status 1.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_fwd_swizzle.py", line 244, in <module>
+    main()
+    ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_fwd_swizzle.py", line 171, in main
+    old = build("fwd_swizzle_old", OLD_CU,
+                ["launch_packed_ternary_forward_tc_64"])
+  File "/content/ultimate-trainer/tests/probe_fwd_swizzle.py", line 73, in build
+    lib = load_inline(
+        name=name,
+    ...<13 lines>...
+        extra_cuda_cflags=CUDA_CFLAGS,
+    )
+  File "/usr/local/lib/python3.13/dist-packages/torch/utils/cpp_extension.py", line 2174, in load_inline
+    return _jit_compile(
+        name,
+    ...<11 lines>...
+        is_standalone=False,
+        keep_intermediates=keep_intermediates)
+  File "/usr/local/lib/python3.13/dist-packages/torch/utils/cpp_extension.py", line 2268, in _jit_compile
+    _write_ninja_file_and_build_library(
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        name=name,
+        ^^^^^^^^^^
+    ...<9 lines>...
+        with_sycl=with_sycl,
+        ^^^^^^^^^^^^^^^^^^^^
+        is_standalone=is_standalone)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/utils/cpp_extension.py", line 2429, in _write_ninja_file_and_build_library
+    _run_ninja_build(
+    ~~~~~~~~~~~~~~~~^
+        build_directory,
+        ^^^^^^^^^^^^^^^^
+        verbose,
+        ^^^^^^^^
+        error_prefix=f"Error building extension '{name}'")
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/utils/cpp_extension.py", line 2791, in _run_ninja_build
+    raise RuntimeError(message) from e
+RuntimeError: Error building extension 'fwd_swizzle_old': [1/3] c++ -MMD -MF main.o.d -DTORCH_EXTENSION_NAME=fwd_swizzle_old -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.13/dist-packages/torch/include -isystem /usr/local/lib/python3.13/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.13 -fPIC -std=c++17 -c /root/.cache/torch_extensions/fwd_swizzle_old/main.cpp -o main.o 
+FAILED: [code=1] main.o 
+c++ -MMD -MF main.o.d -DTORCH_EXTENSION_NAME=fwd_swizzle_old -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.13/dist-packages/torch/include -isystem /usr/local/lib/python3.13/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.13 -fPIC -std=c++17 -c /root/.cache/torch_extensions/fwd_swizzle_old/main.cpp -o main.o 
+/root/.cache/torch_extensions/fwd_swizzle_old/main.cpp: In function ‘void pybind11_init_fwd_swizzle_old(pybind11::module_&)’:
+/root/.cache/torch_extensions/fwd_swizzle_old/main.cpp:22:22: error: no matching function for call to ‘pybind11::module_::def(const char [36], <unresolved overloaded function type>)’
+   22 |                 m.def("launch_packed_ternary_forward_tc_64", &launch_packed_ternary_forward_tc_64);
+      |                 ~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /usr/local/lib/python3.13/dist-packages/torch/include/torch/csrc/Exceptions.h:13,
+                 from /usr/local/lib/python3.13/dist-packages/torch/include/torch/csrc/api/include/torch/python.h:12,
+                 from /usr/local/lib/python3.13/dist-packages/torch/include/torch/extension.h:10,
+                 from /root/.cache/torch_extensions/fwd_swizzle_old/main.cpp:1:
+/usr/local/lib/python3.13/dist-packages/torch/include/pybind11/pybind11.h:1436:14: note: candidate: ‘template<class Func, class ... Extra> pybind11::module_& pybind11::module_::def(const char*, Func&&, const Extra& ...)’
+ 1436 |     module_ &def(const char *name_, Func &&f, const Extra &...extra) {
+      |              ^~~
+/usr/local/lib/python3.13/dist-packages/torch/include/pybind11/pybind11.h:1436:14: note:   template argument deduction/substitution failed:
+/root/.cache/torch_extensions/fwd_swizzle_old/main.cpp:22:22: note:   couldn’t deduce template parameter ‘Func’
+   22 |                 m.def("launch_packed_ternary_forward_tc_64", &launch_packed_ternary_forward_tc_64);
+      |                 ~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[2/3] /usr/local/cuda/bin/nvcc -MD -MF cuda.cuda.o.d -DTORCH_EXTENSION_NAME=fwd_swizzle_old -DTORCH_API_INCLUDE_EXTENSION_H -isystem /usr/local/lib/python3.13/dist-packages/torch/include -isystem /usr/local/lib/python3.13/dist-packages/torch/include/torch/csrc/api/include -isystem /usr/local/cuda/include -isystem /usr/include/python3.13 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ --expt-relaxed-constexpr -gencode=arch=compute_75,code=compute_75 -gencode=arch=compute_75,code=sm_75 --compiler-options '-fPIC' -O3 --use_fast_math -std=c++17 -c /root/.cache/torch_extensions/fwd_swizzle_old/cuda.cu -o cuda.cuda.o 
+/root/.cache/torch_extensions/fwd_swizzle_old/cuda.cu:4:9: warning: #pragma once in main file
+    4 | #pragma once
+      |         ^~~~
+/root/.cache/torch_extensions/fwd_swizzle_old/cuda.cu:4:9: warning: #pragma once in main file
+    4 | #pragma once
+      |         ^~~~
+/root/.cache/torch_extensions/fwd_swizzle_old/cuda.cu(283): warning #177-D: variable "wtid" was declared but never referenced
+      int wtid = threadIdx.x % 32;
+          ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+ninja: build stopped: subcommand failed.
+
+STEP_RC: fwdswizzle 1
+=== STEP uppipeline: /usr/bin/python3 /content/ultimate-trainer/tests/probe_update_pipeline.py ===
+building OLD (production, single-buffer, 2 barriers/iter) ...
+built OLD ok
+building NEW (double-buffer, 1 barrier/iter) ...
+built NEW ok
+
+── reference-transition gate (semantics, both arms) ──
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 221, in <module>
+    main()
+    ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 118, in main
+    rg = run_reference_gate(lib.upd, dev, threshold=THRESHOLD)
+  File "/content/ultimate-trainer/tests/probe_reference_gate.py", line 239, in run_reference_gate
+    raise AssertionError(
+        "reference-transition mismatch (semantics, not parity): "
+        + "; ".join(errs))
+AssertionError: reference-transition mismatch (semantics, not parity): counter[0,1] got=1 want=0; counter[2,40] got=1 want=0; counter[7,54] got=1 want=0; counter[9,24] got=1 want=0
+STEP_RC: uppipeline 1
+=== STEP perfgate_check: /usr/bin/python3 /content/ultimate-trainer/colab_perfgate.py --branch feat/c13-probe-batch --repo-dir /content/ultimate-trainer --expect-commit ff7d76cc4342bf2c883472af5cc6426fd7deb450 ===
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=ff7d76cc4342bf2c883472af5cc6426fd7deb450
+fc1/fwd: FAIL +180.21% vs baseline 32.20ms sigma_null=0.52%
+fc1/dx: FAIL +7.16% vs baseline 41.03ms
+fc1/update: FAIL +6.15% vs baseline 45.40ms
+fc2/fwd: FAIL +183.50% vs baseline 32.70ms
+fc2/dx: FAIL +8.56% vs baseline 41.03ms
+fc2/update: ok -2.50% vs baseline 47.16ms
+head/fwd: FAIL +191.81% vs baseline 401.40ms
+head/dx: FAIL +16.46% vs baseline 520.46ms
+head/update: FAIL +20.41% vs baseline 557.80ms
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/colab_perfgate.py", line 361, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 285, in main
+    step_ms, step_trials = bench_step(repo)
+                           ~~~~~~~~~~^^^^^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 179, in bench_step
+    step()
+    ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 174, in step
+    loss = tg.train_step_cudagraph(model, x, y, profile=False)
+  File "/content/ultimate-trainer/train_gigatoken.py", line 121, in train_step_cudagraph
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, VOCAB), y[:, 1:].contiguous().view(-1),
+        reduction='mean')
+  File "/usr/local/lib/python3.13/dist-packages/torch/nn/functional.py", line 3504, in cross_entropy
+    return torch._C._nn.cross_entropy_loss(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        input,
+        ^^^^^^
+    ...<5 lines>...
+        label_smoothing,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+ValueError: Expected input batch_size (16384) to match target batch_size (16352).
+STEP_RC: perfgate_check 1
+=== STEP perfgate_regen: /usr/bin/python3 /content/ultimate-trainer/colab_perfgate.py --branch feat/c13-probe-batch --repo-dir /content/ultimate-trainer --expect-commit ff7d76cc4342bf2c883472af5cc6426fd7deb450 --update-baseline ===
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=ff7d76cc4342bf2c883472af5cc6426fd7deb450
+fc1/fwd: FAIL +213.97% vs baseline 32.20ms sigma_null=1.23%
+fc1/dx: FAIL +23.21% vs baseline 41.03ms
+fc1/update: FAIL +22.20% vs baseline 45.40ms
+fc2/fwd: FAIL +223.72% vs baseline 32.70ms
+fc2/dx: FAIL +26.35% vs baseline 41.03ms
+fc2/update: FAIL +14.91% vs baseline 47.16ms
+head/fwd: FAIL +237.08% vs baseline 401.40ms
+head/dx: FAIL +35.34% vs baseline 520.46ms
+head/update: FAIL +31.21% vs baseline 557.80ms
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/colab_perfgate.py", line 361, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 285, in main
+    step_ms, step_trials = bench_step(repo)
+                           ~~~~~~~~~~^^^^^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 179, in bench_step
+    step()
+    ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 174, in step
+    loss = tg.train_step_cudagraph(model, x, y, profile=False)
+  File "/content/ultimate-trainer/train_gigatoken.py", line 121, in train_step_cudagraph
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, VOCAB), y[:, 1:].contiguous().view(-1),
+        reduction='mean')
+  File "/usr/local/lib/python3.13/dist-packages/torch/nn/functional.py", line 3504, in cross_entropy
+    return torch._C._nn.cross_entropy_loss(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        input,
+        ^^^^^^
+    ...<5 lines>...
+        label_smoothing,
+        ^^^^^^^^^^^^^^^^
+    )
+    ^
+ValueError: Expected input batch_size (16384) to match target batch_size (16352).
+STEP_RC: perfgate_regen 1
+PROBE_BATCH: FAIL results={'smoke': 0, 'pytest': 0, 'fwdswizzle': 1, 'uppipeline': 1, 'perfgate_check': 1, 'perfgate_regen': 1}
+ARTEFACT: /content/ultimate-trainer/results/probe_batch.ff7d76cc.json

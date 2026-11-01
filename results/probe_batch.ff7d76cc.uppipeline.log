@@ -1,0 +1,20 @@
+commit=ff7d76cc4342bf2c883472af5cc6426fd7deb450
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_update_pipeline.py
+rc=1
+building OLD (production, single-buffer, 2 barriers/iter) ...
+built OLD ok
+building NEW (double-buffer, 1 barrier/iter) ...
+built NEW ok
+
+── reference-transition gate (semantics, both arms) ──
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 221, in <module>
+    main()
+    ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 118, in main
+    rg = run_reference_gate(lib.upd, dev, threshold=THRESHOLD)
+  File "/content/ultimate-trainer/tests/probe_reference_gate.py", line 239, in run_reference_gate
+    raise AssertionError(
+        "reference-transition mismatch (semantics, not parity): "
+        + "; ".join(errs))
+AssertionError: reference-transition mismatch (semantics, not parity): counter[0,1] got=1 want=0; counter[2,40] got=1 want=0; counter[7,54] got=1 want=0; counter[9,24] got=1 want=0

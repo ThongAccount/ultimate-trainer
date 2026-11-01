@@ -1,0 +1,11 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_wdedup.py
+rc=0
+building OLD (prod row-major) ...
+built OLD ok
+building NEW (w-dedup) ...
+built NEW ok
+name      in    out     old_ms   new_ms      d%    old_err  new_err
+fc1     1024   4096      34.39    37.55    9.20   7.812e-03 7.812e-03
+fc2     4096   1024      34.64    38.26   10.43   3.125e-02 3.125e-02
+head    1024  50272     432.81   475.73    9.92   1.562e-02 1.562e-02

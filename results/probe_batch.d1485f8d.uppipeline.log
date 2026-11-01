@@ -1,0 +1,10 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_update_pipeline.py
+rc=1
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 220, in <module>
+    main()
+    ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 96, in main
+    from tests.bench_protocol import ab_median, report_line
+ModuleNotFoundError: No module named 'tests.bench_protocol'

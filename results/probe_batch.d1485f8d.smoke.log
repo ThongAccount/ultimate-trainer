@@ -1,0 +1,12 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_spill.py --probe fwdspill --skip-timing
+rc=0
+building OLD (prod 16KB spill + CTA cooperative copy) ...
+built OLD ok
+building NEW (warp-private 4KB spill, dX pattern) ...
+built NEW ok
+
+name      in    out     old_err   new_err  old==new
+fc1     1024   4096   7.812e-03 7.812e-03      True
+fc2     4096   1024   3.125e-02 3.125e-02      True
+head    1024  50272   1.562e-02 1.562e-02      True

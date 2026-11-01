@@ -1,0 +1,180 @@
+commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+### smoke (rc=0)
+building OLD (prod 16KB spill + CTA cooperative copy) ...
+built OLD ok
+building NEW (warp-private 4KB spill, dX pattern) ...
+built NEW ok
+
+name      in    out     old_err   new_err  old==new
+fc1     1024   4096   7.812e-03 7.812e-03      True
+fc2     4096   1024   3.125e-02 3.125e-02      True
+head    1024  50272   1.562e-02 1.562e-02      True
+### pytest (rc=1)
+........................................................................ [ 70%]
+...........F..................                                           [100%]
+=================================== FAILURES ===================================
+___________________ test_small_then_large_dispatch_stays_64 ____________________
+tests/test_dispatch_order.py:116: in test_small_then_large_dispatch_stays_64
+    W, counter = run((64, 16384, 1024), "v2_64")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_dispatch_order.py:96: in run
+    fn(W, counter, X, dY, 32)
+E   TypeError: update_tc_v2(): incompatible function arguments. The following argument types are supported:
+E       1. (arg0: torch.Tensor, arg1: torch.Tensor, arg2: torch.Tensor, arg3: torch.Tensor, arg4: torch.Tensor, arg5: typing.SupportsInt, arg6: typing.SupportsFloat, arg7: typing.SupportsInt) -> None
+E   
+E   Invoked with: tensor([[0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           ...,
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0]], device='cuda:0', dtype=torch.int32), tensor([[0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           ...,
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0],
+E           [0, 0, 0,  ..., 0, 0, 0]], device='cuda:0', dtype=torch.int16), tensor([[ 0.0241,  0.0557, -0.0836,  ..., -0.0353,  0.0451,  0.2415],
+E           [ 0.0642, -0.0629, -0.0062,  ..., -0.1311, -0.1848,  0.0933],
+E           [-0.0717,  0.0477,  0.0815,  ...,  0.1558,  0.0027, -0.0226],
+E           ...,
+E           [-0.0098,  0.0944, -0.0345,  ...,  0.0228,  0.0389, -0.1149],
+E           [-0.0392, -0.0609, -0.0200,  ..., -0.0085,  0.0054, -0.0734],
+E           [ 0.1487, -0.0527,  0.1339,  ...,  0.0305, -0.0649, -0.0840]],
+E          device='cuda:0', dtype=torch.float16), tensor([[ 0.0006,  0.1246,  0.1082,  ...,  0.0887,  0.0431,  0.0637],
+E           [ 0.0524,  0.1038, -0.1292,  ..., -0.0605, -0.1804,  0.1320],
+E           [-0.0297, -0.0605, -0.1853,  ...,  0.1283,  0.0538,  0.0995],
+E           ...,
+E           [-0.0375, -0.0881, -0.0397,  ...,  0.1296,  0.1360, -0.1057],
+E           [-0.0527, -0.1378,  0.0610,  ..., -0.1429, -0.2229, -0.0703],
+E           [-0.2139,  0.0217,  0.0305,  ...,  0.1078,  0.0806,  0.1982]],
+E          device='cuda:0', dtype=torch.float16), 32
+=========================== short test summary info ============================
+FAILED tests/test_dispatch_order.py::test_small_then_large_dispatch_stays_64
+1 failed, 101 passed in 208.70s (0:03:28)
+### fwdspill (rc=0)
+building OLD (prod 16KB spill + CTA cooperative copy) ...
+built OLD ok
+building NEW (warp-private 4KB spill, dX pattern) ...
+built NEW ok
+
+name      in    out     old_err   new_err  old==new
+fc1     1024   4096   7.812e-03 7.812e-03      True
+fwdspill/fc1 A=   36.74ms B=   31.46ms delta=-14.36% (thresh 2.57%) -> WIN sigma_null=1.29%
+fc2     4096   1024   3.125e-02 3.125e-02      True
+fwdspill/fc2 A=   37.13ms B=   31.95ms delta=-13.97% (thresh 1.00%) -> WIN
+head    1024  50272   1.562e-02 1.562e-02      True
+fwdspill/head A=  438.91ms B=  408.18ms delta=-7.00% (thresh 1.00%) -> WIN
+
+RESULTS {"fc1": {"old_ms": 36.739, "new_ms": 31.462, "delta_pct": -14.362, "sigma_null_pct": 1.287}, "fc2": {"old_ms": 37.135, "new_ms": 31.946, "delta_pct": -13.973, "sigma_null_pct": null}, "head": {"old_ms": 438.906, "new_ms": 408.183, "delta_pct": -7.0, "sigma_null_pct": null}}
+### fwdswizzle (rc=1)
+coverage ok: M= 16384 N= 50272 tiles 256x786 (prod/A/B all bijective)
+coverage ok: M= 16384 N=  4096 tiles 256x64 (prod/A/B all bijective)
+coverage ok: M=   512 N=    64 tiles 8x1 (prod/A/B all bijective)
+COVERAGE PROOF PASSED (all (m,n) tiles computed exactly once, both formulations)
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_fwd_swizzle.py", line 241, in <module>
+    main()
+    ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_fwd_swizzle.py", line 165, in main
+    from tests.bench_protocol import ab_median, report_line
+ModuleNotFoundError: No module named 'tests.bench_protocol'
+### uppipeline (rc=1)
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 220, in <module>
+    main()
+    ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_update_pipeline.py", line 96, in main
+    from tests.bench_protocol import ab_median, report_line
+ModuleNotFoundError: No module named 'tests.bench_protocol'
+### fwdwdedup (rc=0)
+building OLD (prod row-major) ...
+built OLD ok
+building NEW (w-dedup) ...
+built NEW ok
+name      in    out     old_ms   new_ms      d%    old_err  new_err
+fc1     1024   4096      34.39    37.55    9.20   7.812e-03 7.812e-03
+fc2     4096   1024      34.64    38.26   10.43   3.125e-02 3.125e-02
+head    1024  50272     432.81   475.73    9.92   1.562e-02 1.562e-02
+### perfgate_check (rc=1)
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/colab_perfgate.py", line 356, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 264, in main
+    cases = make_case(name, inn, out)
+  File "/content/ultimate-trainer/colab_perfgate.py", line 142, in make_case
+    cases["update"] = solo_median(
+                      ~~~~~~~~~~~^
+        lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        prepare=prep,          # W + counter state restored per trial
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/content/ultimate-trainer/tests/bench_protocol.py", line 153, in solo_median
+    run()
+    ~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 143, in <lambda>
+    lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+            ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/custom_ops.py", line 698, in __call__
+    return self._opoverload(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_ops.py", line 865, in __call__
+    return self._op(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/autograd.py", line 112, in autograd_impl
+    result = forward_no_grad(*args, Metadata(keyset, keyword_only_args))
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/autograd.py", line 41, in forward_no_grad
+    result = op.redispatch(keyset & _C._after_autograd_keyset, *args, **kwargs)
+  File "/usr/local/lib/python3.13/dist-packages/torch/_ops.py", line 872, in redispatch
+    return self._handle.redispatch_boxed(keyset, *args, **kwargs)  # type: ignore[return-value]
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/custom_ops.py", line 658, in adinplaceorview_impl
+    increment_version(args[idx])
+                      ~~~~^^^^^
+IndexError: tuple index out of range
+### perfgate_regen (rc=1)
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/c13-probe-batch commit=d1485f8da2edbe2374f18d774be10f1e21d710cf
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/colab_perfgate.py", line 356, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 264, in main
+    cases = make_case(name, inn, out)
+  File "/content/ultimate-trainer/colab_perfgate.py", line 142, in make_case
+    cases["update"] = solo_median(
+                      ~~~~~~~~~~~^
+        lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        prepare=prep,          # W + counter state restored per trial
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/content/ultimate-trainer/tests/bench_protocol.py", line 153, in solo_median
+    run()
+    ~~~^^
+  File "/content/ultimate-trainer/colab_perfgate.py", line 143, in <lambda>
+    lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+            ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/custom_ops.py", line 698, in __call__
+    return self._opoverload(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_ops.py", line 865, in __call__
+    return self._op(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/autograd.py", line 112, in autograd_impl
+    result = forward_no_grad(*args, Metadata(keyset, keyword_only_args))
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/autograd.py", line 41, in forward_no_grad
+    result = op.redispatch(keyset & _C._after_autograd_keyset, *args, **kwargs)
+  File "/usr/local/lib/python3.13/dist-packages/torch/_ops.py", line 872, in redispatch
+    return self._handle.redispatch_boxed(keyset, *args, **kwargs)  # type: ignore[return-value]
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/dist-packages/torch/_library/custom_ops.py", line 658, in adinplaceorview_impl
+    increment_version(args[idx])
+                      ~~~~^^^^^
+IndexError: tuple index out of range

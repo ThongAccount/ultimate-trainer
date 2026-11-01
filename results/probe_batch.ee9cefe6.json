@@ -1,0 +1,25 @@
+{
+  "commit": "ee9cefe60d029475c68bac5a43a6f4bb1d4eea29",
+  "tag": "ee9cefe6",
+  "verdict": "fail",
+  "step_rcs": {
+    "smoke": 0,
+    "pytest": 0,
+    "fwdswizzle": 0,
+    "perfgate_check": 1,
+    "perfgate_regen": 1
+  },
+  "skipped": [
+    "fwdspill",
+    "fwdwdedup",
+    "uppipeline"
+  ],
+  "note": "reconstructed locally from the captured stdout transcript (results/probe_batch.ee9cefe6.log); VM released before download. perfgate_check rc=1 is the expected FAIL vs the old provisional min-of-3 baseline, not a kernel regression (probe OLD cross-check: fc1/fwd 36.74 ms probe vs 36.421 ms perfgate). perfgate_regen rc=1 is by design (it reports deltas vs the old baseline, then writes the new one).",
+  "provenance": {
+    "torch": "2.11.0+cu130",
+    "gpu": "Tesla T4",
+    "UT_PREBUILT": "1",
+    "session": "ut-c13-probes3",
+    "branch": "feat/c13-probe-batch"
+  }
+}
