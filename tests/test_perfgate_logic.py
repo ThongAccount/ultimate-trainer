@@ -146,10 +146,12 @@ class TestBaselineSchema:
         b = self.load()
         assert b["schema"] == SCHEMA_VERSION
 
-    def test_meta_marks_provisional(self):
+    def test_meta_marks_measured(self):
+        # baseline was regenerated on a real T4 (ut-c13-probes3, 2026-11-01);
+        # it must no longer claim to be provisional
         b = self.load()
-        assert "provisional" in b["_meta"]["status"]
-        assert "regenerate with --update-baseline" in b["_meta"]["note"]
+        assert b["_meta"]["status"] == "measured"
+        assert "update-baseline" in b["_meta"]["note"]
 
     def test_all_shapes_and_kernels_present(self):
         b = self.load()
@@ -162,7 +164,8 @@ class TestBaselineSchema:
 
     def test_step_ms(self):
         b = self.load()
-        assert b["step_ms"] == 3091.9  # HANDOFF §23 same-instance post-F1 avg
+        # measured whole-step median on T4, ut-c13-probes3 regen (2026-11-01)
+        assert b["step_ms"] == 4810.507
 
     def test_config_matches_gate(self):
         # config block must agree with the gate's own constants so the
@@ -177,20 +180,21 @@ class TestBaselineSchema:
         }.items():
             assert c["shapes"][shape] == {"in": inn, "out": out}
 
-    def test_known_numbers_match_handoff(self):
+    def test_known_numbers_match_measured_t4(self):
+        # Measured 10-trial medians, colab ut-c13-probes3 regen @ ee9cefe
+        # (2026-11-01). The old HANDOFF-derived provisional numbers were
+        # 3-trial-min biased ~12% low; the regen replaced them.
         b = self.load()
         k = b["kernels"]
-        # fwd: HANDOFF §23 C1 post-F1 isolated (Modal T4)
-        assert k["fc1"]["fwd_ms"] == pytest.approx(32.2)
-        assert k["fc2"]["fwd_ms"] == pytest.approx(32.7)
-        assert k["head"]["fwd_ms"] == pytest.approx(401.4)
-        # dX: HANDOFF §25 C9a Colab T4 (fc2 borrowed from fc1 — never isolated)
-        assert k["fc1"]["dx_ms"] == pytest.approx(41.03)
-        assert k["head"]["dx_ms"] == pytest.approx(520.46)
-        # update: HANDOFF §23 C3 unmodified-kernel baseline
-        assert k["fc1"]["update_ms"] == pytest.approx(45.40)
-        assert k["fc2"]["update_ms"] == pytest.approx(47.16)
-        assert k["head"]["update_ms"] == pytest.approx(557.8)
+        assert k["fc1"]["fwd_ms"] == pytest.approx(40.226)
+        assert k["fc2"]["fwd_ms"] == pytest.approx(41.437)
+        assert k["head"]["fwd_ms"] == pytest.approx(499.841)
+        assert k["fc1"]["dx_ms"] == pytest.approx(51.214)
+        assert k["fc2"]["dx_ms"] == pytest.approx(50.677)
+        assert k["head"]["dx_ms"] == pytest.approx(649.306)
+        assert k["fc1"]["update_ms"] == pytest.approx(55.724)
+        assert k["fc2"]["update_ms"] == pytest.approx(54.879)
+        assert k["head"]["update_ms"] == pytest.approx(700.429)
 
     def test_baseline_validates_against_runner_constants(self):
         # cross-check: the gate runner's own SHAPES/THRESHOLD must match the

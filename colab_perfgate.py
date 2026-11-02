@@ -117,6 +117,7 @@ def make_case(name: str, inn: int, out: int):
     W0 = torch.randint(0, 4, (out, (inn + 15) // 16), device=dev, dtype=torch.int32)
     W0 = torch.where(W0 == 3, 0, W0)  # ternary codes: no 3
     C0 = torch.zeros(out, inn, device=dev, dtype=torch.int16)
+    FC0 = torch.zeros(out, inn, device=dev, dtype=torch.int16)
 
     W = W0.clone()
     C = C0.clone()
@@ -129,9 +130,16 @@ def make_case(name: str, inn: int, out: int):
         W.copy_(W0)
         C.copy_(C0)
 
+    # fwd must go through the PRODUCTION dispatch (_forward_auto), not the raw
+    # custom op: co.forward_tc is the 32x32 kernel for every shape, while the
+    # model runs tc_64 at all production dims (B,N,K >= 64, %16). Measuring the
+    # op directly showed as a bogus +180% "regression" vs the tc_64-derived
+    # baseline (run ut-c13-probes2, 2026-11-01).
+    from kernels.packed_ternary.packed_linear import _forward_auto
+
     cases = {}
     cases["fwd"] = solo_median(
-        lambda: co.forward_tc(W, X, inn),
+        lambda: _forward_auto(W, X),
         prepare=None,          # fwd is pure compute: Y is a fresh alloc
         null_arm=(name == "fc1"),
     )
@@ -140,10 +148,14 @@ def make_case(name: str, inn: int, out: int):
         prepare=None,          # dX is pure compute
     )
     cases["update"] = solo_median(
-        lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD),
+        # flip_count is a mutated arg of the custom op (mutates_args) — it must
+        # be passed explicitly or the adinplaceorview redispatch crashes with
+        # IndexError under no_grad (torch 2.11).
+        lambda: co.update_tc_v2(W, C, X, dY, THRESHOLD,
+                                flip_count=FC0, flip_budget=0),
         prepare=prep,          # W + counter state restored per trial
     )
-    del X, dY, W, C, W0, C0
+    del X, dY, W, C, W0, C0, FC0
     torch.cuda.empty_cache()
     return cases
 
@@ -162,7 +174,9 @@ def bench_step(repo: str):
 
     model = tg.build_model()
     model.train()
-    x = torch.randint(0, tg.VOCAB, (tg.B, tg.SEQ), dtype=torch.long, device="cuda")
+    # train_step_cudagraph expects x [B, SEQ-1] and y [B, SEQ] (it slices
+    # y[:, 1:] internally — train_gigatoken.py:173-174).
+    x = torch.randint(0, tg.VOCAB, (tg.B, tg.SEQ - 1), dtype=torch.long, device="cuda")
     y = torch.randint(0, tg.VOCAB, (tg.B, tg.SEQ), dtype=torch.long, device="cuda")
 
     def step():
