@@ -80,7 +80,7 @@ def step_times(model, bs, steps, warm, cache_at=-1):
 
 res = {"child": name, "gpu": torch.cuda.get_device_name(0)}
 try:
-    if name in ("shipped-profile", "shipped-climb", "budget-ab"):
+    if name.startswith(("shipped-", "budget-")):
         os.environ["PT_BACKEND"] = "cublas"
         os.environ["PT_UPDATE_BACKEND"] = "cublas"
     bs = batches()
@@ -117,7 +117,7 @@ try:
             "top_kernels": rows[:25],
             "profiler_table_head": tab.splitlines()[:12],
         })
-    elif name == "shipped-climb":
+    elif name.startswith("shipped-climb"):
         cache = int(os.environ.get("CACHE", "0"))
         at = int(os.environ.get("CACHE_AT", "150"))
         model = tg.build_model()
@@ -223,6 +223,8 @@ def main():
     ap.add_argument("--child", default="")
     ap.add_argument("--expect-commit", default=os.environ.get("PT_EXPECT_COMMIT", ""))
     ap.add_argument("--tag", default="")
+    ap.add_argument("--only", default="",
+                    help="comma-separated child-name prefixes to run (default: all)")
     args, _unknown = ap.parse_known_args()
 
     if args.child:
@@ -264,7 +266,10 @@ def main():
         return 2
 
     results = {}
-    for name, extra_env in JOBS:
+    jobs = JOBS
+    if args.only:
+        jobs = [j for j in JOBS if any(j[0].startswith(p) for p in args.only.split(","))]
+    for name, extra_env in jobs:
         env = {**os.environ, "REPO_DIR": d, **extra_env}
         print(f"=== CHILD {name} ===", flush=True)
         rc, out = run_streaming([sys.executable,
