@@ -41,8 +41,12 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
     half*           __restrict__ Y,   // [B, N] FP16
     int B, int K, int N, int stride_words)
 {
-    int super_b0 = blockIdx.x * kSuperM;
-    int super_n0 = blockIdx.y * kSuperN;
+    // feat/fwd-xpose: grid is launched (n_tiles, m_tiles) so blockIdx.x is the
+    // n-tile (fastest hw raster order) — co-resident CTAs share one X tile
+    // (X DRAM 25.7 GB -> ~32 MB at the head shape). Bit-exact vs the old map;
+    // measured head fwd -19.9% (docs/speedpass/2026-11-01-c13-probe-batch-results.md).
+    int super_n0 = blockIdx.x * kSuperN;
+    int super_b0 = blockIdx.y * kSuperM;
 
     int warp_id = threadIdx.x / 32;
     int wtid    = threadIdx.x % 32;
@@ -194,8 +198,10 @@ extern "C" void launch_packed_ternary_forward_tc_64(
     const half* X = static_cast<const half*>(X_ptr);
     half* Y = static_cast<half*>(Y_ptr);
 
-    dim3 grid((batch_size + kSuperM - 1) / kSuperM,
-              (out_features + kSuperN - 1) / kSuperN);
+    // Transposed launch: grid=(n_tiles, m_tiles). gridDim.y caps at 65535 —
+    // m_tiles = ceil(B/64) is 256 at B=16384, 512 at B=32768, safe.
+    dim3 grid((out_features + kSuperN - 1) / kSuperN,
+              (batch_size + kSuperM - 1) / kSuperM);
     dim3 block(128);
 
     packed_ternary_forward_tc_64_kernel<<<grid, block, 0, stream>>>(
