@@ -49,7 +49,7 @@ def test_clean_repo_full_sha(tmp_path):
     assert prov["schema_version"] == SCHEMA_VERSION
     assert prov["python"] == platform.python_version()
     assert set(prov["env"]) == {"PT_BACKEND", "PT_UPDATE_BACKEND", "TORCH_CUDA_ARCH_LIST",
-                                "TORCH_EXTENSIONS_DIR", "UT_PREBUILT"}
+                                "TORCH_EXTENSIONS_DIR", "UT_PREBUILT", "UT_PREBUILT_TAG"}
 
 
 def test_dirty_states(tmp_path):
@@ -82,7 +82,7 @@ def test_env_whitelist_no_secrets(monkeypatch, tmp_path):
     monkeypatch.setenv("PT_BACKEND", "cublas")
     prov = collect_provenance(tmp_path)
     assert set(prov["env"]) == {"PT_BACKEND", "PT_UPDATE_BACKEND", "TORCH_CUDA_ARCH_LIST",
-                                "TORCH_EXTENSIONS_DIR", "UT_PREBUILT"}
+                                "TORCH_EXTENSIONS_DIR", "UT_PREBUILT", "UT_PREBUILT_TAG"}
     assert prov["env"]["PT_BACKEND"] == "cublas"
     assert "secret-value-123" not in json.dumps(prov)
 
