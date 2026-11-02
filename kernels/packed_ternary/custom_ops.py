@@ -53,6 +53,19 @@ def _ensure_loaded():
     _loaded = True
 
 
+def _check_counter_scalar_args(threshold, dead_zone=None):
+    """int16 counter range guards, mirroring update_cublas.py:124-129.
+
+    The custom wrappers used to pass int(threshold) straight into the kernel;
+    a threshold > 32767 would overflow the int16 counter comparison in the
+    epilogue. Fail loudly on both backends instead."""
+    if not (0 <= int(threshold) <= 32767):
+        raise RuntimeError(
+            f"threshold must be in [0, 32767] (int16 counter), got {threshold}")
+    if dead_zone is not None and not (0.0 <= float(dead_zone) <= 1.0):
+        raise RuntimeError(f"dead_zone must be in [0, 1], got {dead_zone}")
+
+
 @custom_op("packed_ternary::forward_tc", mutates_args=())
 def forward_tc(W: torch.Tensor, X: torch.Tensor, K: int) -> torch.Tensor:
     """Ternary forward GEMM: Y = X @ W^T via WMMA Tensor Cores.
@@ -127,6 +140,7 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     # Guard BEFORE backend dispatch: at flip_budget > 0 with flip_count=None
     # the cublas epilogue would OOB on its 1-element dummy — fail loudly on
     # both backends instead of silently mis-measuring.
+    _check_counter_scalar_args(threshold, dead_zone)
     if flip_budget < 0:
         raise RuntimeError(
             f"flip_budget must be in [0, 32767] (int16 counter), got {flip_budget}")
@@ -190,6 +204,7 @@ def backward_update_fused(W: torch.Tensor, counter: torch.Tensor,
     Returns dX for upstream gradient propagation.
     W and counter are updated in-place.
     """
+    _check_counter_scalar_args(threshold)
     _ensure_loaded()
     if _fused_bwd is None:
         raise RuntimeError("Fused backward kernel not available")
@@ -212,6 +227,7 @@ def _backward_update_fused_fake(W, counter, dY, X, in_features, threshold):
 def update_tc_v3(W: torch.Tensor, counter: torch.Tensor,
                  X: torch.Tensor, dY: torch.Tensor, threshold: int) -> None:
     """Fused gradient → magnitude-scaled counter → bit-flip (TC v3)."""
+    _check_counter_scalar_args(threshold)
     _ensure_loaded()
     if _update_tc_v3 is None:
         raise RuntimeError("TC update v3 kernel not available")

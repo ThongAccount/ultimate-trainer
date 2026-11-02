@@ -111,11 +111,17 @@ def _install_torch_stub():
     mod.float16 = "float16"
     mod.float32 = "float32"
 
-    def empty(shape, dtype=None, device=None, **kw):
-        return Tensor(shape, dtype=dtype, device=device or "cpu")
+    def _norm_shape(args):
+        # real torch.zeros/empty take either a tuple or varargs: zeros(16, 16)
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            return tuple(args[0])
+        return tuple(args)
 
-    def zeros(shape, dtype=None, device=None, **kw):
-        return Tensor(shape, dtype=dtype, device=device or "cpu")
+    def empty(*shape, dtype=None, device=None, **kw):
+        return Tensor(_norm_shape(shape), dtype=dtype, device=device or "cpu")
+
+    def zeros(*shape, dtype=None, device=None, **kw):
+        return Tensor(_norm_shape(shape), dtype=dtype, device=device or "cpu")
 
     mod.empty = empty
     mod.zeros = zeros
@@ -551,6 +557,76 @@ def test_08_packed_linear_backward_fallback_threads_flip_args():
         r"flip_count=flip_count, flip_budget=int\(flip_budget\)\)", src
     ), ("packed_linear.py backward fallback must thread flip_count/flip_budget into "
         "backward_update (no silent unbudgeted run)")
+
+
+# ── 9. feat/int16-range-guard: threshold/dead_zone range guards on every
+#        counter-mutating custom wrapper (mirrors update_cublas.py:124-129) ──
+
+def test_09_threshold_range_guard_update_tc_v2_before_load_and_cublas():
+    W, counter, fc, X, dY = _shapes()
+
+    def boom_load():
+        raise AssertionError("_ensure_loaded must not run before the threshold guard")
+
+    def boom_cublas(*a, **k):
+        raise AssertionError("cublas early-return must not run before the guard")
+
+    for bad in (-1, 32768):
+        # custom backend: guard fires before _ensure_loaded()
+        with _patched(custom_ops, _ensure_loaded=boom_load), _env(PT_UPDATE_BACKEND=None):
+            assert_raises(RuntimeError, r"threshold must be in \[0, 32767\]",
+                          custom_ops.update_tc_v2, W, counter, X, dY, bad)
+        # cublas armed: guard still fires before the early-return
+        with _patched(custom_ops, _ensure_loaded=boom_load), \
+             _patched(update_cublas, update_cublas=boom_cublas), \
+             _env(PT_UPDATE_BACKEND="cublas"):
+            assert_raises(RuntimeError, r"threshold must be in \[0, 32767\]",
+                          custom_ops.update_tc_v2, W, counter, X, dY, bad)
+
+    # dead_zone outside [0,1] raises on the custom path
+    with _patched(custom_ops, _ensure_loaded=lambda: None), _env(PT_UPDATE_BACKEND=None):
+        assert_raises(RuntimeError, r"dead_zone must be in \[0, 1\]",
+                      custom_ops.update_tc_v2, W, counter, X, dY, 32, dead_zone=1.5)
+
+    # boundary values 0 and 32767 pass the guard and reach dispatch
+    for ok in (0, 32767):
+        rec = _Recorder()
+        with _patched(custom_ops, _ensure_loaded=lambda: None), \
+             _patched(pack_update, _select_update_fn=lambda B, N, K: (rec, "v2_64")), \
+             _env(PT_UPDATE_BACKEND=None):
+            custom_ops.update_tc_v2(W, counter, X, dY, ok)
+            assert len(rec.calls) == 1, f"threshold={ok} should pass the guard"
+            assert rec.calls[0][0][5] == ok
+
+
+def test_10_threshold_range_guard_v3_and_fused():
+    W, counter, fc, X, dY = _shapes()
+
+    # update_tc_v3: bad threshold raises before _ensure_loaded / dispatch
+    def boom_load():
+        raise AssertionError("_ensure_loaded must not run before the threshold guard")
+
+    rec = _Recorder()
+    with _patched(custom_ops, _ensure_loaded=boom_load, _update_tc_v3=rec):
+        assert_raises(RuntimeError, r"threshold must be in \[0, 32767\]",
+                      custom_ops.update_tc_v3, W, counter, X, dY, 32768)
+        assert rec.calls == []
+    # boundary passes and reaches the wrapper
+    with _patched(custom_ops, _ensure_loaded=lambda: None, _update_tc_v3=rec):
+        rec.calls.clear()
+        custom_ops.update_tc_v3(W, counter, X, dY, 32767)
+        assert len(rec.calls) == 1 and rec.calls[0][0][4] == 32767
+
+    # backward_update_fused: same guard before load/dispatch
+    rec2 = _Recorder(ret=_t((16, 16)))
+    with _patched(custom_ops, _ensure_loaded=boom_load, _fused_bwd=rec2):
+        assert_raises(RuntimeError, r"threshold must be in \[0, 32767\]",
+                      custom_ops.backward_update_fused, W, counter, dY, X, 16, -1)
+        assert rec2.calls == []
+    with _patched(custom_ops, _ensure_loaded=lambda: None, _fused_bwd=rec2):
+        rec2.calls.clear()
+        custom_ops.backward_update_fused(W, counter, dY, X, 16, 32)
+        assert len(rec2.calls) == 1 and rec2.calls[0][0][5] == 32
 
 
 # ── standalone runner (no pytest needed) ──────────────────────────────────
