@@ -1,0 +1,103 @@
+commit=6f8dd52c3a9293501178fe44809558b1a1cf1446
+### pytest (rc=0)
+........................................................................ [ 69%]
+...............................                                          [100%]
+103 passed in 229.35s (0:03:49)
+### perfgate_check (rc=0)
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/dx-xpose commit=6f8dd52c3a9293501178fe44809558b1a1cf1446
+fc1/fwd: ok -39.15% vs baseline 40.23ms sigma_null=1.10%
+fc1/dx: ok -29.66% vs baseline 51.21ms
+fc1/update: ok -14.72% vs baseline 55.72ms
+fc2/fwd: ok -38.59% vs baseline 41.44ms
+fc2/dx: ok -29.10% vs baseline 50.68ms
+fc2/update: ok -15.00% vs baseline 54.88ms
+head/fwd: ok -35.72% vs baseline 499.84ms
+head/dx: ok -20.08% vs baseline 649.31ms
+head/update: ok -13.57% vs baseline 700.43ms
+
+RESULTS JSON: {
+  "suite": "perfgate",
+  "commit": "6f8dd52c3a9293501178fe44809558b1a1cf1446",
+  "provenance": {
+    "schema_version": 2,
+    "commit": "6f8dd52c3a9293501178fe44809558b1a1cf1446",
+    "branch": "feat/dx-xpose",
+    "git_dirty": true,
+    "timestamp_utc": "2026-11-02T14:47:13+00:00",
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "gpu": {
+      "name": "Tesla T4",
+      "capability": [
+        7,
+        5
+      ]
+    },
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null,
+      "TORCH_EXTENSIONS_DIR": "/root/.cache/torch_extensions",
+      "UT_PREBUILT": "1",
+      "UT_PREBUILT_TAG": "kernels-dx-xpose"
+    },
+    "config": {
+      "batch": 16384,
+      "threshold": 32,
+      "shapes": [
+        "fc1",
+        "fc2",
+        "head"
+      ],
+      "kernels": [
+        "fwd",
+        "dx",
+        "update"
+      ],
+      "baseline": "tests/perf_baseline_t4.json",
+      "update_baseline": false,
+      "expect_commit": "6f8dd52c3a9293501178fe44809558b1a1cf1446"
+    }
+  },
+  "branch": "feat/dx-xpose",
+  "gpu": "Tesla T4",
+  "pytorch": "2.11.0+cu130",
+  "baseline_status": "measured",
+  "update_baseline": false,
+  "kernels": {
+    "fc1": {
+      "fwd_ms": 24.477,
+      "dx_ms": 36.024,
+      "update_ms": 47.523
+    },
+    "fc2": {
+      "fwd_ms": 25.448,
+      "dx_ms": 35.928,
+      "update_ms": 46.648
+    },
+    "head": {
+      "fwd_ms": 321.293,
+      "dx_ms": 518.943,
+      "update_ms": 605.373
+    }
+  },
+  "step_ms": 2976.439,
+  "deltas": [
+    "fc1/fwd: ok -39.15% vs baseline 40.23ms",
+    "fc1/dx: ok -29.66% vs baseline 51.21ms",
+    "fc1/update: ok -14.72% vs baseline 55.72ms",
+    "fc2/fwd: ok -38.59% vs baseline 41.44ms",
+    "fc2/dx: ok -29.10% vs baseline 50.68ms",
+    "fc2/update: ok -15.00% vs baseline 54.88ms",
+    "head/fwd: ok -35.72% vs baseline 499.84ms",
+    "head/dx: ok -20.08% vs baseline 649.31ms",
+    "head/update: ok -13.57% vs baseline 700.43ms"
+  ],
+  "any_fail": false,
+  "passed": true,
+  "returncode": 0,
+  "wall_s": 276.0
+}
+ARTEFACT: /content/ultimate-trainer/results/perfgate.json

@@ -1,0 +1,7 @@
+commit=6f8dd52c3a9293501178fe44809558b1a1cf1446
+cmd=/usr/bin/python3 -m pytest -q --tb=short tests/test_packed_linear.py tests/test_gemm_update.py tests/test_kernels.py tests/test_packed_ternary.py tests/test_gemm_fused.py tests/test_speedpass_kernels.py tests/test_update_dimensional_bug.py tests/test_update64_dimensional_bug.py tests/test_update_semantics.py tests/test_graph_replay_parity.py tests/test_dispatch_order.py tests/test_flip_rate_verdict.py
+rc=0
+
+........................................................................ [ 69%]
+...............................                                          [100%]
+103 passed in 229.35s (0:03:49)
