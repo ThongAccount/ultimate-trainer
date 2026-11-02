@@ -116,5 +116,29 @@ def test_small_then_large_dispatch_stays_64():
     W, counter = run((64, 16384, 1024), "v2_64")
 
 
+@pytest.mark.skipif(not _has_cuda(), reason="no CUDA")
+def test_dx_64_kernel_used_at_real_step_M16352():
+    """feat/dx-gate-16: the real step runs at M=16352 (32x511); the dX 64x64
+    kernel must be selected there (B % 16 gate) and match the raw 64x64 fn
+    bit-exactly. Before the fix, B % 64 == 0 failed at 16352 and the 32x32
+    kernel ran (measured 40-46% slower)."""
+    import torch
+
+    from kernels.packed_ternary import pack_tensor, pack_update as pu
+    from kernels.packed_ternary import custom_ops as co
+
+    K, N, M = 1024, 4096, 16352
+    torch.manual_seed(0)
+    W = pack_tensor(torch.where(torch.rand(N, K, device="cuda") < 0.5,
+                                 torch.zeros(N, K, device="cuda"),
+                                 torch.ones(N, K, device="cuda")).int())
+    dY = (torch.randn(M, N, device="cuda") * 0.1).half()
+    pu._load_dx_tc()
+    assert pu._HAS_DX_TC and pu._dx_tc_fn is not None
+    y_op = co.backward_dx_tc(W, dY, K)
+    y_64 = pu._dx_tc_fn(W.contiguous(), dY.contiguous(), K)
+    assert torch.equal(y_op, y_64), "dX at M=16352 did not take the 64x64 kernel"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
