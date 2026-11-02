@@ -86,7 +86,12 @@ def backward_dx_tc(W: torch.Tensor, dY: torch.Tensor, K: int) -> torch.Tensor:
     _ensure_loaded()
     B = dY.size(0)
     N_out = dY.size(1)
-    if _dx_tc_64 is not None and B % 64 == 0 and N_out % 16 == 0 and K % 64 == 0:
+    # B gate relaxed 64 -> 16 (feat/dx-gate-16, 2026-11-02): the real step runs
+    # at M=16352 (x = data[:, :SEQ-1]), where %64 fails and the 32x32 kernel was
+    # used. The 64x64 kernel has internal bounds guards (same argument as the
+    # update v2_64 %16 gate); measured bit-exact and 40-46% faster at M=16352
+    # (docs/speedpass/2026-11-02-dxgate-shipped-results.md).
+    if _dx_tc_64 is not None and B % 16 == 0 and N_out % 16 == 0 and K % 64 == 0:
         return _dx_tc_64(W.contiguous(), dY.contiguous(), K)
     if _dx_tc is None:
         raise RuntimeError("TC backward kernel not available")
