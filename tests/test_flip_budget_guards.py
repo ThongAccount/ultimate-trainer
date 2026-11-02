@@ -629,6 +629,38 @@ def test_10_threshold_range_guard_v3_and_fused():
         assert len(rec2.calls) == 1 and rec2.calls[0][0][5] == 32
 
 
+# ── 11. feat/update-fakes-v2v3: register_fake on update_tc_v2/v3 (PLAN.md #4),
+#         and the v2/v3 semantics note (PLAN.md #5) ─────────────────────
+
+def test_11_register_fake_on_update_v2_and_v3():
+    src = open(os.path.join(REPO, "kernels/packed_ternary/custom_ops.py"),
+               encoding="utf-8").read()
+    assert re.search(r"@update_tc_v2\.register_fake", src), \
+        "update_tc_v2 needs a register_fake so torch.compile/CUDAGraph capture works"
+    assert re.search(r"@update_tc_v3\.register_fake", src), \
+        "update_tc_v3 needs a register_fake so torch.compile/CUDAGraph capture works"
+    # void mutating ops: fakes must return None, not allocate an output
+    assert re.search(r"@update_tc_v2\.register_fake\s*\n\s*def [^\n]+\n(?:[^\n]*\n)*?"
+                     r"\s*return None", src), "update_tc_v2 fake must return None"
+    assert re.search(r"@update_tc_v3\.register_fake\s*\n\s*def [^\n]+\n(?:[^\n]*\n)*?"
+                     r"\s*return None", src), "update_tc_v3 fake must return None"
+    # semantics pinned in the v3 docstring: v2 = production (dead_zone + flip
+    # budget), v3 = legacy 5-param; dispatch prefers v2 (pack_update.py)
+    assert "LEGACY" in src and "dead_zone" in src, \
+        "v3 docstring must document the v2/v3 semantic split (PLAN.md #5)"
+
+
+def test_11b_fakes_callable_and_return_none():
+    # stub path: _StubCustomOp.register_fake stores _fake; call it directly
+    fake2 = getattr(custom_ops.update_tc_v2, "_fake", None)
+    fake3 = getattr(custom_ops.update_tc_v3, "_fake", None)
+    if fake2 is None or fake3 is None:
+        pytest.skip("real torch exposes fakes via the registry, not _fake")
+    W, counter, fc, X, dY = _shapes()
+    assert fake2(W, counter, X, dY, 32) is None
+    assert fake3(W, counter, X, dY, 32) is None
+
+
 # ── standalone runner (no pytest needed) ──────────────────────────────────
 
 if __name__ == "__main__":

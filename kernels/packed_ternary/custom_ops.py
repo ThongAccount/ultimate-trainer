@@ -195,6 +195,13 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
     pu._up_fn(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
 
 
+@update_tc_v2.register_fake
+def _update_tc_v2_fake(W, counter, X, dY, threshold, dead_zone=1e-3,
+                       flip_count=None, flip_budget=0):
+    # void mutating op: no output tensor for the fake to allocate
+    return None
+
+
 @custom_op("packed_ternary::backward_update_fused", mutates_args=("W", "counter"))
 def backward_update_fused(W: torch.Tensor, counter: torch.Tensor,
                           dY: torch.Tensor, X: torch.Tensor,
@@ -226,12 +233,28 @@ def _backward_update_fused_fake(W, counter, dY, X, in_features, threshold):
 @custom_op("packed_ternary::update_tc_v3", mutates_args=("W", "counter"))
 def update_tc_v3(W: torch.Tensor, counter: torch.Tensor,
                  X: torch.Tensor, dY: torch.Tensor, threshold: int) -> None:
-    """Fused gradient → magnitude-scaled counter → bit-flip (TC v3)."""
+    """Fused gradient → magnitude-scaled counter → bit-flip (TC v3).
+
+    Semantics note (PLAN.md next-step 5): v3 is the LEGACY 5-param form —
+    magnitude-scaled dW, no dead_zone and no flip_count/flip_budget. v2 is
+    the production form (dead_zone + flip budget, 8-param). Dispatch
+    (_select_update_fn) always prefers v2_64/v2_32 over v3_32, so v3 only
+    runs when no v2 kernel is built; do not "unify" by changing v3 math —
+    that would break bit-stability vs historical runs. The unification done
+    here: both ops are now traceable (register_fake) and guarded
+    (_check_counter_scalar_args) identically.
+    """
     _check_counter_scalar_args(threshold)
     _ensure_loaded()
     if _update_tc_v3 is None:
         raise RuntimeError("TC update v3 kernel not available")
     _update_tc_v3(W, counter, X.contiguous(), dY.contiguous(), int(threshold))
+
+
+@update_tc_v3.register_fake
+def _update_tc_v3_fake(W, counter, X, dY, threshold):
+    # void mutating op: no output tensor for the fake to allocate
+    return None
 
 
 # ── Convenience: auto-dispatch wrappers ─────────────────────────────
