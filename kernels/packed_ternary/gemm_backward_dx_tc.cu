@@ -36,8 +36,12 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
     half*           __restrict__ dX,  // [B, K] FP16
     int B, int K, int N, int stride_words)
 {
-    int super_b0 = blockIdx.x * kSuperM;
-    int super_k0 = blockIdx.y * kSuperN;
+    // feat/dx-xpose: grid is launched (k_tiles, b_tiles) so blockIdx.x is the
+    // k-tile (fastest hw raster order) — co-resident CTAs share one dY b-tile
+    // (head dY DRAM ~26 GB -> ~1.6 GB). Bit-exact vs the old map: the N
+    // reduction is intra-CTA and unchanged, no cross-CTA atomics.
+    int super_k0 = blockIdx.x * kSuperN;
+    int super_b0 = blockIdx.y * kSuperM;
 
     int warp_id = threadIdx.x / 32;
     int wtid    = threadIdx.x % 32;
@@ -169,8 +173,10 @@ extern "C" void launch_packed_ternary_backward_dx_tc_64(
     const half* dY = static_cast<const half*>(dY_ptr);
     half* dX = static_cast<half*>(dX_ptr);
 
-    dim3 grid((batch_size + kSuperM - 1) / kSuperM,
-              (in_features + kSuperN - 1) / kSuperN);
+    // Transposed launch: grid=(k_tiles, b_tiles). gridDim.y caps at 65535 —
+    // b_tiles = ceil(B/64) is 256 at B=16352, 512 at B=32768, safe.
+    dim3 grid((in_features + kSuperN - 1) / kSuperN,
+              (batch_size + kSuperM - 1) / kSuperM);
     dim3 block(128);
 
     packed_ternary_backward_dx_tc_64_kernel<<<grid, block, 0, stream>>>(
