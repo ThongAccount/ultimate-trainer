@@ -1,0 +1,436 @@
+commit=d2adefec75b782935707d725414a1e5a7120f545
+### smoke (rc=0)
+fc1/M=16352 dx64==dx32: True
+fc1/M=16384 dx64==dx32: True
+fc2/M=16352 dx64==dx32: True
+fc2/M=16384 dx64==dx32: True
+head/M=16352 dx64==dx32: True
+head/M=16384 dx64==dx32: True
+
+RESULTS JSON: {
+  "gate": {
+    "fc1/M=16352": {
+      "parity": true
+    },
+    "fc1/M=16384": {
+      "parity": true
+    },
+    "fc2/M=16352": {
+      "parity": true
+    },
+    "fc2/M=16384": {
+      "parity": true
+    },
+    "head/M=16352": {
+      "parity": true
+    },
+    "head/M=16384": {
+      "parity": true
+    }
+  },
+  "scale": {}
+}
+### dxgate (rc=1)
+fc1/M=16352 dx64==dx32: True
+fc1/M=16352 dx32-vs-dx64 A=   75.37ms B=   44.86ms delta=-40.48% (thresh 2.36%) -> WIN sigma_null=1.18%
+fc1/M=16384 dx64==dx32: True
+fc1/M=16384 dx32-vs-dx64 A=   75.91ms B=   44.91ms delta=-40.84% (thresh 1.00%) -> WIN
+fc2/M=16352 dx64==dx32: True
+fc2/M=16352 dx32-vs-dx64 A=   78.02ms B=   45.92ms delta=-41.15% (thresh 1.00%) -> WIN
+fc2/M=16384 dx64==dx32: True
+fc2/M=16384 dx32-vs-dx64 A=   78.43ms B=   46.23ms delta=-41.05% (thresh 1.00%) -> WIN
+head/M=16352 dx64==dx32: True
+head/M=16352 dx32-vs-dx64 A= 1020.53ms B=  558.59ms delta=-45.27% (thresh 1.00%) -> WIN
+head/M=16384 dx64==dx32: True
+head/M=16384 dx32-vs-dx64 A= 1057.34ms B=  575.10ms delta=-45.61% (thresh 1.00%) -> WIN
+scale fc1/M=16352: fwd=36.51ms dx64=46.07ms up64=50.23ms
+scale fc1/M=16384: fwd=36.67ms dx64=46.24ms up64=50.83ms
+scale fc1/M=32768: fwd=74.14ms dx64=92.91ms up64=103.54ms
+scale fc2/M=16352: fwd=37.88ms dx64=46.85ms up64=49.12ms
+scale fc2/M=16384: fwd=38.21ms dx64=46.95ms up64=49.61ms
+scale fc2/M=32768: fwd=76.25ms dx64=95.34ms up64=105.52ms
+scale head/M=16352: fwd=476.77ms dx64=631.01ms up64=688.65ms
+scale head/M=16384: fwd=524.18ms dx64=674.48ms up64=723.60ms
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/tests/probe_dx_gate.py", line 109, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/tests/probe_dx_gate.py", line 88, in main
+    W, C, FC, X, dY = make_state(name, K, N, M, dev)
+                      ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/content/ultimate-trainer/tests/probe_dx_gate.py", line 39, in make_state
+    dY = (torch.randn(M, N, device=dev) * 0.1).half()
+          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 6.14 GiB. GPU 0 has a total capacity of 14.56 GiB of which 4.37 GiB is free. Including non-PyTorch memory, this process has 10.20 GiB memory in use. Of the allocated memory 8.34 GiB is allocated by PyTorch, and 1.74 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+### shipped_profile (rc=0)
+commit=d2adefec75b782935707d725414a1e5a7120f545
+torch=2.11.0+cu130 gpu=Tesla T4 PT_BACKEND=cublas PT_UPDATE_BACKEND=cublas
+/usr/local/lib/python3.13/dist-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+[arm B=0] empty_cache at step 150
+B0: median=589.16ms step1=120339.8 step99=586.2 step299=601.3 loss 11.0078->11.0078
+[arm B=5] empty_cache at step 150
+B5: median=600.59ms step1=595.7 step99=585.7 step299=597.7 loss 11.0000->11.0000
+
+RESULTS JSON: {
+  "commit": "d2adefec75b782935707d725414a1e5a7120f545",
+  "steps": 300,
+  "backend": {
+    "PT_BACKEND": "cublas",
+    "PT_UPDATE_BACKEND": "cublas"
+  },
+  "B0": {
+    "median_ms": 589.16,
+    "p10_ms": 538.19,
+    "step1_ms": 120339.8,
+    "step50_ms": 546.9,
+    "step99_ms": 586.2,
+    "step150_ms": 621.9,
+    "step299_ms": 601.3,
+    "first50": [
+      120339.8,
+      529.5,
+      516.7,
+      518.0,
+      519.2,
+      520.0,
+      523.7,
+      525.1,
+      523.4,
+      526.8,
+      526.6,
+      527.6,
+      524.5,
+      527.4,
+      505.1,
+      532.2,
+      527.5,
+      539.4,
+      526.3,
+      528.1,
+      531.2,
+      527.8,
+      532.4,
+      530.4,
+      530.1,
+      531.3,
+      535.5,
+      532.7,
+      536.2,
+      534.8,
+      538.4,
+      538.0,
+      539.2,
+      540.0,
+      534.7,
+      542.9,
+      539.3,
+      538.2,
+      546.4,
+      545.0,
+      545.2,
+      546.7,
+      545.9,
+      548.8,
+      546.1,
+      547.3,
+      545.1,
+      551.5,
+      545.8,
+      546.9
+    ],
+    "last50": [
+      589.4,
+      587.1,
+      593.8,
+      593.5,
+      587.3,
+      597.9,
+      592.9,
+      593.4,
+      599.3,
+      597.5,
+      597.0,
+      593.2,
+      595.3,
+      594.5,
+      598.0,
+      594.5,
+      598.2,
+      594.7,
+      598.8,
+      596.3,
+      598.9,
+      601.9,
+      597.5,
+      600.9,
+      601.5,
+      596.5,
+      602.9,
+      601.7,
+      595.1,
+      605.0,
+      602.5,
+      603.7,
+      599.5,
+      601.5,
+      603.8,
+      601.4,
+      600.0,
+      599.6,
+      606.1,
+      607.5,
+      602.8,
+      600.2,
+      599.6,
+      600.7,
+      604.5,
+      607.5,
+      599.2,
+      600.1,
+      599.0,
+      601.3
+    ],
+    "loss_1": 11.0078125,
+    "loss_final": 11.0078125,
+    "profiler_top": [
+      {
+        "kernel": "aten::mm",
+        "self_cuda_ms_total": 239.93
+      },
+      {
+        "kernel": "packed_ternary::update_tc_v2",
+        "self_cuda_ms_total": 132.37
+      },
+      {
+        "kernel": "turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_tn",
+        "self_cuda_ms_total": 128.98
+      },
+      {
+        "kernel": "turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_stages_32x1_nn",
+        "self_cuda_ms_total": 79.61
+      },
+      {
+        "kernel": "turing_s1688gemm_fp16_128x256_ldg8_stages_32x1_nt",
+        "self_cuda_ms_total": 64.77
+      },
+      {
+        "kernel": "void cutlass::Kernel2<cutlass_75_tensorop_s1688gemm_f16_128x256_nt_align8>(cutlass_75_tensorop_s1688gemm_f16_128x256_nt_align8::Params)",
+        "self_cuda_ms_total": 62.45
+      },
+      {
+        "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul> >(int, at::native::AUnaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul>)",
+        "self_cuda_ms_total": 43.52
+      },
+      {
+        "kernel": "aten::mul",
+        "self_cuda_ms_total": 43.52
+      },
+      {
+        "kernel": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+        "self_cuda_ms_total": 36.22
+      },
+      {
+        "kernel": "aten::add",
+        "self_cuda_ms_total": 36.22
+      },
+      {
+        "kernel": "turing_fp16_s1688gemm_fp16_128x256_ldg8_f2f_stages_32x1_nn",
+        "self_cuda_ms_total": 31.34
+      },
+      {
+        "kernel": "void at::native::(anonymous namespace)::cunn_SoftMaxBackward<8, c10::Half, float, c10::Half, at::native::(anonymous namespace)::LogSoftMaxBackwardEpilogue>(c10::Half*, c10::Half const*, c10::Half const*, long)",
+        "self_cuda_ms_total": 26.51
+      },
+      {
+        "kernel": "aten::_log_softmax_backward_data",
+        "self_cuda_ms_total": 26.51
+      },
+      {
+        "kernel": "void at::native::(anonymous namespace)::cunn_SoftMaxForward<8, c10::Half, float, c10::Half, at::native::(anonymous namespace)::LogSoftMaxForwardEpilogue>(c10::Half*, c10::Half const*, int)",
+        "self_cuda_ms_total": 24.65
+      },
+      {
+        "kernel": "aten::_log_softmax",
+        "self_cuda_ms_total": 24.65
+      }
+    ]
+  },
+  "B5": {
+    "median_ms": 600.59,
+    "p10_ms": 587.3,
+    "step1_ms": 595.7,
+    "step50_ms": 633.3,
+    "step99_ms": 585.7,
+    "step150_ms": 606.5,
+    "step299_ms": 597.7,
+    "first50": [
+      595.7,
+      587.2,
+      588.7,
+      587.1,
+      591.8,
+      597.7,
+      594.1,
+      600.5,
+      603.2,
+      603.5,
+      604.2,
+      606.3,
+      609.7,
+      612.9,
+      614.0,
+      607.7,
+      616.7,
+      614.3,
+      620.7,
+      602.5,
+      623.8,
+      626.0,
+      624.3,
+      631.0,
+      629.5,
+      633.1,
+      634.3,
+      638.7,
+      636.2,
+      637.5,
+      640.4,
+      644.5,
+      640.6,
+      642.1,
+      643.4,
+      646.9,
+      648.5,
+      647.9,
+      646.3,
+      649.2,
+      646.6,
+      650.7,
+      644.1,
+      643.5,
+      644.6,
+      638.7,
+      638.2,
+      640.4,
+      632.3,
+      633.3
+    ],
+    "last50": [
+      594.7,
+      596.4,
+      593.0,
+      590.3,
+      595.2,
+      595.0,
+      598.2,
+      595.5,
+      590.6,
+      591.2,
+      590.4,
+      596.3,
+      590.6,
+      592.5,
+      593.9,
+      593.0,
+      588.6,
+      587.4,
+      589.6,
+      597.7,
+      594.3,
+      591.2,
+      594.4,
+      593.1,
+      589.7,
+      585.5,
+      590.1,
+      590.1,
+      587.7,
+      590.3,
+      594.2,
+      588.9,
+      591.8,
+      586.6,
+      590.4,
+      588.7,
+      588.7,
+      593.1,
+      595.2,
+      590.0,
+      593.4,
+      590.4,
+      590.2,
+      591.6,
+      596.6,
+      589.4,
+      597.5,
+      594.0,
+      592.8,
+      597.7
+    ],
+    "loss_1": 11.0,
+    "loss_final": 11.0,
+    "profiler_top": [
+      {
+        "kernel": "aten::mm",
+        "self_cuda_ms_total": 258.94
+      },
+      {
+        "kernel": "packed_ternary::update_tc_v2",
+        "self_cuda_ms_total": 142.33
+      },
+      {
+        "kernel": "turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_tn",
+        "self_cuda_ms_total": 139.91
+      },
+      {
+        "kernel": "turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_stages_32x1_nn",
+        "self_cuda_ms_total": 85.63
+      },
+      {
+        "kernel": "turing_s1688gemm_fp16_128x256_ldg8_stages_32x1_nt",
+        "self_cuda_ms_total": 68.95
+      },
+      {
+        "kernel": "void cutlass::Kernel2<cutlass_75_tensorop_s1688gemm_f16_128x256_nt_align8>(cutlass_75_tensorop_s1688gemm_f16_128x256_nt_align8::Params)",
+        "self_cuda_ms_total": 66.54
+      },
+      {
+        "kernel": "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul> >(int, at::native::AUnaryFunctor<c10::Half, c10::Half, c10::Half, at::native::binary_internal::MulFunctor<float> >, std::array<char*, 2ul>)",
+        "self_cuda_ms_total": 43.41
+      },
+      {
+        "kernel": "aten::mul",
+        "self_cuda_ms_total": 43.41
+      },
+      {
+        "kernel": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(at::TensorIteratorBase&, at::native::CUDAFunctor_add<c10::Half> const&)::{lambda(int)#1})",
+        "self_cuda_ms_total": 38.09
+      },
+      {
+        "kernel": "aten::add",
+        "self_cuda_ms_total": 38.09
+      },
+      {
+        "kernel": "turing_fp16_s1688gemm_fp16_128x256_ldg8_f2f_stages_32x1_nn",
+        "self_cuda_ms_total": 33.4
+      },
+      {
+        "kernel": "void at::native::(anonymous namespace)::cunn_SoftMaxBackward<8, c10::Half, float, c10::Half, at::native::(anonymous namespace)::LogSoftMaxBackwardEpilogue>(c10::Half*, c10::Half const*, c10::Half const*, long)",
+        "self_cuda_ms_total": 26.5
+      },
+      {
+        "kernel": "aten::_log_softmax_backward_data",
+        "self_cuda_ms_total": 26.5
+      },
+      {
+        "kernel": "void at::native::(anonymous namespace)::cunn_SoftMaxForward<8, c10::Half, float, c10::Half, at::native::(anonymous namespace)::LogSoftMaxForwardEpilogue>(c10::Half*, c10::Half const*, int)",
+        "self_cuda_ms_total": 24.66
+      },
+      {
+        "kernel": "aten::_log_softmax",
+        "self_cuda_ms_total": 24.66
+      }
+    ]
+  }
+}

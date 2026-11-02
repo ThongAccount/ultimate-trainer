@@ -1,0 +1,33 @@
+commit=d2adefec75b782935707d725414a1e5a7120f545
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_dx_gate.py --parity-only
+rc=0
+fc1/M=16352 dx64==dx32: True
+fc1/M=16384 dx64==dx32: True
+fc2/M=16352 dx64==dx32: True
+fc2/M=16384 dx64==dx32: True
+head/M=16352 dx64==dx32: True
+head/M=16384 dx64==dx32: True
+
+RESULTS JSON: {
+  "gate": {
+    "fc1/M=16352": {
+      "parity": true
+    },
+    "fc1/M=16384": {
+      "parity": true
+    },
+    "fc2/M=16352": {
+      "parity": true
+    },
+    "fc2/M=16384": {
+      "parity": true
+    },
+    "head/M=16352": {
+      "parity": true
+    },
+    "head/M=16384": {
+      "parity": true
+    }
+  },
+  "scale": {}
+}
