@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 
 SCHEMA_VERSION = 2
 _ENV_WHITELIST = ("PT_BACKEND", "PT_UPDATE_BACKEND", "TORCH_CUDA_ARCH_LIST",
-                  "TORCH_EXTENSIONS_DIR", "UT_PREBUILT")
+                  "TORCH_EXTENSIONS_DIR", "UT_PREBUILT", "UT_PREBUILT_TAG")
 _FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _ANY_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 DEFAULT_DOCS_LINK = "docs/artefact-provenance.md"

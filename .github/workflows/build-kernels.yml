@@ -22,6 +22,11 @@ on:
       - "requirements.txt"
       - ".github/workflows/build-kernels.yml"
   workflow_dispatch:
+    inputs:
+      bundle_tag:
+        description: "Release tag to publish the kernel bundle to (default kernels-latest; use a per-branch tag like kernels-fwd-xpose when dispatching from a kernel-changing feature branch)"
+        required: false
+        default: "kernels-latest"
 
 permissions:
   contents: write  # release asset upload
@@ -62,7 +67,8 @@ jobs:
       - name: build kernel bundle
         run: python tools/build_kernel_bundle.py --out dist
 
-      - name: publish release assets (tag kernels-latest, stdlib python — no curl/gh in container)
+      - name: publish release assets (tag from UT_KERNELS_TAG, stdlib python — no curl/gh in container)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UT_KERNELS_TAG: ${{ inputs.bundle_tag || 'kernels-latest' }}
         run: python tools/publish_bundle.py dist

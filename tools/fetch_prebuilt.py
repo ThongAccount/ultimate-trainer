@@ -100,8 +100,15 @@ def _git_head(repo_dir: str) -> str:
         return ""
 
 
-def ensure_prebuilt(repo_dir: str, tag: str = DEFAULT_TAG, strict: bool = False) -> bool:
-    """Fetch + verify + extract the bundle. Returns True iff prebuilt is active."""
+def ensure_prebuilt(repo_dir: str, tag: str | None = None, strict: bool = False) -> bool:
+    """Fetch + verify + extract the bundle. Returns True iff prebuilt is active.
+
+    tag: release tag to fetch. Default: env UT_PREBUILT_TAG if set (per-branch
+    bundles published via build-kernels.yml workflow_dispatch input
+    bundle_tag), else kernels-latest. UT_PREBUILT=0 disables entirely.
+    """
+    if tag is None:
+        tag = os.environ.get("UT_PREBUILT_TAG") or DEFAULT_TAG
     os.environ.setdefault("UT_PREBUILT", "1")
     root = ext_root()
     if os.environ.get("UT_PREBUILT") == "0":
