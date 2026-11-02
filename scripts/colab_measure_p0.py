@@ -36,7 +36,7 @@ CHILD = r'''
 import json, os, statistics, subprocess, sys, time
 REPO = os.environ.get("REPO_DIR", "/content/ultimate-trainer")
 os.chdir(REPO); sys.path.insert(0, os.getcwd())
-name = sys.argv[1]
+name = [a for a in sys.argv[1:] if not a.startswith("--")][0]
 import torch
 assert torch.cuda.is_available()
 assert torch.cuda.get_device_capability(0) == (7, 5), "NOT a T4"
@@ -267,7 +267,8 @@ def main():
     for name, extra_env in JOBS:
         env = {**os.environ, "REPO_DIR": d, **extra_env}
         print(f"=== CHILD {name} ===", flush=True)
-        rc, out = run_streaming([sys.executable, os.path.abspath(__file__),
+        rc, out = run_streaming([sys.executable,
+                                 os.path.join(d, "scripts", "colab_measure_p0.py"),
                                  "--child", name], cwd=d, env=env)
         log = os.path.join(d, "results", f"measure_p0.{tag}.{name}.log")
         os.makedirs(os.path.dirname(log), exist_ok=True)
