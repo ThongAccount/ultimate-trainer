@@ -180,8 +180,12 @@ try:
             "top_cpu": sorted(rows, key=lambda r: -r["self_cpu_ms"])[:10],
         })
     elif name == "fc1fwd":
-        sys.path.insert(0, REPO)
-        from tests.bench_protocol import ab_median
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "bench_protocol", os.path.join(REPO, "tests", "bench_protocol.py"))
+        bp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bp)
+        ab_median = bp.ab_median
         from kernels.packed_ternary import custom_ops
         model = tg.build_model()
         layer = model.fc1s[0]
