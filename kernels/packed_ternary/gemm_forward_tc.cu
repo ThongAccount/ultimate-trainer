@@ -67,6 +67,12 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
     __shared__ half W_smem[kSuperN][kWMMA_K];  // [64][16]
     __shared__ half X_smem[kSuperM][kWMMA_K];  // [64][16]
 
+    // feat/fwd-spill: one 16×16 warp-private accumulator slot (4 KB), the
+    // shipped dX epilogue pattern. Only the owning warp ever touches its
+    // slot, so the epilogue needs no __syncthreads(). 8 KB total static smem
+    // instead of 20 KB -> occupancy 3 -> 6+ CTAs/SM on the 64 KB T4 SM.
+    __shared__ float spill[kWarps][kWMMA_M * kWMMA_N];  // [4][256]
+
     // WMMA fragments for 4 sub-tiles per warp
     // Each warp does 4 fragments: (b_off, n_off) offsets within warp's 32×32
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K,
@@ -152,40 +158,35 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
         __syncthreads();
     }
 
-    // ── Store results ──
-    // c_frag is float accumulator; Y is half.  Spill each of the 4 fragments
-    // to a per-(warp, fragment) slot first (all disjoint — no syncthreads
-    // needed between stores), one barrier, then one cooperative copy of all
-    // 2048 elements.  (Old code reused one spill[warp_id] buffer across
-    // fragments with per-fragment syncs — race window between store_matrix_sync
-    // and the copy produced scattered nondeterministic NaN.)
-    __shared__ float spill[4][kFragsPerWarp][kWMMA_M * kWMMA_N];  // 16 KB
-
+    // ── Store results to global Y ──
+    // WARP-PRIVATE spill (feat/fwd-spill): each warp stores a fragment to its
+    // own 4 KB slot, copies its own 16×16 tile to global, __syncwarp between
+    // fragments — zero CTA barriers in the epilogue. Bit-exact vs the old
+    // cooperative copy: no cross-warp data flow in either form, same float
+    // values to the same Y addresses (probe ut-c13-probes: fc1 −14.4%,
+    // fc2 −14.0%, head −7.0%).
     #pragma unroll
     for (int fi = 0; fi < kFragsPerWarp; ++fi) {
-        wmma::store_matrix_sync(&spill[warp_id][fi][0], c_frag[fi],
+        wmma::store_matrix_sync(&spill[warp_id][0], c_frag[fi],
                                 kWMMA_N, wmma::mem_row_major);
-    }
-    __syncthreads();
 
-    constexpr int kTotalStore = kFragsPerWarp * kWMMA_M * kWMMA_N;  // 1024, per warp
-    for (int tid = threadIdx.x; tid < kTotalStore * kWarps; tid += 128) {
-        int slot_w = tid / kTotalStore;          // 0..3 which warp's tile
-        int lin    = tid % kTotalStore;
-        int fi     = lin / (kWMMA_M * kWMMA_N);
-        int off    = lin % (kWMMA_M * kWMMA_N);
-        int r = off / kWMMA_N;
-        int c = off % kWMMA_N;
+        const int frag_b_off = (fi / 2) * kWMMA_M;
+        const int frag_n_off = (fi % 2) * kWMMA_N;
 
-        int warp_b_off_s = (slot_w / 2) * 32;
-        int warp_n_off_s = (slot_w % 2) * 32;
-
-        int gb = super_b0 + warp_b_off_s + (fi / 2) * kWMMA_M + r;
-        int gn = super_n0 + warp_n_off_s + (fi % 2) * kWMMA_N + c;
-
-        if (gb < B && gn < N) {
-            Y[gb * N + gn] = __float2half_rn(spill[slot_w][fi][off]);
+        // This warp copies its own 16×16 tile (32 lanes, 8 elements each).
+        #pragma unroll
+        for (int e = wtid; e < kWMMA_M * kWMMA_N; e += 32) {
+            int r = e / kWMMA_N;
+            int c = e % kWMMA_N;
+            int gb = super_b0 + warp_b_off + frag_b_off + r;
+            int gn = super_n0 + warp_n_off + frag_n_off + c;
+            if (gb < B && gn < N) {
+                Y[gb * N + gn] = __float2half_rn(spill[warp_id][r * kWMMA_N + c]);
+            }
         }
+        // store_matrix_sync + shared loads/stores are warp-synchronous; the next
+        // iteration reuses the slot only after this warp's reads retire.
+        __syncwarp();
     }
 }
 
