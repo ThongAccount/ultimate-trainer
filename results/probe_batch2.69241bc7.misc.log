@@ -1,0 +1,18 @@
+commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_misc.py
+rc=0
+== #12 clone cost ==
+clone (16352, 1024): median=0.3120 ms (0.053% of 593.98 ms step, sigma_null=10.63%)
+clone (16352, 4096): median=1.1820 ms (0.199% of 593.98 ms step, sigma_null=0.32%)
+== #15 small-dims fwd parity (TC64 kernel vs fp32 ref) ==
+shape B=64 K=64 N=64: max rel err 4.87e-04 OK
+shape B=48 K=48 N=48: max rel err 4.88e-04 OK
+shape B=16 K=1024 N=4096: max rel err 4.88e-04 OK
+shape B=80 K=96 N=112: max rel err 4.88e-04 OK
+shape B=16352 K=1024 N=4096: max rel err 9.54e-04 OK
+SMALL_DIMS: PASS
+== #6 fused CE probe ==
+CE eager:            median=   24.88 ms (sigma_null=0.06%)
+CE (logits*scale):   median=   38.72 ms
+CE torch.compile:    median=   21.70 ms
+PROBE_MISC: DONE

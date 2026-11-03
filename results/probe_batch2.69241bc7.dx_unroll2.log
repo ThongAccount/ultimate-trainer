@@ -1,0 +1,10 @@
+commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_dx_unroll2.py
+rc=0
+building prod + unroll2 variants...
+built.
+parity fc1: EXACT
+fc1    A=   35.21ms B=   46.24ms delta=+31.35% (thresh 2.83%) -> LOSS sigma_null=1.42%
+parity head: EXACT
+head   A=  507.92ms B=  571.72ms delta=+12.56% (thresh 1.35%) -> LOSS sigma_null=0.67%
+PROBE_DX_UNROLL2: PASS
