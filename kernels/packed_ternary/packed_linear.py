@@ -168,8 +168,17 @@ class PackedTernaryLinearFn(torch.autograd.Function):
         flip_budget = ctx.flip_budget
         B = dY.size(0)
 
+        # feat/scale-fold: with the train-side `* scale` folded into the
+        # decoded W16 (cublas arm), the update's dW = dY^T @ X still needs the
+        # factor — apply it to X (smaller than dY) once here. dX is already
+        # correct via the scaled W16 inside backward_dx. The fused path is
+        # skipped under fold: its kernel uses unscaled W_packed for dX.
+        from .cublas_backend import fold_scale
+        fscale = fold_scale()
+        X_upd = X * fscale if fscale else X
+
         # Fused backward + update: single kernel when dimensions allow
-        if counter is not None:
+        if counter is not None and not fscale:
             # Separate backward_dx + update is faster than fused kernel
             # due to atomicAdd contention on dX when many CTAs compete.
             # Use fused only when B, N, K are small.
@@ -184,14 +193,14 @@ class PackedTernaryLinearFn(torch.autograd.Function):
                 if _HAS_CUSTOM_OPS and B >= 16 and dY.size(1) >= 16 and ctx.in_features >= 16:
                     dX = co_backward_dx_tc(W_packed, dY, ctx.in_features)
                     co_update_tc_v2(
-                        W_packed, counter, X.contiguous(), dY.contiguous(),
+                        W_packed, counter, X_upd.contiguous(), dY.contiguous(),
                         int(threshold), float(dead_zone),
                         flip_count=flip_count, flip_budget=int(flip_budget))
                 else:
                     # Thread flip args so a budgeted layer cannot silently run
                     # unbudgeted here; backward_update raises loudly when
                     # flip_budget>0 on a non-v2/scalar dispatch (pack_update.py).
-                    dX = backward_update(W_packed, counter, dY, X, ctx.in_features, threshold,
+                    dX = backward_update(W_packed, counter, dY, X_upd, ctx.in_features, threshold,
                                          flip_count=flip_count, flip_budget=int(flip_budget))
         else:
             dX = backward_dx(W_packed, dY, ctx.in_features)

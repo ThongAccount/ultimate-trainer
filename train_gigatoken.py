@@ -93,6 +93,18 @@ def train_step_cudagraph(model, x, y, profile=False):
     B, T = x.shape
     scale = K ** -0.5
 
+    # feat/scale-fold: when PT_FOLD_SCALE matches K**-0.5 on the cublas arm,
+    # the 2^-5 mul is folded into the decoded W16 (power of two -> exact fp16
+    # exponent shift) and skipped here, removing 13 activation muls/step
+    # (measured: aten::mul ~43 ms of the 608 ms shipped step,
+    # results/measure_p0.ab4dbeb0.shipped-profile.log).
+    from kernels.packed_ternary.cublas_backend import fold_scale
+    fscale = fold_scale()
+    if fscale and abs(fscale - scale) > 1e-12:
+        raise RuntimeError(
+            f"PT_FOLD_SCALE={fscale} != K**-0.5={scale}; refusing to fold a "
+            "mismatched scale into W16")
+
     if profile:
         e = [torch.cuda.Event(enable_timing=True) for _ in range(8)]
         e[0].record()
@@ -101,16 +113,22 @@ def train_step_cudagraph(model, x, y, profile=False):
     h = model.embed(x).half().view(B * T, K)
     for i in range(N_LAYERS):
         h = model.norms[i](h.float()).half()
-        h = model.fc1s[i](h) * scale
+        h = model.fc1s[i](h)
+        if not fscale:
+            h = h * scale
         h = torch.nn.functional.gelu(h)
-        h = model.fc2s[i](h) * scale
+        h = model.fc2s[i](h)
+        if not fscale:
+            h = h * scale
 
     if profile:
         e[1].record()
         e[2].record()
 
     # Phase 2: Head
-    h = model.head(h) * scale
+    h = model.head(h)
+    if not fscale:
+        h = h * scale
 
     if profile:
         e[3].record()

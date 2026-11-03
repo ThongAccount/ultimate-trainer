@@ -553,10 +553,10 @@ def test_08_packed_linear_backward_fallback_threads_flip_args():
     src = open(os.path.join(REPO, "kernels/packed_ternary/packed_linear.py"),
                encoding="utf-8").read()
     assert re.search(
-        r"backward_update\(W_packed, counter, dY, X, ctx\.in_features, threshold,\s*"
+        r"backward_update\(W_packed, counter, dY, X(?:_upd)?, ctx\.in_features, threshold,\s*"
         r"flip_count=flip_count, flip_budget=int\(flip_budget\)\)", src
     ), ("packed_linear.py backward fallback must thread flip_count/flip_budget into "
-        "backward_update (no silent unbudgeted run)")
+        "backward_update (no silent unbudgeted run); X_upd is the scale-fold variant")
 
 
 # ── 9. feat/int16-range-guard: threshold/dead_zone range guards on every
@@ -659,6 +659,27 @@ def test_11b_fakes_callable_and_return_none():
     W, counter, fc, X, dY = _shapes()
     assert fake2(W, counter, X, dY, 32) is None
     assert fake3(W, counter, X, dY, 32) is None
+
+
+# ── 12. feat/scale-fold: muls skipped under PT_FOLD_SCALE + mismatch guard,
+#         W16 scaled in cublas backend, X_upd in update path ────────────────
+
+def test_12_scale_fold_wiring():
+    tg = open(os.path.join(REPO, "train_gigatoken.py"), encoding="utf-8").read()
+    assert "if not fscale:" in tg and "PT_FOLD_SCALE" in tg, \
+        "train_step_cudagraph must skip the * scale muls under fold_scale()"
+    assert re.search(r"PT_FOLD_SCALE=\{fscale\} != K\*\*-0\.5", tg), \
+        "mismatch guard: PT_FOLD_SCALE must equal K**-0.5 or raise"
+    cb = open(os.path.join(REPO, "kernels/packed_ternary/cublas_backend.py"),
+              encoding="utf-8").read()
+    assert cb.count("W16 = W16 * _FOLD_SCALE") == 2, \
+        "cublas fwd AND dX must scale the decoded W16 under fold"
+    pl = open(os.path.join(REPO, "kernels/packed_ternary/packed_linear.py"),
+              encoding="utf-8").read()
+    assert "X_upd = X * fscale if fscale else X" in pl, \
+        "backward must scale X for the update under fold (dW = dY^T X needs s)"
+    assert "if counter is not None and not fscale:" in pl, \
+        "fused path must be skipped under fold (its dX uses unscaled W)"
 
 
 # ── standalone runner (no pytest needed) ──────────────────────────────────

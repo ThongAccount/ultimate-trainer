@@ -19,9 +19,20 @@ import os
 _BACKEND = os.environ.get("PT_BACKEND", "custom").lower()
 _LOGGED = set()
 
+# feat/scale-fold: when set, the model's 2^-5 `* scale` passes are folded into
+# the decoded W16 (scale is a power of two -> exact fp16 exponent shift), so
+# Y = X @ (s*W)^T instead of (X @ W^T) * s. Removes 13 activation muls/step.
+# train_gigatoken skips its own muls when this is on.
+_FOLD_SCALE = float(os.environ.get("PT_FOLD_SCALE", "0") or 0)
+
 
 def use_cublas() -> bool:
     return _BACKEND == "cublas"
+
+
+def fold_scale() -> float:
+    """Scale folded into W16 by this backend (0 = off)."""
+    return _FOLD_SCALE if use_cublas() else 0.0
 
 
 def _log_once(key: str, msg: str) -> None:
@@ -36,6 +47,8 @@ def forward(W_packed, X, K: int):
 
     N = W_packed.size(0)
     W16 = decode_into(W_packed, N, K)
+    if _FOLD_SCALE:
+        W16 = W16 * _FOLD_SCALE  # power of two: bit-exact outside subnormals
     _log_once(("fwd", N, K), f"fwd cublas {N}x{K} (decode+matmul)")
     return torch_matmul_xt(X, W16)
 
@@ -46,6 +59,8 @@ def backward_dx(W_packed, dY, K: int):
 
     N = W_packed.size(0)
     W16 = decode_into(W_packed, N, K)
+    if _FOLD_SCALE:
+        W16 = W16 * _FOLD_SCALE  # dX = dY @ (s*W) matches gradient of Y=s(X@W^T)
     _log_once(("dx", N, K), f"dX cublas {N}x{K} (decode+matmul)")
     return torch_matmul(dY, W16)
 

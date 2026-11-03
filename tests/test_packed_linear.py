@@ -157,6 +157,43 @@ def test_direct_update():
     print(f"  ✅ autograd update: W changed, counter max={layer.counter.abs().max().item()}")
 
 
+def test_scale_fold_parity():
+    """feat/scale-fold: cublas fwd with W16 scaled by s=2^-5 must be bit-exact
+    vs (X @ W16^T) * s outside fp16 subnormals (power-of-two scale)."""
+    if not torch.cuda.is_available():
+        return
+    import kernels.packed_ternary.cublas_backend as cb
+    from kernels.packed_ternary.scratch import decode_into
+    from kernels.packed_ternary import pack_tensor, compute_stride_words
+
+    B, K, N = 64, 64, 48
+    torch.manual_seed(0)
+    W_fp32 = torch.randn(N, K, device="cuda") * 0.05
+    gamma = 0.05
+    W_packed = pack_tensor(W_fp32, gamma=gamma)
+    X = torch.randn(B, K, device="cuda", dtype=torch.float16)
+    s = K ** -0.5  # power of two only for K a power of two; use 2^-5 explicitly
+    s = 2.0 ** -5
+
+    W16 = decode_into(W_packed, N, K).clone()
+    ref = torch.matmul(X, W16.t()) * s
+
+    old = cb._FOLD_SCALE
+    try:
+        cb._FOLD_SCALE = s
+        got = cb.forward(W_packed, X, K)
+    finally:
+        cb._FOLD_SCALE = old
+
+    diff = (got.float() - ref.float()).abs()
+    subnormal = (ref != 0) & (ref.abs() < torch.finfo(torch.float16).tiny)
+    outside = diff[~subnormal.view_as(diff)]
+    assert outside.max().item() == 0.0, (
+        f"scale-fold not bit-exact outside subnormals: max|d|={outside.max().item()}")
+    n_sub = int(subnormal.sum())
+    print(f"  scale-fold parity: bit-exact outside {n_sub} subnormal elements")
+
+
 if __name__ == "__main__":
     tests = [
         ("forward shapes", test_forward_shapes),
@@ -166,6 +203,7 @@ if __name__ == "__main__":
         ("save/load", test_save_load),
         ("auto-dispatch", test_auto_dispatch),
         ("direct/autograd update", test_direct_update),
+        ("scale-fold parity", test_scale_fold_parity),
     ]
     for name, fn in tests:
         try:
