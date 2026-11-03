@@ -81,7 +81,7 @@ __global__ void update_epilogue_kernel(
 // See layout derivation in the header comment.
 extern "C" void packed_ternary_dw_gemm_f32(
     const half* dY, const half* X, float* dW,
-    int B, int N, int K, cudaStream_t stream)
+    int B, int N, int K, int algo, cudaStream_t stream)
 {
     if (B == 0) return;
     // Self-managed handle (at::cuda::getCurrentCUDALibraryHandles is not
@@ -104,7 +104,10 @@ extern "C" void packed_ternary_dw_gemm_f32(
         dY, CUDA_R_16F, N,
         &beta,
         dW, CUDA_R_32F, K,
-        CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT);
+        CUBLAS_COMPUTE_32F,
+        // feat/dw-algo: algo < 0 keeps the heuristic default; >= 0 pins an
+        // explicit cublasGemmAlgo_t (swept on T4 for the head shape).
+        algo < 0 ? CUBLAS_GEMM_DEFAULT : (cublasGemmAlgo_t)algo);
     TORCH_CHECK(st == CUBLAS_STATUS_SUCCESS,
                 "cublasGemmEx dw_gemm_f32 failed: ", (int)st);
 }

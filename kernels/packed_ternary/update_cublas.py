@@ -29,6 +29,10 @@ CU_PATH = os.path.join(HERE, "gemm_update_cublas.cu")
 # swept on T4 if the default does not break the limit cycle.
 DEAD_ZONE_DEFAULT = 1e-3
 
+# feat/dw-algo: cuBLAS GEMM algo for the dW GEMM (-1 = heuristic default).
+# Swept on T4; see docs/speedpass/2026-11-03-dw-algo-prereg.md.
+_DW_ALGO = int(os.environ.get("PT_DW_ALGO", "-1"))
+
 _HAS_UPDATE_CUBLAS = False
 _dw_gemm_f32 = None
 _update_epilogue = None
@@ -54,19 +58,20 @@ def _load_update_cublas():
 extern "C" {
     void packed_ternary_dw_gemm_f32(
         const void* dY, const void* X, void* dW,
-        int B, int N, int K, cudaStream_t stream);
+        int B, int N, int K, int algo, cudaStream_t stream);
     void launch_update_epilogue(
         void* W, void* counter, void* flip_count, const void* dW,
         int N, int K, int stride_words, int64_t threshold, float dead_zone,
         int16_t flip_budget, cudaStream_t stream);
 }
 
-void dw_gemm_f32(torch::Tensor dY, torch::Tensor X, torch::Tensor dW) {
+void dw_gemm_f32(torch::Tensor dY, torch::Tensor X, torch::Tensor dW,
+                 int64_t algo) {
     int B = dY.size(0), N = dY.size(1), K = X.size(1);
     packed_ternary_dw_gemm_f32(
         dY.data_ptr<at::Half>(), X.data_ptr<at::Half>(),
         dW.data_ptr<float>(),
-        B, N, K, c10::cuda::getCurrentCUDAStream());
+        B, N, K, (int)algo, c10::cuda::getCurrentCUDAStream());
 }
 
 void update_epilogue(torch::Tensor W, torch::Tensor counter,
@@ -82,7 +87,7 @@ void update_epilogue(torch::Tensor W, torch::Tensor counter,
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("dw_gemm_f32", &dw_gemm_f32, "dW = dY^T @ X, fp16-in/fp32-out cuBLAS");
+    m.def("dw_gemm_f32", &dw_gemm_f32, "dW = dY^T @ X, fp16-in/fp32-out cuBLAS, algo (-1=default)");
     m.def("update_epilogue", &update_epilogue, "counter/flip epilogue (v2_64 semantics)");
 }
             """,
@@ -136,7 +141,7 @@ def update_cublas(W: torch.Tensor, counter: torch.Tensor,
     dY = dY.contiguous()
     N, K = W.size(0), X.size(1)
     dW = torch.empty((N, K), dtype=torch.float32, device=X.device)
-    _dw_gemm_f32(dY, X, dW)
+    _dw_gemm_f32(dY, X, dW, _DW_ALGO)
     if flip_count is None:
         flip_count = torch.empty((1,), dtype=torch.int16, device=X.device)
     _update_epilogue(W, counter, flip_count, dW, int(threshold),
