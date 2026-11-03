@@ -1,0 +1,85 @@
+{
+  "commit": "b681d2b72dd68a406c5f79142aba62fad066fe23",
+  "tag": "b681d2b7",
+  "branch": "feat/scale-fold",
+  "verdict": "fail",
+  "rc": 1,
+  "pytest": "104 passed (incl. test_scale_fold_parity \u2014 fwd fold bit-exact outside subnormals)",
+  "sigma_null_pct_aa": 2.782,
+  "delta_pct": 361.39,
+  "fold_off_median_ms": 512.61,
+  "fold_on_median_ms": 2365.13,
+  "flip_trajectory_match": false,
+  "note": "fold-on fwd bit-exact (loss step1/29 identical) but step +361% and loss frozen at step-29 value -> update path broken and per-call W16*s alloc defeats persistent scratch; root cause not isolated; NOT shipped",
+  "children": {
+    "fold-off": {
+      "child": "fold-off",
+      "fold": "off",
+      "median_ms": 512.61,
+      "mean_ms": 512.36,
+      "checkpoints": [
+        {
+          "step": 1,
+          "loss": 11.0625,
+          "flips": 0
+        },
+        {
+          "step": 29,
+          "loss": 11.054688,
+          "flips": 0
+        },
+        {
+          "step": 59,
+          "loss": 9.289062,
+          "flips": 0
+        }
+      ]
+    },
+    "fold-off-null": {
+      "child": "fold-off-null",
+      "fold": "off",
+      "median_ms": 526.87,
+      "mean_ms": 527.19,
+      "checkpoints": [
+        {
+          "step": 1,
+          "loss": 11.0625,
+          "flips": 0
+        },
+        {
+          "step": 29,
+          "loss": 11.054688,
+          "flips": 0
+        },
+        {
+          "step": 59,
+          "loss": 9.289062,
+          "flips": 0
+        }
+      ]
+    },
+    "fold-on": {
+      "child": "fold-on",
+      "fold": "0.03125",
+      "median_ms": 2365.13,
+      "mean_ms": 2367.64,
+      "checkpoints": [
+        {
+          "step": 1,
+          "loss": 11.0625,
+          "flips": 0
+        },
+        {
+          "step": 29,
+          "loss": 11.054688,
+          "flips": 0
+        },
+        {
+          "step": 59,
+          "loss": 11.054688,
+          "flips": 0
+        }
+      ]
+    }
+  }
+}
