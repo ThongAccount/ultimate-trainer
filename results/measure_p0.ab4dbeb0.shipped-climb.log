@@ -1,0 +1,5 @@
+commit=ab4dbeb09004960c36981f5fd7117c1e4e63c2ab
+child=shipped-climb
+rc=0
+
+RESULTS_JSON: {"child": "shipped-climb", "gpu": "Tesla T4", "cache_at": null, "step_ms_checkpoints": {"1": 619.6, "49": 605.8, "99": 580.6, "149": 632.6, "150": 626.4, "151": 629.6, "199": 598.7}, "median_first50": 631.2, "median_last50": 608.19, "loss_first_last": [11.0546875, 10.171875]}

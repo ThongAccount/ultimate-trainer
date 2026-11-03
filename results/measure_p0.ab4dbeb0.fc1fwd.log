@@ -1,0 +1,13 @@
+commit=ab4dbeb09004960c36981f5fd7117c1e4e63c2ab
+child=fc1fwd
+rc=1
+
+Traceback (most recent call last):
+  File "/content/ultimate-trainer/scripts/colab_measure_p0.py", line 293, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/content/ultimate-trainer/scripts/colab_measure_p0.py", line 229, in main
+    exec(compile(CHILD, "<child>", "exec"), {"__name__": "__main__"})
+    ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<child>", line 150, in <module>
+ModuleNotFoundError: No module named 'tests.bench_protocol'

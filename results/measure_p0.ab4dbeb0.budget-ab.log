@@ -1,0 +1,5 @@
+commit=ab4dbeb09004960c36981f5fd7117c1e4e63c2ab
+child=budget-ab
+rc=0
+
+RESULTS_JSON: {"child": "budget-ab", "gpu": "Tesla T4", "b0_median_ms": 593.98, "b5_median_ms": 595.01, "delta_ms": 1.03, "delta_pct": 0.174, "b5_total_flips_after_70_steps": 1259}

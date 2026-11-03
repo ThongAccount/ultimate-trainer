@@ -1,0 +1,450 @@
+{
+  "children": {
+    "budget-ab": {
+      "b0_median_ms": 593.98,
+      "b5_median_ms": 595.01,
+      "b5_total_flips_after_70_steps": 1259,
+      "child": "budget-ab",
+      "delta_ms": 1.03,
+      "delta_pct": 0.174,
+      "gpu": "Tesla T4"
+    },
+    "custom-glue": {
+      "child": "custom-glue",
+      "device_kernel_sum_ms": 262069.3,
+      "gpu": "Tesla T4",
+      "step_ms_median": 3266.7,
+      "top_cpu": [
+        {
+          "count": 41,
+          "key": "cudaDeviceSynchronize",
+          "self_cpu_ms": 130404.297,
+          "self_cuda_ms": 0.155
+        },
+        {
+          "count": 8080,
+          "key": "cudaLaunchKernel",
+          "self_cpu_ms": 89.599,
+          "self_cuda_ms": 0.0
+        },
+        {
+          "count": 520,
+          "key": "packed_ternary::update_tc_v2",
+          "self_cpu_ms": 57.063,
+          "self_cuda_ms": 50100.705
+        },
+        {
+          "count": 520,
+          "key": "packed_ternary::backward_dx_tc",
+          "self_cpu_ms": 55.908,
+          "self_cuda_ms": 44465.181
+        },
+        {
+          "count": 520,
+          "key": "PackedTernaryLinearFn",
+          "self_cpu_ms": 33.909,
+          "self_cuda_ms": 28841.241
+        },
+        {
+          "count": 520,
+          "key": "PackedTernaryLinearFnBackward",
+          "self_cpu_ms": 28.735,
+          "self_cuda_ms": 0.0
+        },
+        {
+          "count": 3000,
+          "key": "aten::empty",
+          "self_cpu_ms": 27.917,
+          "self_cuda_ms": 0.0
+        },
+        {
+          "count": 1040,
+          "key": "aten::mul",
+          "self_cpu_ms": 20.135,
+          "self_cuda_ms": 1753.515
+        },
+        {
+          "count": 520,
+          "key": "aten::sum",
+          "self_cpu_ms": 14.987,
+          "self_cuda_ms": 450.045
+        },
+        {
+          "count": 520,
+          "key": "aten::add",
+          "self_cpu_ms": 12.944,
+          "self_cuda_ms": 1253.246
+        }
+      ],
+      "top_kernels": [
+        {
+          "count": 520,
+          "key": "packed_ternary::update_tc_v2",
+          "self_cpu_ms": 57.063,
+          "self_cuda_ms": 50100.705
+        },
+        {
+          "count": 520,
+          "key": "packed_ternary_update_tc_v2_64_kernel(__half const*, __half const*, unsigned int*, short*, short*, int, int, int, int, s",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 50100.705
+        },
+        {
+          "count": 520,
+          "key": "packed_ternary::backward_dx_tc",
+          "self_cpu_ms": 55.908,
+          "self_cuda_ms": 44465.181
+        },
+        {
+          "count": 520,
+          "key": "packed_ternary_backward_dx_tc_64_kernel(unsigned int const*, __half const*, __half*, int, int, int, int)",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 44465.181
+        },
+        {
+          "count": 520,
+          "key": "PackedTernaryLinearFn",
+          "self_cpu_ms": 33.909,
+          "self_cuda_ms": 28841.241
+        },
+        {
+          "count": 520,
+          "key": "packed_ternary_forward_tc_64_kernel(unsigned int const*, __half const*, __half*, int, int, int, int)",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 28841.241
+        },
+        {
+          "count": 1040,
+          "key": "aten::mul",
+          "self_cpu_ms": 20.135,
+          "self_cuda_ms": 1753.515
+        },
+        {
+          "count": 1040,
+          "key": "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::Half, c10::Half, c10::Half, at::native:",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 1753.515
+        },
+        {
+          "count": 520,
+          "key": "aten::add",
+          "self_cpu_ms": 12.944,
+          "self_cuda_ms": 1253.246
+        },
+        {
+          "count": 520,
+          "key": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 1253.246
+        },
+        {
+          "count": 40,
+          "key": "aten::_log_softmax_backward_data",
+          "self_cpu_ms": 0.813,
+          "self_cuda_ms": 1061.777
+        },
+        {
+          "count": 40,
+          "key": "void at::native::(anonymous namespace)::cunn_SoftMaxBackward<8, c10::Half, float, c10::Half, at::native::(anonymous name",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 1061.777
+        },
+        {
+          "count": 40,
+          "key": "aten::_log_softmax",
+          "self_cpu_ms": 1.031,
+          "self_cuda_ms": 986.581
+        },
+        {
+          "count": 40,
+          "key": "void at::native::(anonymous namespace)::cunn_SoftMaxForward<8, c10::Half, float, c10::Half, at::native::(anonymous names",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 986.581
+        },
+        {
+          "count": 520,
+          "key": "aten::sum",
+          "self_cpu_ms": 14.987,
+          "self_cuda_ms": 450.045
+        },
+        {
+          "count": 520,
+          "key": "void at::native::reduce_kernel<128, 4, at::native::ReduceOp<c10::Half, at::native::func_wrapper_t<c10::Half, at::native:",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 449.491
+        },
+        {
+          "count": 1080,
+          "key": "aten::copy_",
+          "self_cpu_ms": 12.904,
+          "self_cuda_ms": 449.312
+        },
+        {
+          "count": 240,
+          "key": "aten::gelu_backward",
+          "self_cpu_ms": 5.41,
+          "self_cuda_ms": 388.088
+        },
+        {
+          "count": 240,
+          "key": "void at::native::vectorized_elementwise_kernel<4, at::native::GeluBackwardCUDAKernelImpl(at::TensorIteratorBase&, at::na",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 388.088
+        },
+        {
+          "count": 240,
+          "key": "aten::native_layer_norm_backward",
+          "self_cpu_ms": 4.775,
+          "self_cuda_ms": 385.478
+        },
+        {
+          "count": 120,
+          "key": "aten::fill_",
+          "self_cpu_ms": 4.031,
+          "self_cuda_ms": 317.3
+        },
+        {
+          "count": 80,
+          "key": "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::Half>, std::array<char*, 1ul> >(int, at::",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 282.018
+        },
+        {
+          "count": 240,
+          "key": "aten::gelu",
+          "self_cpu_ms": 3.816,
+          "self_cuda_ms": 264.544
+        },
+        {
+          "count": 240,
+          "key": "void at::native::vectorized_elementwise_kernel<4, at::native::GeluCUDAKernelImpl(at::TensorIteratorBase&, at::native::Ge",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 264.544
+        },
+        {
+          "count": 240,
+          "key": "void at::native::(anonymous namespace)::layer_norm_grad_input_kernel_vectorized<float, float, false>(float const*, float",
+          "self_cpu_ms": 0.0,
+          "self_cuda_ms": 246.86
+        }
+      ]
+    },
+    "shipped-climb": {
+      "cache_at": null,
+      "child": "shipped-climb",
+      "gpu": "Tesla T4",
+      "loss_first_last": [
+        11.0546875,
+        10.171875
+      ],
+      "median_first50": 631.2,
+      "median_last50": 608.19,
+      "step_ms_checkpoints": {
+        "1": 619.6,
+        "149": 632.6,
+        "150": 626.4,
+        "151": 629.6,
+        "199": 598.7,
+        "49": 605.8,
+        "99": 580.6
+      }
+    },
+    "shipped-profile": {
+      "child": "shipped-profile",
+      "device_kernel_sum_ms": 122649.6,
+      "gpu": "Tesla T4",
+      "loss_first_last": [
+        11.0546875,
+        9.1953125
+      ],
+      "profiler_table_head": [
+        "-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ",
+        "                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg       CPU Mem  Self CPU Mem      CUDA Mem  Self CUDA Mem    # of Calls  ",
+        "-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ",
+        "                                               aten::mm         0.22%     133.285ms         0.28%     171.719ms      66.046us       26.414s        43.09%       26.414s      10.159ms           0 B           0 B     343.65 GB     343.65 GB          2600  ",
+        "         turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_tn         0.00%       0.000us         0.00%       0.000us       0.000us       14.304s        23.34%       14.304s      11.003ms           0 B           0 B           0 B           0 B          1300  ",
+        "                           packed_ternary::update_tc_v2         0.36%     219.196ms         0.46%     282.317ms     217.167us       14.275s        23.29%       14.275s      10.980ms           0 B           0 B           0 B     -37.93 GB          1300  ",
+        "turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_stages_3...         0.00%       0.000us         0.00%       0.000us       0.000us        8.707s        14.20%        8.707s      12.438ms           0 B           0 B           0 B           0 B           700  ",
+        "      turing_s1688gemm_fp16_128x256_ldg8_stages_32x1_nt         0.00%       0.000us         0.00%       0.000us       0.000us        6.964s        11.36%        6.964s      69.637ms           0 B           0 B           0 B           0 B           100  ",
+        "void cutlass::Kernel2<cutlass_75_tensorop_s1688gemm_...         0.00%       0.000us         0.00%       0.000us       0.000us        6.776s        11.05%        6.776s       5.647ms           0 B           0 B           0 B           0 B          1200  ",
+        "                                              aten::mul         0.08%      50.977ms         0.12%      75.905ms      29.194us        4.339s         7.08%        4.339s       1.669ms           0 B           0 B     493.73 GB     493.73 GB          2600  ",
+        "void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us        4.339s         7.08%        4.339s       1.669ms           0 B           0 B           0 B           0 B          2600  ",
+        "                                              aten::add         0.06%      35.903ms         0.09%      52.630ms      40.484us        3.816s         6.22%        3.816s       2.935ms           0 B           0 B     246.84 GB     246.84 GB          1300  "
+      ],
+      "step_ms_checkpoints": {
+        "0": 574.2,
+        "24": 606.9,
+        "49": 656.3,
+        "74": 604.4,
+        "99": 585.0
+      },
+      "step_ms_median": 608.34,
+      "top_kernels": [
+        {
+          "count": 2600,
+          "key": "aten::mm",
+          "self_cuda_ms": 26413.694
+        },
+        {
+          "count": 1300,
+          "key": "turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_tn",
+          "self_cuda_ms": 14304.249
+        },
+        {
+          "count": 1300,
+          "key": "packed_ternary::update_tc_v2",
+          "self_cuda_ms": 14274.551
+        },
+        {
+          "count": 700,
+          "key": "turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_stages_32x1_nn",
+          "self_cuda_ms": 8706.599
+        },
+        {
+          "count": 100,
+          "key": "turing_s1688gemm_fp16_128x256_ldg8_stages_32x1_nt",
+          "self_cuda_ms": 6963.714
+        },
+        {
+          "count": 1200,
+          "key": "void cutlass::Kernel2<cutlass_75_tensorop_s1688gemm_f16_128x256_nt_align8>(cutlass_75_tensorop_s1688gemm_f16_128x256_nt_",
+          "self_cuda_ms": 6775.842
+        },
+        {
+          "count": 2600,
+          "key": "aten::mul",
+          "self_cuda_ms": 4339.094
+        },
+        {
+          "count": 2600,
+          "key": "void at::native::vectorized_elementwise_kernel<4, at::native::AUnaryFunctor<c10::Half, c10::Half, c10::Half, at::native:",
+          "self_cuda_ms": 4339.094
+        },
+        {
+          "count": 1300,
+          "key": "aten::add",
+          "self_cuda_ms": 3815.775
+        },
+        {
+          "count": 1300,
+          "key": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::CUDAFunctor_add<c10::Half> >(",
+          "self_cuda_ms": 3815.775
+        },
+        {
+          "count": 600,
+          "key": "turing_fp16_s1688gemm_fp16_128x256_ldg8_f2f_stages_32x1_nn",
+          "self_cuda_ms": 3402.698
+        },
+        {
+          "count": 100,
+          "key": "aten::_log_softmax_backward_data",
+          "self_cuda_ms": 2651.166
+        },
+        {
+          "count": 100,
+          "key": "void at::native::(anonymous namespace)::cunn_SoftMaxBackward<8, c10::Half, float, c10::Half, at::native::(anonymous name",
+          "self_cuda_ms": 2651.166
+        },
+        {
+          "count": 100,
+          "key": "aten::_log_softmax",
+          "self_cuda_ms": 2466.441
+        },
+        {
+          "count": 100,
+          "key": "void at::native::(anonymous namespace)::cunn_SoftMaxForward<8, c10::Half, float, c10::Half, at::native::(anonymous names",
+          "self_cuda_ms": 2466.441
+        },
+        {
+          "count": 2700,
+          "key": "aten::copy_",
+          "self_cuda_ms": 1266.402
+        },
+        {
+          "count": 1300,
+          "key": "aten::sum",
+          "self_cuda_ms": 1136.616
+        },
+        {
+          "count": 1300,
+          "key": "void at::native::reduce_kernel<128, 4, at::native::ReduceOp<c10::Half, at::native::func_wrapper_t<c10::Half, at::native:",
+          "self_cuda_ms": 1134.944
+        },
+        {
+          "count": 600,
+          "key": "aten::native_layer_norm_backward",
+          "self_cuda_ms": 971.803
+        },
+        {
+          "count": 600,
+          "key": "aten::gelu_backward",
+          "self_cuda_ms": 949.15
+        },
+        {
+          "count": 600,
+          "key": "void at::native::vectorized_elementwise_kernel<4, at::native::GeluBackwardCUDAKernelImpl(at::TensorIteratorBase&, at::na",
+          "self_cuda_ms": 949.15
+        },
+        {
+          "count": 300,
+          "key": "aten::fill_",
+          "self_cuda_ms": 795.266
+        },
+        {
+          "count": 1300,
+          "key": "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}:",
+          "self_cuda_ms": 753.489
+        },
+        {
+          "count": 200,
+          "key": "void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<c10::Half>, std::array<char*, 1ul> >(int, at::",
+          "self_cuda_ms": 706.489
+        },
+        {
+          "count": 2600,
+          "key": "decode_kernel(unsigned int const*, __half*, int, int, int)",
+          "self_cuda_ms": 685.412
+        }
+      ]
+    }
+  },
+  "commit": "ab4dbeb09004960c36981f5fd7117c1e4e63c2ab",
+  "provenance": {
+    "branch": "master",
+    "commit": "ab4dbeb09004960c36981f5fd7117c1e4e63c2ab",
+    "config": {
+      "children": [
+        "shipped-profile",
+        "shipped-climb",
+        "shipped-climb-cache",
+        "budget-ab",
+        "custom-glue",
+        "fc1fwd"
+      ],
+      "expect_commit": "ab4dbeb"
+    },
+    "cuda": "13.0",
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null,
+      "TORCH_EXTENSIONS_DIR": "/root/.cache/torch_extensions",
+      "UT_PREBUILT": "1",
+      "UT_PREBUILT_TAG": null
+    },
+    "git_dirty": false,
+    "gpu": {
+      "capability": [
+        7,
+        5
+      ],
+      "name": "Tesla T4"
+    },
+    "python": "3.13.16",
+    "schema_version": 2,
+    "timestamp_utc": "2026-11-02T23:02:00+00:00",
+    "torch": "2.11.0+cu130"
+  },
+  "tag": "ab4dbeb0",
+  "verdict": "measured"
+}
