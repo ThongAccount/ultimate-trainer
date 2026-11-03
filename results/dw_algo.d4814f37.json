@@ -1,0 +1,77 @@
+{
+  "commit": "d4814f37e62ef9fc497864e562c13920effe373a",
+  "tag": "d4814f37",
+  "branch": "feat/dw-algo",
+  "verdict": "negative",
+  "rc": 1,
+  "provenance": {
+    "schema_version": 2,
+    "commit": "d4814f37e62ef9fc497864e562c13920effe373a",
+    "branch": "feat/dw-algo",
+    "git_dirty": false,
+    "timestamp_utc": "2026-11-03T17:50:00+00:00",
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "gpu": {
+      "name": "Tesla T4",
+      "capability": [
+        7,
+        5
+      ]
+    },
+    "env": {
+      "PT_BACKEND": "cublas",
+      "PT_UPDATE_BACKEND": "cublas",
+      "UT_PREBUILT_TAG": "kernels-dw-algo"
+    }
+  },
+  "note": "reconstructed from colab stdout after early stop; pytest rc=1 was the artefact-gate on the unprovenanced scale_fold json (fixed on master 3ded021), not a code failure",
+  "head_default_ms": 74.327,
+  "head_best": {
+    "algo": -1,
+    "median_ms": 75.22,
+    "delta_pct": 1.2,
+    "max_abs_diff": 0.0,
+    "sign_disagree_rate": 0.0
+  },
+  "head_top5": [
+    {
+      "algo": -1,
+      "median_ms": 75.22,
+      "delta_pct": 1.2,
+      "max_abs_diff": 0.0,
+      "sign_disagree_rate": 0.0
+    },
+    {
+      "algo": 6,
+      "median_ms": 334.976,
+      "delta_pct": 350.68,
+      "max_abs_diff": 0.00023412704467773438,
+      "sign_disagree_rate": 4.118221568205627e-06
+    },
+    {
+      "algo": 11,
+      "median_ms": 345.701,
+      "delta_pct": 365.11,
+      "max_abs_diff": 0.00021982192993164062,
+      "sign_disagree_rate": 3.826838110398967e-06
+    },
+    {
+      "algo": 5,
+      "median_ms": 375.008,
+      "delta_pct": 404.54,
+      "max_abs_diff": 0.00023412704467773438,
+      "sign_disagree_rate": 4.118221568205627e-06
+    },
+    {
+      "algo": 3,
+      "median_ms": 424.85,
+      "delta_pct": 471.6,
+      "max_abs_diff": 0.00023412704467773438,
+      "sign_disagree_rate": 4.118221568205627e-06
+    }
+  ],
+  "fc_default_ms": 5.433,
+  "conclusion": "CUBLAS_GEMM_DEFAULT already optimal on T4 for both shapes; every explicit algo 4.5-5.7x slower. Item #7 closed as measured-negative; branch not merged."
+}
