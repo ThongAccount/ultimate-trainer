@@ -34,6 +34,7 @@ constexpr int kSuperM = 64;     // CTA batch tile
 constexpr int kSuperN = 64;     // CTA feature tile
 constexpr int kWarps  = 4;
 constexpr int kFragsPerWarp = 4;  // 2×2 grid per warp
+constexpr int kK4 = 4 * kWMMA_K;  // 64 — probe fwd_uint4 K-window
 
 __global__ __launch_bounds__(128) void probe_fwd_uint4_kernel(
     const uint32_t* __restrict__ W,   // [N, stride] packed
@@ -93,7 +94,6 @@ __global__ __launch_bounds__(128) void probe_fwd_uint4_kernel(
         wmma::fill_fragment(c_frag[f], 0.0f);
 
     // Outer loop over K in steps of 64 (probe fwd_uint4: one uint4 W-load per row per window)
-    constexpr int kK4 = 4 * kWMMA_K;  // 64
     for (int k0 = 0; k0 < K; k0 += kK4) {
         int tile_k = min(kK4, K - k0);
 
