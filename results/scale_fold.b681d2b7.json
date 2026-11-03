@@ -81,5 +81,31 @@
         }
       ]
     }
+  },
+  "provenance": {
+    "schema_version": 2,
+    "commit": "b681d2b72dd68a406c5f79142aba62fad066fe23",
+    "branch": "feat/scale-fold",
+    "git_dirty": false,
+    "timestamp_utc": "2026-11-03T17:20:00+00:00",
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "gpu": {
+      "name": "Tesla T4",
+      "capability": [
+        7,
+        5
+      ]
+    },
+    "env": {
+      "PT_BACKEND": "cublas",
+      "PT_UPDATE_BACKEND": "cublas",
+      "UT_PREBUILT": "1"
+    },
+    "config": {
+      "note": "reconstructed from colab stdout transcript after session reaped; RESULTS_JSON lines verbatim"
+    },
+    "reconstructed_from_transcript": true
   }
 }
