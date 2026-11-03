@@ -98,25 +98,25 @@ __global__ __launch_bounds__(128) void probe_fwd_uint4_kernel(
         int tile_k = min(kK4, K - k0);
 
         // ── Cooperative load W[super_n0:super_n0+64, k0:k0+64] via uint4 ──
-        // 64 rows x 4 word-groups = 256 uint4 (16 B) loads; k0 % 64 == 0 and
+        // One uint4 (16 B, 4 words = 64 weights) per W row: k0 % 64 == 0 and
         // stride_words % 4 == 0 at the shipped shapes, so every uint4 is
-        // 16 B-aligned. Tail tile (K % 64 != 0) falls back to per-word guards.
+        // 16 B-aligned. 64 uint4 loads total. Tail window (K % 64 != 0) uses
+        // guarded per-word scalar loads.
         {
-            int n_groups = kSuperN * 4;  // 256
-            for (int tid = threadIdx.x; tid < n_groups; tid += 128) {
-                int r = tid / 4;
-                int w = tid % 4;
-                int gn = super_n0 + r;
-                int wb = (k0 / kWeightsPerWord) + w * 4;  // first word of this group
+            for (int tid = threadIdx.x; tid < kSuperN; tid += 128) {
+                int gn = super_n0 + tid;
+                int wb = k0 / kWeightsPerWord;  // first word of this K-window
                 uint32_t words[4] = {0u, 0u, 0u, 0u};
-                bool fast = (gn < N) && (stride_words % 4 == 0) && (wb % 4 == 0) && (wb + 3 < stride_words) && (w * 16 < tile_k);
+                bool fast = (gn < N) && (stride_words % 4 == 0) && (wb % 4 == 0)
+                            && (wb + 3 < stride_words) && (tile_k == kK4);
                 if (fast) {
                     uint4 v4 = *reinterpret_cast<const uint4*>(&W[gn * stride_words + wb]);
                     words[0] = v4.x; words[1] = v4.y; words[2] = v4.z; words[3] = v4.w;
                 } else {
+                    #pragma unroll
                     for (int j = 0; j < 4; ++j) {
                         int wi = wb + j;
-                        if (gn < N && wi < stride_words && (w * 16 + j * kWeightsPerWord) < tile_k)
+                        if (gn < N && wi < stride_words && (j * kWeightsPerWord) < tile_k)
                             words[j] = W[gn * stride_words + wi];
                     }
                 }
@@ -124,13 +124,13 @@ __global__ __launch_bounds__(128) void probe_fwd_uint4_kernel(
                 for (int j = 0; j < 4; ++j) {
                     #pragma unroll
                     for (int pos = 0; pos < kWeightsPerWord; ++pos) {
-                        int c = w * 16 + j * kWeightsPerWord + pos;
+                        int c = j * kWeightsPerWord + pos;
                         int gk = k0 + c;
                         if (gn < N && gk < K && c < tile_k) {
                             int8_t t = decode_ternary(words[j] >> (2 * pos));
-                            W_smem[r][c] = __int2half_rn(t);
+                            W_smem[tid][c] = __int2half_rn(t);
                         } else {
-                            W_smem[r][c] = __float2half(0.0f);
+                            W_smem[tid][c] = __float2half(0.0f);
                         }
                     }
                 }
