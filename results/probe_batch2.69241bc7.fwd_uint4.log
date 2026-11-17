@@ -1,0 +1,10 @@
+commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_fwd_uint4.py
+rc=0
+building prod + uint4 variants...
+built.
+parity fc1: EXACT
+fc1    A=   19.99ms B=   80.26ms delta=+301.40% (thresh 5.90%) -> LOSS sigma_null=2.95%
+parity head: EXACT
+head   A=  319.41ms B=  917.91ms delta=+187.38% (thresh 1.08%) -> LOSS sigma_null=0.54%
+PROBE_FWD_UINT4: PASS

@@ -1,0 +1,341 @@
+commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+### smoke (rc=0)
+all four variants built
+dx parity: EXACT
+fwd parity: EXACT
+SMOKE2: PASS
+### pytest (rc=0)
+........................................................................ [ 69%]
+...............................                                          [100%]
+103 passed in 247.34s (0:04:07)
+### dx_unroll2 (rc=0)
+building prod + unroll2 variants...
+built.
+parity fc1: EXACT
+fc1    A=   35.21ms B=   46.24ms delta=+31.35% (thresh 2.83%) -> LOSS sigma_null=1.42%
+parity head: EXACT
+head   A=  507.92ms B=  571.72ms delta=+12.56% (thresh 1.35%) -> LOSS sigma_null=0.67%
+PROBE_DX_UNROLL2: PASS
+### fwd_uint4 (rc=0)
+building prod + uint4 variants...
+built.
+parity fc1: EXACT
+fc1    A=   19.99ms B=   80.26ms delta=+301.40% (thresh 5.90%) -> LOSS sigma_null=2.95%
+parity head: EXACT
+head   A=  319.41ms B=  917.91ms delta=+187.38% (thresh 1.08%) -> LOSS sigma_null=0.54%
+PROBE_FWD_UINT4: PASS
+### misc (rc=0)
+== #12 clone cost ==
+clone (16352, 1024): median=0.3120 ms (0.053% of 593.98 ms step, sigma_null=10.63%)
+clone (16352, 4096): median=1.1820 ms (0.199% of 593.98 ms step, sigma_null=0.32%)
+== #15 small-dims fwd parity (TC64 kernel vs fp32 ref) ==
+shape B=64 K=64 N=64: max rel err 4.87e-04 OK
+shape B=48 K=48 N=48: max rel err 4.88e-04 OK
+shape B=16 K=1024 N=4096: max rel err 4.88e-04 OK
+shape B=80 K=96 N=112: max rel err 4.88e-04 OK
+shape B=16352 K=1024 N=4096: max rel err 9.54e-04 OK
+SMALL_DIMS: PASS
+== #6 fused CE probe ==
+CE eager:            median=   24.88 ms (sigma_null=0.06%)
+CE (logits*scale):   median=   38.72 ms
+CE torch.compile:    median=   21.70 ms
+PROBE_MISC: DONE
+### flip_b3 (rc=1)
+PREBUILT: OK (cached) marker=kernels-probe-batch-2 4c0581ccaf4ddf222f189290a53b75e2d7665c47 torch=2.11.0+cu130 -> /root/.cache/torch_extensions
+commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+FLIPRATE: arm=main update_backend=custom steps=400 threshold=32 weights=262144 noisy_rate=0.0090161006 clean_rate=0.0033204079 resid_noisy=3.02824e-06 resid_clean=3.36557e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=200 flips_per_step=2422.49 flip_rate=0.009241066 resid_rms=2.90946e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=300 flips_per_step=1695.78 flip_rate=0.0064688873 resid_rms=3.22446e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=400 flips_per_step=538.45 flip_rate=0.0020540237 resid_rms=3.42708e-06
+FLIPRATE: arm=control update_backend=custom steps=400 threshold=32 weights=262144 noisy_rate=0.010435422 clean_rate=0.011586475 resid_noisy=2.78376e-06 resid_clean=2.91868e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=200 flips_per_step=2568.2 flip_rate=0.0097969055 resid_rms=2.74181e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=300 flips_per_step=2923.29 flip_rate=0.011151466 resid_rms=2.87754e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=400 flips_per_step=3078.75 flip_rate=0.011744499 resid_rms=2.93326e-06
+FLIPRATE: arm=main update_backend=cublas steps=400 threshold=32 weights=262144 noisy_rate=0.0090161006 clean_rate=0.0033204079 resid_noisy=3.02824e-06 resid_clean=3.36557e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=200 flips_per_step=2422.49 flip_rate=0.009241066 resid_rms=2.90946e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=300 flips_per_step=1695.78 flip_rate=0.0064688873 resid_rms=3.22446e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=400 flips_per_step=538.45 flip_rate=0.0020540237 resid_rms=3.42708e-06
+FLIPRATE: arm=control update_backend=cublas steps=400 threshold=32 weights=262144 noisy_rate=0.010435422 clean_rate=0.011586475 resid_noisy=2.78376e-06 resid_clean=2.91868e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=200 flips_per_step=2568.2 flip_rate=0.0097969055 resid_rms=2.74181e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=300 flips_per_step=2923.29 flip_rate=0.011151466 resid_rms=2.87754e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=400 flips_per_step=3078.75 flip_rate=0.011744499 resid_rms=2.93326e-06
+FLIPRATE_CHECK: update_backend=custom V_non_vacuity ok=True value=0.0090161 threshold=0.000244141 detail=main noisy-window flip rate 0.0090161 (>= 0.000244141 = 0.25/T^2, T=32)
+FLIPRATE_CHECK: update_backend=custom M_decay_when_noise_removed ok=False value=0.368275 threshold=0.1 detail=main clean/noisy flip-rate ratio 0.368275 (<= 0.1)
+FLIPRATE_CHECK: update_backend=custom C_control_sustains_flips ok=True value=1.1103 threshold=0.5 detail=control late/early flip-rate ratio 1.1103 (>= 0.5)
+FLIPRATE_VERDICT: update_backend=custom passed=False
+FLIPRATE: arm=main_base update_backend=custom steps=400 threshold=32 weights=262144 noisy_rate=0.012623628 clean_rate=0.01458776 resid_noisy=3.08082e-06 resid_clean=3.40708e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=200 flips_per_step=3010.73 flip_rate=0.011485023 resid_rms=2.95107e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=300 flips_per_step=3636.08 flip_rate=0.013870544 resid_rms=3.29526e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=400 flips_per_step=3870.61 flip_rate=0.014765205 resid_rms=3.4442e-06
+FLIPRATE_CHECK: update_backend=custom F0_non_vacuity ok=True value=0.0090161 threshold=> 0 detail=budget non-vacuity: main_noisy=0.0090161, main_clean_no_budget=0.0145878 (both > 0)
+FLIPRATE_CHECK: update_backend=custom F1_budget_reduces_flips ok=True value=0.227616 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0.227616 (<= 0.5)
+FLIPRATE_CHECK: update_backend=custom F2_budgeted_meets_decay ok=False value=0.368275 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0.368275 (<= 0.1)
+FLIPRATE_BUDGET_VERDICT: update_backend=custom flip_budget=3 passed=False
+FLIPRATE_CHECK: update_backend=cublas V_non_vacuity ok=True value=0.0090161 threshold=0.000244141 detail=main noisy-window flip rate 0.0090161 (>= 0.000244141 = 0.25/T^2, T=32)
+FLIPRATE_CHECK: update_backend=cublas M_decay_when_noise_removed ok=False value=0.368275 threshold=0.1 detail=main clean/noisy flip-rate ratio 0.368275 (<= 0.1)
+FLIPRATE_CHECK: update_backend=cublas C_control_sustains_flips ok=True value=1.1103 threshold=0.5 detail=control late/early flip-rate ratio 1.1103 (>= 0.5)
+FLIPRATE_VERDICT: update_backend=cublas passed=False
+FLIPRATE: arm=main_base update_backend=cublas steps=400 threshold=32 weights=262144 noisy_rate=0.012623628 clean_rate=0.01458776 resid_noisy=3.08082e-06 resid_clean=3.40708e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=200 flips_per_step=3010.73 flip_rate=0.011485023 resid_rms=2.95107e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=300 flips_per_step=3636.08 flip_rate=0.013870544 resid_rms=3.29526e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=400 flips_per_step=3870.61 flip_rate=0.014765205 resid_rms=3.4442e-06
+FLIPRATE_CHECK: update_backend=cublas F0_non_vacuity ok=True value=0.0090161 threshold=> 0 detail=budget non-vacuity: main_noisy=0.0090161, main_clean_no_budget=0.0145878 (both > 0)
+FLIPRATE_CHECK: update_backend=cublas F1_budget_reduces_flips ok=True value=0.227616 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0.227616 (<= 0.5)
+FLIPRATE_CHECK: update_backend=cublas F2_budgeted_meets_decay ok=False value=0.368275 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0.368275 (<= 0.1)
+FLIPRATE_BUDGET_VERDICT: update_backend=cublas flip_budget=3 passed=False
+FLIPRATE_GATE: FAIL (shipped backend = cublas)
+ARTEFACT: /content/ultimate-trainer/results/flip_rate_gate.json
+### flip_b4 (rc=1)
+PREBUILT: OK (cached) marker=kernels-probe-batch-2 4c0581ccaf4ddf222f189290a53b75e2d7665c47 torch=2.11.0+cu130 -> /root/.cache/torch_extensions
+commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+FLIPRATE: arm=main update_backend=custom steps=400 threshold=32 weights=262144 noisy_rate=0.010692819 clean_rate=0.0058540344 resid_noisy=2.9737e-06 resid_clean=2.78163e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=200 flips_per_step=2761.85 flip_rate=0.010535622 resid_rms=2.90862e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=300 flips_per_step=2269.1 flip_rate=0.0086559296 resid_rms=2.93185e-06
+FLIPRATE_BUCKET: arm=main update_backend=custom step=400 flips_per_step=1215.9 flip_rate=0.0046382904 resid_rms=2.72079e-06
+FLIPRATE: arm=control update_backend=custom steps=400 threshold=32 weights=262144 noisy_rate=0.010435422 clean_rate=0.011586475 resid_noisy=2.78376e-06 resid_clean=2.91868e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=200 flips_per_step=2568.2 flip_rate=0.0097969055 resid_rms=2.74181e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=300 flips_per_step=2923.29 flip_rate=0.011151466 resid_rms=2.87754e-06
+FLIPRATE_BUCKET: arm=control update_backend=custom step=400 flips_per_step=3078.75 flip_rate=0.011744499 resid_rms=2.93326e-06
+FLIPRATE: arm=main update_backend=cublas steps=400 threshold=32 weights=262144 noisy_rate=0.010692819 clean_rate=0.0058540344 resid_noisy=2.9737e-06 resid_clean=2.78163e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=200 flips_per_step=2761.85 flip_rate=0.010535622 resid_rms=2.90862e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=300 flips_per_step=2269.1 flip_rate=0.0086559296 resid_rms=2.93185e-06
+FLIPRATE_BUCKET: arm=main update_backend=cublas step=400 flips_per_step=1215.9 flip_rate=0.0046382904 resid_rms=2.72079e-06
+FLIPRATE: arm=control update_backend=cublas steps=400 threshold=32 weights=262144 noisy_rate=0.010435422 clean_rate=0.011586475 resid_noisy=2.78376e-06 resid_clean=2.91868e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=200 flips_per_step=2568.2 flip_rate=0.0097969055 resid_rms=2.74181e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=300 flips_per_step=2923.29 flip_rate=0.011151466 resid_rms=2.87754e-06
+FLIPRATE_BUCKET: arm=control update_backend=cublas step=400 flips_per_step=3078.75 flip_rate=0.011744499 resid_rms=2.93326e-06
+FLIPRATE_CHECK: update_backend=custom V_non_vacuity ok=True value=0.0106928 threshold=0.000244141 detail=main noisy-window flip rate 0.0106928 (>= 0.000244141 = 0.25/T^2, T=32)
+FLIPRATE_CHECK: update_backend=custom M_decay_when_noise_removed ok=False value=0.547473 threshold=0.1 detail=main clean/noisy flip-rate ratio 0.547473 (<= 0.1)
+FLIPRATE_CHECK: update_backend=custom C_control_sustains_flips ok=True value=1.1103 threshold=0.5 detail=control late/early flip-rate ratio 1.1103 (>= 0.5)
+FLIPRATE_VERDICT: update_backend=custom passed=False
+FLIPRATE: arm=main_base update_backend=custom steps=400 threshold=32 weights=262144 noisy_rate=0.012623628 clean_rate=0.01458776 resid_noisy=3.08082e-06 resid_clean=3.40708e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=200 flips_per_step=3010.73 flip_rate=0.011485023 resid_rms=2.95107e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=300 flips_per_step=3636.08 flip_rate=0.013870544 resid_rms=3.29526e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=custom step=400 flips_per_step=3870.61 flip_rate=0.014765205 resid_rms=3.4442e-06
+FLIPRATE_CHECK: update_backend=custom F0_non_vacuity ok=True value=0.0106928 threshold=> 0 detail=budget non-vacuity: main_noisy=0.0106928, main_clean_no_budget=0.0145878 (both > 0)
+FLIPRATE_CHECK: update_backend=custom F1_budget_reduces_flips ok=True value=0.401298 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0.401298 (<= 0.5)
+FLIPRATE_CHECK: update_backend=custom F2_budgeted_meets_decay ok=False value=0.547473 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0.547473 (<= 0.1)
+FLIPRATE_BUDGET_VERDICT: update_backend=custom flip_budget=4 passed=False
+FLIPRATE_CHECK: update_backend=cublas V_non_vacuity ok=True value=0.0106928 threshold=0.000244141 detail=main noisy-window flip rate 0.0106928 (>= 0.000244141 = 0.25/T^2, T=32)
+FLIPRATE_CHECK: update_backend=cublas M_decay_when_noise_removed ok=False value=0.547473 threshold=0.1 detail=main clean/noisy flip-rate ratio 0.547473 (<= 0.1)
+FLIPRATE_CHECK: update_backend=cublas C_control_sustains_flips ok=True value=1.1103 threshold=0.5 detail=control late/early flip-rate ratio 1.1103 (>= 0.5)
+FLIPRATE_VERDICT: update_backend=cublas passed=False
+FLIPRATE: arm=main_base update_backend=cublas steps=400 threshold=32 weights=262144 noisy_rate=0.012623628 clean_rate=0.01458776 resid_noisy=3.08082e-06 resid_clean=3.40708e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=100 flips_per_step=1284.87 flip_rate=0.0049013901 resid_rms=2.06077e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=200 flips_per_step=3010.73 flip_rate=0.011485023 resid_rms=2.95107e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=300 flips_per_step=3636.08 flip_rate=0.013870544 resid_rms=3.29526e-06
+FLIPRATE_BUCKET: arm=main_base update_backend=cublas step=400 flips_per_step=3870.61 flip_rate=0.014765205 resid_rms=3.4442e-06
+FLIPRATE_CHECK: update_backend=cublas F0_non_vacuity ok=True value=0.0106928 threshold=> 0 detail=budget non-vacuity: main_noisy=0.0106928, main_clean_no_budget=0.0145878 (both > 0)
+FLIPRATE_CHECK: update_backend=cublas F1_budget_reduces_flips ok=True value=0.401298 threshold=0.5 detail=flip-budget clean/no-budget flip-rate ratio 0.401298 (<= 0.5)
+FLIPRATE_CHECK: update_backend=cublas F2_budgeted_meets_decay ok=False value=0.547473 threshold=0.1 detail=flip-budget clean/noisy flip-rate ratio 0.547473 (<= 0.1)
+FLIPRATE_BUDGET_VERDICT: update_backend=cublas flip_budget=4 passed=False
+FLIPRATE_GATE: FAIL (shipped backend = cublas)
+ARTEFACT: /content/ultimate-trainer/results/flip_rate_gate.json
+### perfgate_check (rc=0)
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/probe-batch-2 commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+fc1/fwd: ok -35.83% vs baseline 40.23ms sigma_null=0.75%
+fc1/dx: ok -25.72% vs baseline 51.21ms
+fc1/update: ok -8.19% vs baseline 55.72ms
+fc2/fwd: ok -35.60% vs baseline 41.44ms
+fc2/dx: ok -26.09% vs baseline 50.68ms
+fc2/update: ok -11.43% vs baseline 54.88ms
+head/fwd: ok -31.69% vs baseline 499.84ms
+head/dx: ok -14.30% vs baseline 649.31ms
+head/update: ok -2.72% vs baseline 700.43ms
+
+RESULTS JSON: {
+  "suite": "perfgate",
+  "commit": "69241bc7d5ed158f1da1e88cf80d7e31212803df",
+  "provenance": {
+    "schema_version": 2,
+    "commit": "69241bc7d5ed158f1da1e88cf80d7e31212803df",
+    "branch": "feat/probe-batch-2",
+    "git_dirty": true,
+    "timestamp_utc": "2026-11-03T19:14:00+00:00",
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "gpu": {
+      "name": "Tesla T4",
+      "capability": [
+        7,
+        5
+      ]
+    },
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null,
+      "TORCH_EXTENSIONS_DIR": "/root/.cache/torch_extensions",
+      "UT_PREBUILT": "1",
+      "UT_PREBUILT_TAG": "kernels-probe-batch-2"
+    },
+    "config": {
+      "batch": 16384,
+      "threshold": 32,
+      "shapes": [
+        "fc1",
+        "fc2",
+        "head"
+      ],
+      "kernels": [
+        "fwd",
+        "dx",
+        "update"
+      ],
+      "baseline": "tests/perf_baseline_t4.json",
+      "update_baseline": false,
+      "expect_commit": "69241bc7d5ed158f1da1e88cf80d7e31212803df"
+    }
+  },
+  "branch": "feat/probe-batch-2",
+  "gpu": "Tesla T4",
+  "pytorch": "2.11.0+cu130",
+  "baseline_status": "measured",
+  "update_baseline": false,
+  "kernels": {
+    "fc1": {
+      "fwd_ms": 25.813,
+      "dx_ms": 38.041,
+      "update_ms": 51.16
+    },
+    "fc2": {
+      "fwd_ms": 26.685,
+      "dx_ms": 37.453,
+      "update_ms": 48.605
+    },
+    "head": {
+      "fwd_ms": 341.427,
+      "dx_ms": 556.438,
+      "update_ms": 681.359
+    }
+  },
+  "step_ms": 3370.07,
+  "deltas": [
+    "fc1/fwd: ok -35.83% vs baseline 40.23ms",
+    "fc1/dx: ok -25.72% vs baseline 51.21ms",
+    "fc1/update: ok -8.19% vs baseline 55.72ms",
+    "fc2/fwd: ok -35.60% vs baseline 41.44ms",
+    "fc2/dx: ok -26.09% vs baseline 50.68ms",
+    "fc2/update: ok -11.43% vs baseline 54.88ms",
+    "head/fwd: ok -31.69% vs baseline 499.84ms",
+    "head/dx: ok -14.30% vs baseline 649.31ms",
+    "head/update: ok -2.72% vs baseline 700.43ms"
+  ],
+  "any_fail": false,
+  "passed": true,
+  "returncode": 0,
+  "wall_s": 281.2
+}
+ARTEFACT: /content/ultimate-trainer/results/perfgate.json
+### perfgate_regen (rc=1)
+torch=2.11.0+cu130 cuda=True gpu=Tesla T4
+repo=/content/ultimate-trainer branch=feat/probe-batch-2 commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+fc1/fwd: ok -29.67% vs baseline 40.23ms sigma_null=0.81%
+fc1/dx: ok -21.06% vs baseline 51.21ms
+fc1/update: WARN +4.96% vs baseline 55.72ms
+fc2/fwd: ok -29.00% vs baseline 41.44ms
+fc2/dx: ok -20.51% vs baseline 50.68ms
+fc2/update: ok +0.56% vs baseline 54.88ms
+head/fwd: ok -25.43% vs baseline 499.84ms
+head/dx: ok -3.41% vs baseline 649.31ms
+head/update: FAIL +7.54% vs baseline 700.43ms
+baseline written: /content/ultimate-trainer/tests/perf_baseline_t4.json — INSPECT the deltas above, then commit if they look sane
+
+RESULTS JSON: {
+  "suite": "perfgate",
+  "commit": "69241bc7d5ed158f1da1e88cf80d7e31212803df",
+  "provenance": {
+    "schema_version": 2,
+    "commit": "69241bc7d5ed158f1da1e88cf80d7e31212803df",
+    "branch": "feat/probe-batch-2",
+    "git_dirty": true,
+    "timestamp_utc": "2026-11-03T19:18:54+00:00",
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "cuda": "13.0",
+    "gpu": {
+      "name": "Tesla T4",
+      "capability": [
+        7,
+        5
+      ]
+    },
+    "env": {
+      "PT_BACKEND": null,
+      "PT_UPDATE_BACKEND": null,
+      "TORCH_CUDA_ARCH_LIST": null,
+      "TORCH_EXTENSIONS_DIR": "/root/.cache/torch_extensions",
+      "UT_PREBUILT": "1",
+      "UT_PREBUILT_TAG": "kernels-probe-batch-2"
+    },
+    "config": {
+      "batch": 16384,
+      "threshold": 32,
+      "shapes": [
+        "fc1",
+        "fc2",
+        "head"
+      ],
+      "kernels": [
+        "fwd",
+        "dx",
+        "update"
+      ],
+      "baseline": "tests/perf_baseline_t4.json",
+      "update_baseline": true,
+      "expect_commit": "69241bc7d5ed158f1da1e88cf80d7e31212803df"
+    }
+  },
+  "branch": "feat/probe-batch-2",
+  "gpu": "Tesla T4",
+  "pytorch": "2.11.0+cu130",
+  "baseline_status": "measured",
+  "update_baseline": true,
+  "kernels": {
+    "fc1": {
+      "fwd_ms": 28.291,
+      "dx_ms": 40.427,
+      "update_ms": 58.487
+    },
+    "fc2": {
+      "fwd_ms": 29.42,
+      "dx_ms": 40.282,
+      "update_ms": 55.185
+    },
+    "head": {
+      "fwd_ms": 372.731,
+      "dx_ms": 627.136,
+      "update_ms": 753.245
+    }
+  },
+  "step_ms": 3510.963,
+  "deltas": [
+    "fc1/fwd: ok -29.67% vs baseline 40.23ms",
+    "fc1/dx: ok -21.06% vs baseline 51.21ms",
+    "fc1/update: WARN +4.96% vs baseline 55.72ms",
+    "fc2/fwd: ok -29.00% vs baseline 41.44ms",
+    "fc2/dx: ok -20.51% vs baseline 50.68ms",
+    "fc2/update: ok +0.56% vs baseline 54.88ms",
+    "head/fwd: ok -25.43% vs baseline 499.84ms",
+    "head/dx: ok -3.41% vs baseline 649.31ms",
+    "head/update: FAIL +7.54% vs baseline 700.43ms"
+  ],
+  "any_fail": true,
+  "passed": false,
+  "returncode": 1,
+  "wall_s": 298.0
+}
+ARTEFACT: /content/ultimate-trainer/results/perfgate.json

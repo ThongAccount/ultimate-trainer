@@ -1,0 +1,7 @@
+commit=69241bc7d5ed158f1da1e88cf80d7e31212803df
+cmd=/usr/bin/python3 /content/ultimate-trainer/tests/probe_smoke2.py
+rc=0
+all four variants built
+dx parity: EXACT
+fwd parity: EXACT
+SMOKE2: PASS
