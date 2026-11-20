@@ -54,10 +54,15 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
     constexpr int kK2 = 2 * kWMMA_K;  // 32
     __shared__ half dY_smem[kSuperM][kK2];  // [64][32]
     __shared__ half W_smem[kK2][kSuperN];   // [32][64] — reduction × output
-    // One 16×16 warp-private accumulator slot (4 KB). Declared here so the
-    // whole-CTA loop below stays inside the kernel scope; only the owning warp
-    // ever touches its slot, so the epilogue needs no __syncthreads().
-    __shared__ float spill[kWarps][kWMMA_M * kWMMA_N];  // [4][256]
+    // A2 (direct float store per-frag): no smem spill. Each thread reads its
+    // own c_frag.x[] accumulator registers and writes half directly to global
+    // dX. Eliminates the 4 KB smem slot and the store_matrix_sync + smem-read
+    // round-trip. The sm_75 WMMA accumulator layout maps thread t to 8
+    // elements of the 16×16 tile:
+    //   x[0]: row=t/4,   col=(t%4)*2     x[1]: row=t/4,   col=(t%4)*2+1
+    //   x[2]: row=t/4+8, col=(t%4)*2     x[3]: row=t/4+8, col=(t%4)*2+1
+    //   x[4]: row=t/4,   col=(t%4)*2+8   x[5]: row=t/4,   col=(t%4)*2+9
+    //   x[6]: row=t/4+8, col=(t%4)*2+8   x[7]: row=t/4+8, col=(t%4)*2+9
 
     wmma::fragment<wmma::matrix_a, kWMMA_M, kWMMA_N, kWMMA_K,
                    half, wmma::row_major> a_frag;  // dY
@@ -132,35 +137,28 @@ __global__ __launch_bounds__(128) void packed_ternary_backward_dx_tc_64_kernel(
 
     // Store results to global dX
     //
-    // WARP-PRIVATE spill (one 16×16 slot per warp, see declaration above). The
-    // old code reused that slot across the 4 fragments with the whole CTA
-    // copying from all warps under __syncthreads — an 8-barrier epilogue plus a
-    // race window between store_matrix_sync and the cooperative copy (the fwd
-    // kernel hit nondeterministic NaN from exactly that pattern). Now only the
-    // owning warp touches its slot, so no barrier is needed: store_matrix_sync
-    // and the global stores are warp-synchronous by construction.
+    // A2 (direct float store per-frag): each thread reads its own c_frag.x[]
+    // accumulator registers and writes half directly to global dX. No smem
+    // spill, no store_matrix_sync, no __syncwarp. The sm_75 WMMA accumulator
+    // layout maps thread t to 8 elements of the 16×16 tile (see declaration
+    // comment above). Bit-exact: same float values to the same dX addresses.
     #pragma unroll
     for (int fi = 0; fi < kFragsPerWarp; ++fi) {
-        wmma::store_matrix_sync(&spill[warp_id][0], c_frag[fi],
-                                kWMMA_N, wmma::mem_row_major);
-
         const int frag_b_off = (fi / 2) * kWMMA_M;
         const int frag_k_off = (fi % 2) * kWMMA_N;
 
-        // This warp copies its own 16×16 tile (32 lanes, 8 elements each).
+        // Each thread writes its 8 accumulator elements to global.
+        // sm_75 accumulator layout: thread t (lane 0-31) holds 8 elements.
         #pragma unroll
-        for (int e = wtid; e < kWMMA_M * kWMMA_N; e += 32) {
-            int r = e / kWMMA_N;
-            int c = e % kWMMA_N;
+        for (int i = 0; i < 8; ++i) {
+            int r = wtid / 4 + ((i & 2) ? 8 : 0);
+            int c = (wtid % 4) * 2 + (i & 1) + ((i & 4) ? 8 : 0);
             int gb = super_b0 + warp_b_off + frag_b_off + r;
             int gk = super_k0 + warp_k_off + frag_k_off + c;
             if (gb < B && gk < K) {
-                dX[gb * K + gk] = __float2half_rn(spill[warp_id][r * kWMMA_N + c]);
+                dX[gb * K + gk] = __float2half_rn(c_frag[fi].x[i]);
             }
         }
-        // store_matrix_sync + shared loads/stores are warp-synchronous; the next
-        // iteration reuses the slot only after this warp's reads retire.
-        __syncwarp();
     }
 }
 
