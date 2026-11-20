@@ -97,21 +97,33 @@ __global__ __launch_bounds__(128) void packed_ternary_forward_tc_64_kernel(
         int tile_k = min(kWMMA_K, K - k0);
 
         // ── Cooperative load W[super_n0:super_n0+64, k0:k0+16] ──
+        // B4: fuse W decode into dY load — decode 16 values from one word in
+        // int2 registers then push combined half2 into smem vectorized.
+        // Each thread processes one word (16 values) instead of one element.
         {
-            int n_total = kSuperN * kWMMA_K;  // 64×16 = 1024
-            for (int tid = threadIdx.x; tid < n_total; tid += 128) {
-                int r = tid / kWMMA_K;
-                int c = tid % kWMMA_K;
+            int n_words = (kSuperN * kWMMA_K + kWeightsPerWord - 1) / kWeightsPerWord;
+            for (int tid = threadIdx.x; tid < n_words; tid += 128) {
+                int r = tid / (kWMMA_K / kWeightsPerWord);
+                int c = (tid % (kWMMA_K / kWeightsPerWord)) * kWeightsPerWord;
                 int gn = super_n0 + r;
                 int gk = k0 + c;
                 if (gn < N && gk < K && c < tile_k) {
                     int wi = gk / kWeightsPerWord;
-                    int pos = gk % kWeightsPerWord;
                     uint32_t word = W[gn * stride_words + wi];
-                    int8_t t = decode_ternary(word >> (2 * pos));
-                    W_smem[r][c] = __int2half_rn(t);  // row-major: W_smem[n][k]
+                    // B4: vectorized decode — extract all 16 values from one
+                    // word, convert to half, store as half2 pairs.
+                    #pragma unroll
+                    for (int i = 0; i < kWeightsPerWord; i += 2) {
+                        int8_t t0 = decode_ternary(word >> (2 * i));
+                        int8_t t1 = decode_ternary(word >> (2 * (i + 1)));
+                        half2 h2 = __halves2half2(__int2half_rn(t0), __int2half_rn(t1));
+                        *(half2*)&W_smem[r][c + i] = h2;
+                    }
                 } else {
-                    W_smem[r][c] = __float2half(0.0f);
+                    #pragma unroll
+                    for (int i = 0; i < kWeightsPerWord; ++i) {
+                        W_smem[r][c + i] = __float2half(0.0f);
+                    }
                 }
             }
         }
