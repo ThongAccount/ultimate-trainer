@@ -69,7 +69,8 @@ for B, K, N in shapes:
     dY = (torch.randn(B, N, device="cuda") * 0.1).half()
     # fwd — compare custom_ops dispatch vs raw pack_forward kernel
     y = co.forward_tc(W, X, K)
-    pf._load_tc()
+    pf._load_tc_32()
+    pf._load_tc_64()
     if pf._forward_fn_tc is not None:
         y_ref = pf._forward_fn_tc(W.contiguous(), X.contiguous())
         assert torch.equal(y, y_ref), f"fwd parity FAIL at {B}x{K}x{N}"
