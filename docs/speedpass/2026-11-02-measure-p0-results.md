@@ -33,11 +33,59 @@ thermal throttle (83 °C << T4 limit), no sustained clock droop within the
 run → the climb is not clock-driven on this VM.
 
 ## #9 custom-arm glue attribution
-custom-glue (custom arm, 40 profiled steps): median step **3266.7 ms**,
-device kernel sum ≈2620 ms/step → **glue ≈ 640 ms** (embed/norms/gelu/
-26×scale/logits+CE/optimizer; aten::mul only ≈17.5 ms of it). Kernels:
-update 501, dX 444, fwd 288 ms/step. The audit's 1196 ms glue estimate was
-pre-gate16/xpose at 4810 ms; now ~640 ms at 3267 ms.
+
+**CORRECTION 2026-11-20 — the original #9 numbers below are superseded.**
+Re-derived from the raw artefact `results/measure_p0.ab4dbeb0.json` (child
+`custom-glue`) by Researcher in the Masters ultimate-trainer debate and
+independently re-verified by Chief against the same JSON.
+
+Two arithmetic faults in the original #9:
+
+1. **Wrong divisor.** Every per-step figure used ÷100, but the profile
+   covered **40 steps** — proven by the launch counts: update/dX/fwd counts
+   are 520 = 40 steps × 13 layers, and `aten::mul` count 1040 = 40 × the
+   26 scale ops per step. (The prereg §5 also says "40 profiled steps".)
+2. **Double-counted device sum.** `device_kernel_sum_ms` (262069.3) sums
+   **both** the op rows (`packed_ternary::update_tc_v2`, `aten::mul`, …)
+   **and** their CUDA-kernel rows, which carry identical `self_cuda_ms`.
+   ÷40 it gives 6551.7 ms/step — larger than the whole 3266.7 ms step,
+   which is impossible. The doc's "device kernel sum ≈2620 ms/step" is
+   literally that double-counted sum ÷100, and "glue ≈ 640 ms" is the step
+   minus it, so the glue conclusion falls with the arithmetic.
+
+Corrected attribution (CUDA-kernel rows only, ÷40, step 3266.7 ms):
+
+| Bucket | ms/step | % of step |
+|---|---:|---:|
+| `packed_ternary_update_tc_v2_64_kernel` | 1252.5 | 38.3% |
+| `packed_ternary_backward_dx_tc_64_kernel` | 1111.6 | 34.0% |
+| `packed_ternary_forward_tc_64_kernel` | 721.0 | 22.1% |
+| **Custom kernels, total** | **3085.2** | **94.4%** |
+| aten device kernels (glue: mul/add/softmax/LN/gelu/copy/…) | 167.2 | 5.1% |
+| True host gap (step − all device time) | ~14.4 | ~0.4% |
+
+Cross-checks: custom + aten = 3252.3 ms/step ≈ the 3266.7 ms step; wall
+40 × 3266.7 ms = 130.7 s ≈ `cudaDeviceSynchronize` self_cpu 130.4 s — the
+host is waiting on a saturated GPU, not dispatching. `aten::mul` alone is
+43.8 ms/step (1753.515 ÷ 40), not 17.5.
+
+**Conclusion: the custom arm is kernel-bound (~94% custom kernels), not
+glue-bound.** Glue elimination (CUDA Graph / batched dispatch) on this arm
+addresses only the ~0.4% host gap plus part of the ~5% aten device time;
+the large levers are the update (38%) and dX (34%) kernels. The audit's
+1196 ms glue estimate and this section's "~640 ms" are both superseded, as
+is the later "~94% glue" reading (2026-11-20 i3, single-layer kernels
+subtracted from a full-model step — see the correction note on
+`feat/i3-glue-attribution`). The shipped cuBLAS arm stays production
+regardless (~519–608 ms vs 2976–3267 ms custom).
+
+Original #9 (superseded, kept for provenance):
+
+> custom-glue (custom arm, 40 profiled steps): median step **3266.7 ms**,
+> device kernel sum ≈2620 ms/step → **glue ≈ 640 ms** (embed/norms/gelu/
+> 26×scale/logits+CE/optimizer; aten::mul only ≈17.5 ms of it). Kernels:
+> update 501, dX 444, fwd 288 ms/step. The audit's 1196 ms glue estimate was
+> pre-gate16/xpose at 4810 ms; now ~640 ms at 3267 ms.
 
 ## #18 fc1 fwd conflict
 fc1fwd child: first attempt failed on import (`tests` not a package — fixed,
