@@ -56,6 +56,7 @@ def parity():
 import torch, sys
 sys.path.insert(0, ".")
 from kernels.packed_ternary import pack_tensor, pack_update as pu
+from kernels.packed_ternary import pack_forward as pf
 from kernels.packed_ternary import custom_ops as co
 
 shapes = [(16352, 1024, 4096), (16352, 4096, 1024), (16352, 1024, 50272)]
@@ -66,12 +67,13 @@ for B, K, N in shapes:
                                  torch.ones(N, K, device="cuda")).int())
     X = (torch.randn(B, K, device="cuda") * 0.1).half()
     dY = (torch.randn(B, N, device="cuda") * 0.1).half()
-    # fwd
+    # fwd — compare custom_ops dispatch vs raw pack_forward kernel
     y = co.forward_tc(W, X, K)
-    y_ref = pu._fwd_tc_fn(W.contiguous(), X.contiguous(), K) if pu._HAS_FWD_TC else None
-    if y_ref is not None:
+    pf._load_tc()
+    if pf._forward_fn_tc is not None:
+        y_ref = pf._forward_fn_tc(W.contiguous(), X.contiguous())
         assert torch.equal(y, y_ref), f"fwd parity FAIL at {B}x{K}x{N}"
-    # dX
+    # dX — compare custom_ops dispatch vs raw pack_update kernel
     dx = co.backward_dx_tc(W, dY, K)
     pu._load_dx_tc()
     if pu._HAS_DX_TC:
