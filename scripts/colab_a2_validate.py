@@ -27,6 +27,11 @@ def clone():
         sys.exit(2)
     return commit
 
+def install_deps():
+    print("=== INSTALL DEPS ===", flush=True)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "ninja"], check=True)
+    print("ninja installed", flush=True)
+
 def smoke():
     print("=== SMOKE ===", flush=True)
     r = subprocess.run([sys.executable, "tests/probe_fwd_spill.py", "--probe", "fwdspill", "--skip-timing"],
@@ -88,6 +93,7 @@ def ab():
 
 def main():
     commit = clone()
+    install_deps()
     results = {"commit": commit, "branch": BRANCH, "steps": {}}
     rc = smoke()
     results["steps"]["smoke"] = rc
