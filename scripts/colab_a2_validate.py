@@ -43,7 +43,8 @@ def smoke():
 def pytest():
     print("=== PYTEST ===", flush=True)
     r = subprocess.run([sys.executable, "colab_pytest.py"],
-                       cwd=CLONE, capture_output=True, text=True, env={**os.environ, "UT_PREBUILT": "0"})
+                       cwd=CLONE, capture_output=True, text=True,
+                       env={**os.environ, "UT_PREBUILT": "0", "BRANCH": BRANCH})
     print(r.stdout[-2000:] if r.stdout else "", flush=True)
     print(r.stderr[-1000:] if r.stderr else "", flush=True)
     return r.returncode
@@ -86,7 +87,8 @@ print("ALL PARITY PASS", flush=True)
 def ab():
     print("=== A2 A/B ===", flush=True)
     r = subprocess.run([sys.executable, "colab_perfgate.py", "--branch", BRANCH],
-                       cwd=CLONE, capture_output=True, text=True, env={**os.environ, "UT_PREBUILT": "0"})
+                       cwd=CLONE, capture_output=True, text=True,
+                       env={**os.environ, "UT_PREBUILT": "0", "BRANCH": BRANCH})
     print(r.stdout[-2000:] if r.stdout else "", flush=True)
     print(r.stderr[-1000:] if r.stderr else "", flush=True)
     return r.returncode
