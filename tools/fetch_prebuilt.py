@@ -5,6 +5,11 @@ it into TORCH_EXTENSIONS_DIR so every load_inline call finds a matching
 cached build and skips nvcc — on-VM JIT compilation was burning free Colab
 GPU minutes (2-5 min per extension per fresh VM).
 
+MIGRATION (2026-11-21): master now uses the shipped cuBLAS arm (no custom
+kernels). This tool is only used on reference/custom-arm (the bit-exact
+test oracle). Master does NOT fetch prebuilt bundles — the shipped arm
+uses cuBLAS, not custom kernels.
+
 ABI contract (checked hard before extracting): the bundle's manifest must
 match the local torch version and the local extension tag pyXY_cuZZ. A
 commit mismatch is only a warning (doc-only pushes may post-date the

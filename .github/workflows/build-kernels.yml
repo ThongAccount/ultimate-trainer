@@ -5,6 +5,11 @@ name: build-kernels
 # download prebuilt .so files instead of paying nvcc JIT time out of free GPU
 # session minutes. See docs/speedpass/2026-10-31-prebuilt-kernels.md.
 #
+# MIGRATION (2026-11-21): master now uses the shipped cuBLAS arm (no custom
+# kernels). This workflow runs ONLY on reference/custom-arm (the bit-exact
+# test oracle). Master does NOT publish kernels-latest bundles — the shipped
+# arm uses cuBLAS, not custom kernels.
+#
 # ABI contract: the container's toolchain must match the Colab VM exactly —
 # python 3.13, torch==2.11.0+cu130, CUDA 13.0 nvcc, TORCH_CUDA_ARCH_LIST=7.5
 # (set by kernels/common.py). The extension tag py313_cu130 must equal the
@@ -12,7 +17,7 @@ name: build-kernels
 
 on:
   push:
-    branches: [master]
+    branches: [reference/custom-arm]
     paths:
       - "kernels/**"
       - "build_kernels.py"
