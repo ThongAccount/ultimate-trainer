@@ -2,6 +2,8 @@
 
 Training LLMs using **packed ternary weights only** — no FP32/BF16 master weights, no floating-point optimizer state, no latent full-precision copies.  Weights are always `{-1, 0, +1}`, stored as 16 values per `uint32_t`.
 
+**MIGRATION (2026-11-21):** Master now uses the **shipped cuBLAS arm** (627.6 ms / 26,055 tok/s). The custom arm is archived at `reference/custom-arm` as the bit-exact test oracle. The custom-arm kernel backlog is permanently closed per the Masters ruling.
+
 The project is a bottom-up CUDA C++ stack for discrete optimization:
 
 - `PackedTernaryTensor` — 2-bit packed storage (16 ternary values per uint32)

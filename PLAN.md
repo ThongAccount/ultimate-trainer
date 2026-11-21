@@ -1,5 +1,14 @@
 # PLAN — Packed Ternary Discrete Optimizer
 
+## MIGRATION (2026-11-21)
+
+Master now uses the **shipped cuBLAS arm** (627.6 ms / 26,055 tok/s). The custom arm is archived at `reference/custom-arm` as the bit-exact test oracle. The custom-arm kernel backlog is permanently closed per the Masters ruling.
+
+- **Master**: shipped cuBLAS arm (PT_BACKEND=cublas, PT_UPDATE_BACKEND=cublas)
+- **reference/custom-arm**: bit-exact test oracle (custom kernels, dispatch, parity tests)
+- **Custom-arm kernel backlog**: permanently closed (A2, B2, B4, A3 all measured-negative)
+- **Reopen targets** (if the oracle arm ever needs work): update ~38%, dX ~34% of that step
+
 ## Current State (2026-07-28)
 
 ### What Works ✅
