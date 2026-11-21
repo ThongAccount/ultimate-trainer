@@ -97,7 +97,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
 
 def use_update_cublas() -> bool:
-    return os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas"
+    return os.environ.get("PT_UPDATE_BACKEND", "cublas").lower() == "cublas"
 
 
 def update_cublas(W: torch.Tensor, counter: torch.Tensor,

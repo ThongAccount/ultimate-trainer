@@ -11,12 +11,12 @@ This module routes fwd/dX through:
 Update keeps the v2_32 counter kernel (semantics-critical; the counterword
 variant is parked pending its parity diagnosis).
 
-Env: PT_BACKEND=cublas|custom (default custom). PT_VERBOSE_DISPATCH=1 logs
+Env: PT_BACKEND=cublas|custom (default cublas — shipped arm). PT_VERBOSE_DISPATCH=1 logs
 the chosen backend once per shape.
 """
 import os
 
-_BACKEND = os.environ.get("PT_BACKEND", "custom").lower()
+_BACKEND = os.environ.get("PT_BACKEND", "cublas").lower()
 _LOGGED = set()
 
 

@@ -157,7 +157,7 @@ def update_tc_v2(W: torch.Tensor, counter: torch.Tensor,
                 f"shape {tuple(counter.shape)} ([N, K])")
         if flip_count.dtype != torch.int16:
             raise RuntimeError(f"flip_count must be int16, got {flip_count.dtype}")
-    if os.environ.get("PT_UPDATE_BACKEND", "custom").lower() == "cublas":
+    if os.environ.get("PT_UPDATE_BACKEND", "cublas").lower() == "cublas":
         # Ranked item #1: cuBLAS dW (fp32 out) + counter/flip epilogue.
         from .update_cublas import update_cublas
         update_cublas(W, counter, X, dY, threshold, dead_zone,

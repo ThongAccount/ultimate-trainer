@@ -51,7 +51,7 @@ REPO = os.environ.get("REPO_DIR", "/content/ultimate-trainer")
 os.chdir(REPO); sys.path.insert(0, os.getcwd())
 import torch
 backend = os.environ["PT_BACKEND"]
-update_backend = os.environ.get("PT_UPDATE_BACKEND", "custom")
+update_backend = os.environ.get("PT_UPDATE_BACKEND", "cublas")
 label = os.environ.get("ARM_LABEL", f"{backend}_{update_backend}")
 data_mode = os.environ.get("DATA_MODE", "real")
 gpu = torch.cuda.get_device_name(0)
