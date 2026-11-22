@@ -21,12 +21,12 @@ _CU = r"""
 #include <torch/extension.h>
 #include <c10/cuda/CUDAStream.h>
 
-torch::Tensor decode_wrapper(torch::Tensor W_packed, int N, int K);
-void decode_into_wrapper(torch::Tensor W_packed, torch::Tensor W16, int N, int K);
+torch::Tensor decode_wrapper(torch::Tensor W_packed, int N, int K, float scale);
+void decode_into_wrapper(torch::Tensor W_packed, torch::Tensor W16, int N, int K, float scale);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("decode", &decode_wrapper, "packed ternary -> fp16 decode (allocating)");
-    m.def("decode_into", &decode_into_wrapper, "packed ternary -> fp16 decode into existing buffer");
+    m.def("decode", &decode_wrapper, "packed ternary -> fp16 decode (allocating, scale-alpha fold)");
+    m.def("decode_into", &decode_into_wrapper, "packed ternary -> fp16 decode into existing buffer (scale-alpha fold)");
 }
 """
 
@@ -126,6 +126,6 @@ def decode_packed(W_packed: torch.Tensor, N: int, K: int) -> torch.Tensor:
     return load_decode().decode(W_packed, N, K)
 
 
-def decode_into(W_packed: torch.Tensor, W16: torch.Tensor, N: int, K: int) -> None:
-    """Decode into an existing fp16 [N, K] buffer (graph-capturable)."""
-    load_decode().decode_into(W_packed, W16, N, K)
+def decode_into(W_packed: torch.Tensor, W16: torch.Tensor, N: int, K: int, scale: float = 1.0) -> None:
+    """Decode into an existing fp16 [N, K] buffer (graph-capturable, scale-alpha fold)."""
+    load_decode().decode_into(W_packed, W16, N, K, scale)
