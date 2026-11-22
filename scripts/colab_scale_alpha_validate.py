@@ -34,7 +34,7 @@ def install_deps():
 
 def smoke():
     print("=== SMOKE ===", flush=True)
-    r = subprocess.run([sys.executable, "tests/probe_fwd_spill.py", "--probe", "fwdspill", "--skip-timing"],
+    r = subprocess.run([sys.executable, "-m", "pytest", "tests/test_packed_ternary.py", "-q"],
                        cwd=CLONE, capture_output=True, text=True, env={**os.environ, "UT_PREBUILT": "0"})
     print(r.stdout[-2000:] if r.stdout else "", flush=True)
     print(r.stderr[-1000:] if r.stderr else "", flush=True)
