@@ -64,12 +64,13 @@ for B, K, N in shapes:
                                  torch.zeros(N, K, device="cuda"),
                                  torch.ones(N, K, device="cuda")).int())
     X = (torch.randn(B, K, device="cuda") * 0.1).half()
-    # fwd — compare custom_ops dispatch vs raw pack_forward kernel
-    y = co.forward_tc(W, X, K, scale=K ** -0.5)
+    scale = K ** -0.5
+    # fwd — compare custom_ops dispatch vs raw pack_forward kernel with scale applied separately
+    y = co.forward_tc(W, X, K, scale=scale)
     pf._load_tc_32()
     pf._load_tc_64()
     if pf._forward_fn_tc is not None:
-        y_ref = pf._forward_fn_tc(W.contiguous(), X.contiguous())
+        y_ref = pf._forward_fn_tc(W.contiguous(), X.contiguous()) * scale
         assert torch.equal(y, y_ref), f"fwd parity FAIL at {B}x{K}x{N}"
     print(f"parity OK: {B}x{K}x{N}", flush=True)
 print("ALL PARITY PASS", flush=True)
