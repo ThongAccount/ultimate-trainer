@@ -111,6 +111,13 @@ for step in range(STEPS):
         print(f"  step {step:4d} loss {lv:8.4f} t {(t1-t0)*1000:7.1f} ms flips={fl}", flush=True)
 med = statistics.median(times if times else all_times) * 1000
 toks = x.numel() / (med / 1000)
+# Standing measurement rule: median-over-steps is not enough — report spread.
+_spread_src = times if times else all_times
+if len(_spread_src) >= 4:
+    _q = statistics.quantiles(_spread_src, n=4)
+    half_iqr_ms = (_q[2] - _q[0]) / 2 * 1000
+else:
+    half_iqr_ms = 0.0
 
 
 def loss_at(i):
@@ -119,7 +126,7 @@ def loss_at(i):
 
 flips_final = sum(int(l.flip_count.sum().item()) for l in list(model.fc1s) + list(model.fc2s) + [model.head])
 print(f"RESULTS: backend={backend} update_backend={update_backend} label={label} "
-      f"median_step_ms={med:.1f} tok_per_s={toks:.0f} "
+      f"median_step_ms={med:.1f} half_iqr_ms={half_iqr_ms:.1f} tok_per_s={toks:.0f} "
       f"loss_1={loss_at(1)} loss_50={loss_at(50)} loss_100={loss_at(100)} "
       f"loss_final={losses[-1]:.4f} flips_final={flips_final} nan={int(nan_seen)} steps={STEPS} "
       f'data={data_mode} gpu="{gpu}"', flush=True)
@@ -200,6 +207,7 @@ def main():
 
     selected = [a for a in ARMS if a[2] in args.backends.split(",")]
     by = {}
+    clocks = {}
     failures = 0
     for backend, update_backend, label in selected:
         env = {**os.environ, "REPO_DIR": d, "PT_BACKEND": backend,
@@ -210,7 +218,15 @@ def main():
               f"PT_UPDATE_BACKEND={update_backend}) ---", flush=True)
         sys.path.insert(0, d)
         from tools.stream_runner import run_streaming
+        # Standing measurement rule: every arm carries its clock telemetry.
+        # Unavailable sampling is recorded with its cause, never dropped.
+        sys.path.insert(0, os.path.join(d, "tests"))
+        from bench_protocol import ClockSampler
+        clk = ClockSampler(os.path.join(d, "results", f"clocks.step_ab.{label}.csv"))
+        clk.start()
         rc, out = run_streaming([sys.executable, "step_ab_driver.py"], cwd=d, env=env)
+        clocks[label] = clk.stop()
+        print(f"CLOCKS: label={label} {json.dumps(clocks[label])}", flush=True)
         for line in out:
             if line.startswith("RESULTS:"):
                 rec = {}
@@ -218,10 +234,11 @@ def main():
                     if "=" in tok:
                         k, v = tok.split("=", 1)
                         rec[k] = v
-                try:
-                    rec["median_step_ms"] = float(rec.get("median_step_ms", "nan"))
-                except ValueError:
-                    pass
+                for key in ("median_step_ms", "half_iqr_ms"):
+                    try:
+                        rec[key] = float(rec.get(key, "nan"))
+                    except ValueError:
+                        pass
                 if "label" in rec:
                     by[rec["label"]] = rec
         if rc != 0:
@@ -258,7 +275,9 @@ def main():
                 "data": args.data, "flip_budget": int(args.flip_budget),
                 "ship_bar_pct": SHIP_BAR_PCT,
                 "historical_baseline_ms": HISTORICAL_BASELINE_MS,
-                "arms": by, "failures": failures}
+                "arms": by, "clocks": clocks, "failures": failures,
+                "measurement_rule": "median-over-steps + spread + clock telemetry "
+                "(docs/speedpass/2026-11-20-measurement-rule-harness.md)"}
     path = write_artefact(d, "whole_step_ab.json", artefact, root_cause_commit=head)
     print(f"ARTEFACT: {path}", flush=True)
     return 1 if failures else 0
