@@ -46,10 +46,11 @@ def build_model():
         h = self.embed(x).half().view(B * T, K)
         for i in range(N_LAYERS):
             h = self.norms[i](h.float()).half()
-            h = self.fc1s[i](h) * scale
+            # scale-alpha fold: apply scale during decode (eliminates separate scale pass)
+            h = self.fc1s[i](h, scale=scale)
             h = torch.nn.functional.gelu(h)
-            h = self.fc2s[i](h) * scale
-        h = self.head(h) * scale
+            h = self.fc2s[i](h, scale=scale)
+        h = self.head(h, scale=scale)
         return h.view(B, T, VOCAB)
 
     model = TernaryTransformer().cuda()
@@ -110,16 +111,17 @@ def train_step_cudagraph(model, x, y, profile=False):
     h = model.embed(x).half().view(B * T, K)
     for i in range(N_LAYERS):
         h = model.norms[i](h.float()).half()
-        h = model.fc1s[i](h) * scale
+        # scale-alpha fold: apply scale during decode (eliminates separate scale pass)
+        h = model.fc1s[i](h, scale=scale)
         h = torch.nn.functional.gelu(h)
-        h = model.fc2s[i](h) * scale
+        h = model.fc2s[i](h, scale=scale)
 
     if profile:
         e[1].record()
         e[2].record()
 
     # Phase 2: Head
-    h = model.head(h) * scale
+    h = model.head(h, scale=scale)
 
     if profile:
         e[3].record()

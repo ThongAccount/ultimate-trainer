@@ -37,17 +37,18 @@ def get_buffer(N: int, K: int, device):
     return buf
 
 
-def decode_into(W_packed, N: int, K: int):
+def decode_into(W_packed, N: int, K: int, scale: float = 1.0):
     """Decode W into the persistent buffer for (N, K) and return it.
 
     Buffer allocated once per shape; the decode kernel re-runs every call
     (W mutates on update steps) through the current stream, so capture is
     stable: same input pointer + same output pointer every replay.
+    scale-alpha fold: apply scale during decode (eliminates separate scale pass).
     """
     from .pack_decode import load_decode
 
     buf = get_buffer(N, K, W_packed.device)
-    load_decode().decode_into(W_packed, buf, N, K)
+    load_decode().decode_into(W_packed, buf, N, K, scale)
     return buf
 
 

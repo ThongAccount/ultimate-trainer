@@ -30,22 +30,26 @@ def _log_once(key: str, msg: str) -> None:
         print(f"[dispatch] {msg}", flush=True)
 
 
-def forward(W_packed, X, K: int):
-    """fwd: Y = X @ W^T. W_packed is [N, stride_words] int32; W16 is [N, K]."""
+def forward(W_packed, X, K: int, scale: float = 1.0):
+    """fwd: Y = X @ W^T. W_packed is [N, stride_words] int32; W16 is [N, K].
+    scale-alpha fold: apply scale during decode (eliminates separate scale pass).
+    """
     from .scratch import decode_into
 
     N = W_packed.size(0)
-    W16 = decode_into(W_packed, N, K)
+    W16 = decode_into(W_packed, N, K, scale)
     _log_once(("fwd", N, K), f"fwd cublas {N}x{K} (decode+matmul)")
     return torch_matmul_xt(X, W16)
 
 
-def backward_dx(W_packed, dY, K: int):
-    """dX = dY @ W. W16 is [N, K]; dY is [B, N]."""
+def backward_dx(W_packed, dY, K: int, scale: float = 1.0):
+    """dX = dY @ W. W16 is [N, K]; dY is [B, N].
+    scale-alpha fold: apply scale during decode (eliminates separate scale pass).
+    """
     from .scratch import decode_into
 
     N = W_packed.size(0)
-    W16 = decode_into(W_packed, N, K)
+    W16 = decode_into(W_packed, N, K, scale)
     _log_once(("dx", N, K), f"dX cublas {N}x{K} (decode+matmul)")
     return torch_matmul(dY, W16)
 

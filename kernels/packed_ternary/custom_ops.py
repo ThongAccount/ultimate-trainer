@@ -67,14 +67,15 @@ def _check_counter_scalar_args(threshold, dead_zone=None):
 
 
 @custom_op("packed_ternary::forward_tc", mutates_args=())
-def forward_tc(W: torch.Tensor, X: torch.Tensor, K: int) -> torch.Tensor:
+def forward_tc(W: torch.Tensor, X: torch.Tensor, K: int, scale: float = 1.0) -> torch.Tensor:
     """Ternary forward GEMM: Y = X @ W^T via WMMA Tensor Cores.
 
     PT_BACKEND=cublas routes to decode-once + cuBLAS (measured 20.7x faster
     than the custom kernels at B=16384; decode costs 0.105 ms — Phase 0).
+    scale-alpha fold: apply scale during decode (eliminates separate scale pass).
     """
     if use_cublas():
-        return cublas_fwd(W, X, K)
+        return cublas_fwd(W, X, K, scale)
     _ensure_loaded()
     if _fwd_tc is None:
         raise RuntimeError("TC forward kernel not available")
@@ -89,13 +90,14 @@ def _forward_tc_fake(W, X, K):
 
 
 @custom_op("packed_ternary::backward_dx_tc", mutates_args=())
-def backward_dx_tc(W: torch.Tensor, dY: torch.Tensor, K: int) -> torch.Tensor:
+def backward_dx_tc(W: torch.Tensor, dY: torch.Tensor, K: int, scale: float = 1.0) -> torch.Tensor:
     """Backward dX = dY @ W via WMMA Tensor Cores (auto 64x64/32x32).
 
     PT_BACKEND=cublas routes to decode-once + cuBLAS.
+    scale-alpha fold: apply scale during decode (eliminates separate scale pass).
     """
     if use_cublas():
-        return cublas_dx(W, dY, K)
+        return cublas_dx(W, dY, K, scale)
     _ensure_loaded()
     B = dY.size(0)
     N_out = dY.size(1)
