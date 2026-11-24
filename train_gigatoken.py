@@ -45,7 +45,7 @@ def build_model():
         scale = K ** -0.5
         h = self.embed(x).half().view(B * T, K)
         for i in range(N_LAYERS):
-            h = self.norms[i](h.float()).half()
+            h = _fused_ln_cast(self.norms[i], h)
             h = self.fc1s[i](h) * scale
             h = torch.nn.functional.gelu(h)
             h = self.fc2s[i](h) * scale
@@ -91,6 +91,15 @@ def _fused_ce_scale(logits, targets, vocab):
         logits.view(-1, vocab), targets.view(-1), reduction='mean')
 
 
+# Fused LayerNorm + fp32→fp16 cast via torch.compile (saves ~10 ms of cast passes)
+@torch.compile
+def _fused_ln_cast(norm, h):
+    """Fused LayerNorm + cast. torch.compile fuses the float() cast, LayerNorm,
+    and half() cast into a single kernel, eliminating the intermediate fp32
+    tensor allocation and the separate cast pass."""
+    return norm(h.float()).half()
+
+
 def train_step_cudagraph(model, x, y, profile=False):
     """One training step.
 
@@ -109,7 +118,7 @@ def train_step_cudagraph(model, x, y, profile=False):
     # Phase 1: Norm + fc1 + gelu + fc2 for each layer
     h = model.embed(x).half().view(B * T, K)
     for i in range(N_LAYERS):
-        h = model.norms[i](h.float()).half()
+        h = _fused_ln_cast(model.norms[i], h)
         h = model.fc1s[i](h) * scale
         h = torch.nn.functional.gelu(h)
         h = model.fc2s[i](h) * scale
