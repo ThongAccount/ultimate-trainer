@@ -25,21 +25,21 @@ All custom-arm kernel optimization candidates measured negative (A2 +1.03%,
 B2 +18.2%, B4 +5.6%, A3 +23.4%). Masters debate closed all permanently.
 The custom arm remains only as a bit-exact reference.
 
+### Flip-count batching/deferral — CLOSED (measured-negative)
+
+Branch: `feat/flip-count-batching` @ `d884ad5`
+Result: **+2.46% slower** (494.423 ms vs 482.576 ms master, flip_budget=5).
+Branch divergence from the deferred flip_count check costs more than the
+memory traffic savings. Candidate closed; not merged.
+
 ## Active items
 
-### 1. Flip-count batching/deferral — IN PROGRESS
-
-Branch: `feat/flip-count-batching` @ `ed51f0d`
-Target: ~11 ms/step (~1.9%) when flip_budget > 0
-Mechanism: defer flip_count read until weight is about to flip
-Status: prereg committed, awaiting Colab validation
-
-### 2. Fused LayerNorm casts — NOT STARTED
+### 1. Fused LayerNorm casts — NOT STARTED
 
 Target: ~10 ms/step (~1.5%)
 Mechanism: fuse the float()→half() casts in the LayerNorm path
 
-### 3. Skip unused gradients — NOT STARTED
+### 2. Skip unused gradients — NOT STARTED
 
 Target: ~10 ms/step (~1.5%)
 Mechanism: skip layer-0 dX and embedding/LN gradient paths that are never used
