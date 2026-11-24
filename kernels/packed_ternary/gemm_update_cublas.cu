@@ -47,11 +47,6 @@ __global__ void update_epilogue_kernel(
     int n = idx / K;
     int k = idx % K;
 
-    // Flip budget: once a weight has flipped flip_budget times, freeze it
-    // permanently — no more counter accumulation, no more flips. This
-    // deterministically breaks the limit cycle.
-    if (flip_budget > 0 && flip_count[idx] >= flip_budget) return;
-
     float g = dW[idx];
     int16_t cnt = counter[idx];
     // Counter dead zone: gradients below DEAD_ZONE do not accumulate, breaking
@@ -60,14 +55,23 @@ __global__ void update_epilogue_kernel(
     // Saturating clamp before the threshold check (int16 wrap guard, same as v2_32).
     cnt = max(-32767, min(32767, cnt));
 
-    uint32_t* w_row = W + (long)n * stride_words;
-    if (cnt > threshold) {
-        increment_weight_atomic(w_row, k);
-        cnt = 0;
-        if (flip_budget > 0) flip_count[idx] += 1;
-    }
-    else if (cnt < -threshold) {
-        decrement_weight_atomic(w_row, k);
+    // Deferred flip_count read: only read flip_count when the weight is about
+    // to flip. Most weights don't flip on any given step, so this avoids the
+    // flip_count memory traffic for the common case.
+    if (cnt > threshold || cnt < -threshold) {
+        // Flip budget: once a weight has flipped flip_budget times, freeze it
+        // permanently — no more flips. The counter is still updated (frozen
+        // weights' counters are irrelevant since they never flip again).
+        if (flip_budget > 0 && flip_count[idx] >= flip_budget) {
+            counter[idx] = cnt;
+            return;
+        }
+        uint32_t* w_row = W + (long)n * stride_words;
+        if (cnt > threshold) {
+            increment_weight_atomic(w_row, k);
+        } else {
+            decrement_weight_atomic(w_row, k);
+        }
         cnt = 0;
         if (flip_budget > 0) flip_count[idx] += 1;
     }
