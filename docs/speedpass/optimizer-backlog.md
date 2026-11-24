@@ -32,15 +32,22 @@ Result: **+2.46% slower** (494.423 ms vs 482.576 ms master, flip_budget=5).
 Branch divergence from the deferred flip_count check costs more than the
 memory traffic savings. Candidate closed; not merged.
 
-## Active items
+### Fused LayerNorm casts — CLOSED (NOISE)
 
-### 1. Fused LayerNorm casts — NOT STARTED
+Branch: `feat/fused-ln-casts` @ `9bb8671`
+Result: **−0.41%** (465.697 ms vs 467.636 ms master) — below the 1% threshold.
+torch.compile overhead offsets the cast fusion savings. Not merged.
 
-Target: ~10 ms/step (~1.5%)
-Mechanism: fuse the float()→half() casts in the LayerNorm path
+### Skip unused gradients — MERGED (WIN)
 
-### 2. Skip unused gradients — NOT STARTED
+Branch: `feat/skip-unused-grads` @ `8a7d40c`, merged to master @ `ae6b64d`
+Result: **−3.07%** (453.284 ms vs 467.636 ms master) — **14.352 ms saved**.
+Bit-identical loss trajectory. 103/103 pytest passed.
 
-Target: ~10 ms/step (~1.5%)
-Mechanism: skip layer-0 dX and embedding/LN gradient paths that are never used
-Requires: bit-identical W trajectory
+## Backlog exhausted
+
+All optimizer items from the 2026-11-22 list have been processed. The shipped
+cuBLAS arm step time improved from 627.6 ms to **453.3 ms** (−27.8%) through:
+- P0 cuBLAS migration (−81.33% vs custom)
+- I1 fused CE+scale (−11.714 ms)
+- Skip unused gradients (−14.352 ms)
