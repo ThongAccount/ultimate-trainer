@@ -39,11 +39,18 @@ def build_model():
             self.fc1s = torch.nn.ModuleList([PackedTernaryLinear(K, 4*K, threshold=THRESHOLD, flip_budget=FLIP_BUDGET) for _ in range(N_LAYERS)])
             self.fc2s = torch.nn.ModuleList([PackedTernaryLinear(4*K, K, threshold=THRESHOLD, flip_budget=FLIP_BUDGET) for _ in range(N_LAYERS)])
             self.head = PackedTernaryLinear(K, VOCAB, threshold=THRESHOLD, flip_budget=FLIP_BUDGET)
+            # Skip unused gradients: embedding and LayerNorm parameters are
+            # never updated (no optimizer.step()). Freeze them to skip the
+            # backward gradient computation for these modules.
+            self.embed.weight.requires_grad = False
+            for norm in self.norms:
+                norm.weight.requires_grad = False
+                norm.bias.requires_grad = False
 
     def forward(self, x):
         B, T = x.shape
         scale = K ** -0.5
-        h = self.embed(x).half().view(B * T, K)
+        h = self.embed(x).half().view(B * T, K).detach()
         for i in range(N_LAYERS):
             h = self.norms[i](h.float()).half()
             h = self.fc1s[i](h) * scale
@@ -107,7 +114,7 @@ def train_step_cudagraph(model, x, y, profile=False):
         e[0].record()
 
     # Phase 1: Norm + fc1 + gelu + fc2 for each layer
-    h = model.embed(x).half().view(B * T, K)
+    h = model.embed(x).half().view(B * T, K).detach()
     for i in range(N_LAYERS):
         h = model.norms[i](h.float()).half()
         h = model.fc1s[i](h) * scale
