@@ -188,7 +188,11 @@ def main() -> int:
     print(f"BUNDLE: {bundle} sha256={sha} size={size_mb:.1f}MB exts={n} "
           f"so={n_so} build_s={dt:.0f} layout={layout} commit={commit[:10]}",
           flush=True)
-    shutil.rmtree(work, ignore_errors=True)
+    # Only remove an internally-created temporary directory. CI supplies a
+    # fixed UT_EXT_WORKDIR which must survive until actions/cache's post-job
+    # save step; deleting it here makes the cache path nonexistent.
+    if not os.environ.get("UT_EXT_WORKDIR"):
+        shutil.rmtree(work, ignore_errors=True)
     return 0
 
 
