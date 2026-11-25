@@ -11,6 +11,7 @@ dist/
 build/
 *.egg
 .eggs/
+.ext_cache/
 
 # ── Virtual environments ─────────────────────────────────────────
 .venv/
