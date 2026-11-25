@@ -97,10 +97,7 @@ def main() -> int:
     args = ap.parse_args()
 
     sys.path.insert(0, REPO)
-    # Use a fixed workdir when UT_EXT_WORKDIR is set (CI ccache needs stable
-    # source paths for cache hits; random temp dirs defeat the cache).
-    work = os.environ.get("UT_EXT_WORKDIR") or tempfile.mkdtemp(prefix="ut_ext_bundle_")
-    os.makedirs(work, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="ut_ext_bundle_")
     ext_root = os.path.join(work, "torch_extensions")
     os.environ["TORCH_EXTENSIONS_DIR"] = ext_root  # must precede any load_inline
 

@@ -87,9 +87,6 @@ jobs:
           # load_inline generates a random temp dir per run; ignore the
           # directory in the ccache hash so restored caches actually hit.
           echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
-          # Fixed workdir for load_inline so ccache source paths are stable
-          # across runs (random temp dirs defeat the cache).
-          echo "UT_EXT_WORKDIR=/tmp/ut_ext_bundle" >> "$GITHUB_ENV"
           # CC=gcc (NOT "ccache gcc") so nvcc's -ccbin gets a single-word path.
           # CXX=ccache g++ for the C++ wrapper files — these ARE cached.
           # The main build-time win is the torch_extensions cache above:
