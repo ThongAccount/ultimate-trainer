@@ -65,7 +65,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ext_cache/torch_extensions
-          key: torch-ext-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
+          key: torch-ext-${{ hashFiles('kernels/**') }}
           restore-keys: |
             torch-ext-
 
@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /root/.ccache
-          key: ccache-kernels-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
+          key: ccache-kernels-${{ hashFiles('kernels/**') }}
           restore-keys: |
             ccache-kernels-
 
