@@ -111,6 +111,8 @@ jobs:
           fi
 
       - name: fetch previous bundle (skip nvcc on cache hit)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Download the previous release bundle into TORCH_EXTENSIONS_DIR.
           # load_inline skips nvcc when the version hash matches, so a
