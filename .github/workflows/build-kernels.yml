@@ -64,7 +64,7 @@ jobs:
       - name: torch extensions cache
         uses: actions/cache@v4
         with:
-          path: /root/.cache/torch_extensions
+          path: /tmp/ut_ext_bundle/torch_extensions
           key: torch-ext-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
           restore-keys: |
             torch-ext-
