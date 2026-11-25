@@ -84,6 +84,9 @@ jobs:
           echo "CCACHE_COMPRESS=true" >> "$GITHUB_ENV"
           echo "CCACHE_COMPRESSLEVEL=6" >> "$GITHUB_ENV"
           echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+          # load_inline generates a random temp dir per run; ignore the
+          # directory in the ccache hash so restored caches actually hit.
+          echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
           # CC=gcc (NOT "ccache gcc") so nvcc's -ccbin gets a single-word path.
           # CXX=ccache g++ for the C++ wrapper files — these ARE cached.
           # The main build-time win is the torch_extensions cache above:
