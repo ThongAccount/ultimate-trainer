@@ -64,7 +64,7 @@ jobs:
       - name: torch extensions cache
         uses: actions/cache@v4
         with:
-          path: /tmp/ut_ext_bundle/torch_extensions
+          path: .ext_cache/torch_extensions
           key: torch-ext-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
           restore-keys: |
             torch-ext-
@@ -89,7 +89,9 @@ jobs:
           echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
           # Fixed workdir for load_inline so ccache source paths are stable
           # across runs (random temp dirs defeat the cache).
-          echo "UT_EXT_WORKDIR=/tmp/ut_ext_bundle" >> "$GITHUB_ENV"
+          # Use $GITHUB_WORKSPACE so the path is mounted from the host and
+          # actions/cache can access it for save/restore.
+          echo "UT_EXT_WORKDIR=$GITHUB_WORKSPACE/.ext_cache" >> "$GITHUB_ENV"
           # CC=gcc (NOT "ccache gcc") so nvcc's -ccbin gets a single-word path.
           # CXX=ccache g++ for the C++ wrapper files — these ARE cached.
           # The main build-time win is the torch_extensions cache above:
