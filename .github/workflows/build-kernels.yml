@@ -102,14 +102,15 @@ jobs:
           echo "UT_EXT_WORKDIR=$GITHUB_WORKSPACE/.ext_cache" >> "$GITHUB_ENV"
           # CC=gcc (NOT "ccache gcc") so nvcc's -ccbin gets a single-word path.
           # CXX=ccache g++ for the C++ wrapper files — these ARE cached.
-          # The main build-time win is the torch_extensions cache above:
-          # load_inline skips nvcc entirely when the version hash matches.
+          # The main build-time win is the exact torch_extensions cache hit:
+          # the build step packages it directly without invoking load_inline.
           echo "CC=gcc" >> "$GITHUB_ENV"
           echo "CXX=ccache g++" >> "$GITHUB_ENV"
-          # Keep the restored objects but reset counters so the post-build
-          # hit/miss report describes this run only.
-          ccache --zero-stats
-          ccache -s
+          # Keep restored objects but reset counters on the actual cache dir.
+          # GITHUB_ENV applies only to subsequent steps, so pass CCACHE_DIR
+          # inline here; otherwise --zero-stats touches the default directory.
+          CCACHE_DIR=/root/.ccache ccache --zero-stats
+          CCACHE_DIR=/root/.ccache ccache -s
 
       - name: expose CUDA headers to host c++ compiles (CPATH self-heal)
         run: |
