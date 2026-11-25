@@ -73,8 +73,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /root/.ccache
-          key: ccache-kernels-${{ hashFiles('kernels/**') }}
+          # Actions cache entries are immutable. A fresh primary key per run
+          # lets new compilation results be saved; restore-keys selects the
+          # most recent entry for these kernel sources.
+          key: ccache-kernels-${{ hashFiles('kernels/**') }}-${{ github.run_id }}
           restore-keys: |
+            ccache-kernels-${{ hashFiles('kernels/**') }}-
             ccache-kernels-
 
       - name: ccache env (host-side C++ only)
@@ -101,6 +105,9 @@ jobs:
           # load_inline skips nvcc entirely when the version hash matches.
           echo "CC=gcc" >> "$GITHUB_ENV"
           echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          # Keep the restored objects but reset counters so the post-build
+          # hit/miss report describes this run only.
+          ccache --zero-stats
           ccache -s
 
       - name: expose CUDA headers to host c++ compiles (CPATH self-heal)
