@@ -231,17 +231,16 @@ def build():
 
     t0 = time.time()
 
+    # Extra nvcc flags from environment (e.g. ccache --compiler-bindir on CI)
+    extra_flags = os.environ.get("UT_NVCC_EXTRA_FLAGS", "").split()
+    cuda_flags = ["-O3", "--use_fast_math", "--threads=0", "-keep"] + extra_flags
+
     lib = load_inline(
         name="ultimate_kernels",
         cpp_sources=CPP_WRAPPER,
         cuda_sources=cuda_sources,
         verbose=True,
-        extra_cuda_cflags=[
-            "-O3",
-            "--use_fast_math",
-            "--threads=0",
-            "-keep",
-        ],
+        extra_cuda_cflags=cuda_flags,
         extra_include_paths=[
             os.path.join(ROOT, "kernels", "packed_ternary"),
             os.path.join(ROOT, "kernels"),

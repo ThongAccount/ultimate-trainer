@@ -76,11 +76,17 @@ jobs:
           echo "CCACHE_COMPRESS=true" >> "$GITHUB_ENV"
           echo "CCACHE_COMPRESSLEVEL=6" >> "$GITHUB_ENV"
           echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
-          # nvcc calls the host compiler via CUDAHOSTCXX; ccache wraps it.
-          # Device-side ptxas is not cacheable, but host-side gcc/g++ is.
-          echo "CC=ccache gcc" >> "$GITHUB_ENV"
-          echo "CXX=ccache g++" >> "$GITHUB_ENV"
-          echo "CUDAHOSTCXX=ccache g++" >> "$GITHUB_ENV"
+          # Create ccache symlink directory for nvcc --compiler-bindir.
+          # nvcc's -ccbin breaks on multi-word compiler paths like "ccache gcc";
+          # the symlink dir lets nvcc find gcc/g++ -> ccache wrappers instead.
+          mkdir -p /usr/lib/ccache
+          ln -sf /usr/bin/ccache /usr/lib/ccache/gcc
+          ln -sf /usr/bin/ccache /usr/lib/ccache/g++
+          # Do NOT set CC/CXX to "ccache gcc" — nvcc's -ccbin breaks on
+          # multi-word compiler paths. Use --compiler-bindir via build script.
+          echo "CC=gcc" >> "$GITHUB_ENV"
+          echo "CXX=g++" >> "$GITHUB_ENV"
+          echo "UT_NVCC_EXTRA_FLAGS=--compiler-bindir /usr/lib/ccache" >> "$GITHUB_ENV"
           ccache -s
 
       - name: expose CUDA headers to host c++ compiles (CPATH self-heal)
