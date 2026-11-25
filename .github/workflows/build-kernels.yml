@@ -87,6 +87,9 @@ jobs:
           # load_inline generates a random temp dir per run; ignore the
           # directory in the ccache hash so restored caches actually hit.
           echo "CCACHE_NOHASHDIR=true" >> "$GITHUB_ENV"
+          # Normalize source paths in the ccache hash so restored caches hit
+          # even when the workspace path differs between runs.
+          echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           # Fixed workdir for load_inline so ccache source paths are stable
           # across runs (random temp dirs defeat the cache).
           # Use $GITHUB_WORKSPACE so the path is mounted from the host and
@@ -112,7 +115,7 @@ jobs:
 
       - name: fetch previous bundle (skip nvcc on cache hit)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Download the previous release bundle into TORCH_EXTENSIONS_DIR.
           # load_inline skips nvcc when the version hash matches, so a
