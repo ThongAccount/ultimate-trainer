@@ -94,6 +94,8 @@ def py_tag() -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(REPO, "dist"))
+    ap.add_argument("--reuse-cache", action="store_true",
+                    help="package an exact Actions cache hit without invoking Ninja")
     args = ap.parse_args()
 
     sys.path.insert(0, REPO)
@@ -111,7 +113,10 @@ def main() -> int:
           f"{os.environ.get('TORCH_CUDA_ARCH_LIST')}", flush=True)
 
     t0 = time.time()
-    n = force_builds()
+    # PyTorch's ExtensionVersioner is process-local, so every fresh CI process
+    # invokes Ninja even for a restored cache. An exact kernel-hash hit is
+    # already a complete ABI-compatible build: package it directly instead.
+    n = 0 if args.reuse_cache else force_builds()
     dt = time.time() - t0
 
     # Layout note: on a GPU-less runner torch 2.11 builds extensions FLAT
@@ -142,7 +147,8 @@ def main() -> int:
                                               if layout == "tagged" else [ext_root])
                for _, _, files in os.walk(base) for f in files)
     print(f"layout={layout} ext_dirs={len(entries)} .so={n_so} "
-          f"loaders_ok={n} build_s={dt:.0f}", flush=True)
+          f"loaders_ok={n} build_s={dt:.2f} cache_reused={args.reuse_cache}",
+          flush=True)
 
     # The CUDA container has no git binary (checkout used the REST API), so
     # prefer the Actions-provided sha; fall back to git, then "unknown".
@@ -176,7 +182,8 @@ def main() -> int:
         "arch_list": os.environ.get("TORCH_CUDA_ARCH_LIST"),
         "nvcc": nvcc,
         "extensions_built": n,
-        "build_seconds": round(dt, 1),
+        "cache_reused": args.reuse_cache,
+        "build_seconds": round(dt, 3),
         "layout": layout,
         "so_count": n_so,
     }
@@ -186,8 +193,8 @@ def main() -> int:
     sha = hashlib.sha256(open(bundle, "rb").read()).hexdigest()
     size_mb = os.path.getsize(bundle) / 1e6
     print(f"BUNDLE: {bundle} sha256={sha} size={size_mb:.1f}MB exts={n} "
-          f"so={n_so} build_s={dt:.0f} layout={layout} commit={commit[:10]}",
-          flush=True)
+          f"so={n_so} build_s={dt:.2f} cache_reused={args.reuse_cache} "
+          f"layout={layout} commit={commit[:10]}", flush=True)
     # Only remove an internally-created temporary directory. CI supplies a
     # fixed UT_EXT_WORKDIR which must survive until actions/cache's post-job
     # save step; deleting it here makes the cache path nonexistent.

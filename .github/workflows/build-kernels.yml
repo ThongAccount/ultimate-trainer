@@ -62,6 +62,7 @@ jobs:
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
 
       - name: torch extensions cache
+        id: torch_ext_cache
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ext_cache/torch_extensions
@@ -120,19 +121,24 @@ jobs:
             echo "CPATH=$HDR${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
           fi
 
-      - name: fetch previous bundle (skip nvcc on cache hit)
+      - name: fetch previous bundle (fallback on extension-cache miss)
+        if: steps.torch_ext_cache.outputs.cache-hit != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Download the previous release bundle into TORCH_EXTENSIONS_DIR.
-          # load_inline skips nvcc when the version hash matches, so a
-          # successful fetch turns the build into a plain dlopen.
+          # On an extension-cache miss, try the previous release before paying
+          # for a full build. Changed sources are still rebuilt through ccache.
           export TORCH_EXTENSIONS_DIR="$UT_EXT_WORKDIR/torch_extensions"
           python tools/fetch_prebuilt.py --repo-dir . --tag kernels-latest \
             || echo "PREBUILT: no previous bundle — full nvcc build"
 
       - name: build kernel bundle
-        run: python tools/build_kernel_bundle.py --out dist
+        run: |
+          if [ "${{ steps.torch_ext_cache.outputs.cache-hit }}" = "true" ]; then
+            python tools/build_kernel_bundle.py --out dist --reuse-cache
+          else
+            python tools/build_kernel_bundle.py --out dist
+          fi
 
       - name: ccache stats (post-build)
         run: ccache -s
