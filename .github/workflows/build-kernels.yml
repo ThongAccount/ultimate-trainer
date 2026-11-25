@@ -110,15 +110,6 @@ jobs:
             echo "CPATH=$HDR${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
           fi
 
-      - name: fetch previous bundle (skip nvcc on cache hit)
-        run: |
-          # Download the previous release bundle into TORCH_EXTENSIONS_DIR.
-          # load_inline skips nvcc when the version hash matches, so a
-          # successful fetch turns the build into a plain dlopen.
-          export TORCH_EXTENSIONS_DIR="$UT_EXT_WORKDIR/torch_extensions"
-          python tools/fetch_prebuilt.py --repo-dir . --tag kernels-latest \
-            || echo "PREBUILT: no previous bundle — full nvcc build"
-
       - name: build kernel bundle
         run: python tools/build_kernel_bundle.py --out dist
 
