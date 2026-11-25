@@ -47,9 +47,10 @@ jobs:
         with:
           python-version: "3.13"  # must equal the Colab VM python (3.13.16)
 
-      - name: deps (torch cu130 + build tools)
+      - name: deps (torch cu130 + build tools + ccache)
         run: |
           df -h /
+          apt-get update && apt-get install -y --no-install-recommends ccache
           # bare `pip` is NOT on PATH in container jobs — always `python -m pip`
           python -m pip install --upgrade pip
           python -m pip install --no-cache-dir torch==2.11.0+cu130 \
@@ -57,7 +58,30 @@ jobs:
             --extra-index-url https://pypi.org/simple
           python -m pip install --no-cache-dir ninja numpy setuptools "triton>=3.0.0"
           nvcc --version | tail -1
+          ccache --version | head -1
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
+
+      - name: ccache cache
+        uses: actions/cache@v4
+        with:
+          path: /root/.ccache
+          key: ccache-kernels-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
+          restore-keys: |
+            ccache-kernels-
+
+      - name: ccache env
+        run: |
+          echo "CCACHE_DIR=/root/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESS=true" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPRESSLEVEL=6" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+          # nvcc calls the host compiler via CUDAHOSTCXX; ccache wraps it.
+          # Device-side ptxas is not cacheable, but host-side gcc/g++ is.
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          echo "CUDAHOSTCXX=ccache g++" >> "$GITHUB_ENV"
+          ccache -s
 
       - name: expose CUDA headers to host c++ compiles (CPATH self-heal)
         run: |
@@ -71,6 +95,9 @@ jobs:
 
       - name: build kernel bundle
         run: python tools/build_kernel_bundle.py --out dist
+
+      - name: ccache stats (post-build)
+        run: ccache -s
 
       - name: publish release assets (tag from UT_KERNELS_TAG, stdlib python — no curl/gh in container)
         env:
