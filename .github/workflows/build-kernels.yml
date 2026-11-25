@@ -61,32 +61,27 @@ jobs:
           ccache --version | head -1
           python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
 
-      - name: ccache cache
+      - name: torch extensions cache
         uses: actions/cache@v4
         with:
-          path: /root/.ccache
-          key: ccache-kernels-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
+          path: /root/.cache/torch_extensions
+          key: torch-ext-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
           restore-keys: |
-            ccache-kernels-
+            torch-ext-
 
-      - name: ccache env
+      - name: ccache env (host-side C++ only)
         run: |
           echo "CCACHE_DIR=/root/.ccache" >> "$GITHUB_ENV"
           echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
           echo "CCACHE_COMPRESS=true" >> "$GITHUB_ENV"
           echo "CCACHE_COMPRESSLEVEL=6" >> "$GITHUB_ENV"
           echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
-          # Create ccache symlink directory for nvcc --compiler-bindir.
-          # nvcc's -ccbin breaks on multi-word compiler paths like "ccache gcc";
-          # the symlink dir lets nvcc find gcc/g++ -> ccache wrappers instead.
-          mkdir -p /usr/lib/ccache
-          ln -sf /usr/bin/ccache /usr/lib/ccache/gcc
-          ln -sf /usr/bin/ccache /usr/lib/ccache/g++
-          # Do NOT set CC/CXX to "ccache gcc" — nvcc's -ccbin breaks on
-          # multi-word compiler paths. Use --compiler-bindir via build script.
+          # CC=gcc (NOT "ccache gcc") so nvcc's -ccbin gets a single-word path.
+          # CXX=ccache g++ for the C++ wrapper files — these ARE cached.
+          # The main build-time win is the torch_extensions cache above:
+          # load_inline skips nvcc entirely when the version hash matches.
           echo "CC=gcc" >> "$GITHUB_ENV"
-          echo "CXX=g++" >> "$GITHUB_ENV"
-          echo "UT_NVCC_EXTRA_FLAGS=--compiler-bindir /usr/lib/ccache" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
           ccache -s
 
       - name: expose CUDA headers to host c++ compiles (CPATH self-heal)
