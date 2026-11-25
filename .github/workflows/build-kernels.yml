@@ -69,14 +69,6 @@ jobs:
           restore-keys: |
             torch-ext-
 
-      - name: ccache cache
-        uses: actions/cache@v4
-        with:
-          path: /root/.ccache
-          key: ccache-kernels-${{ hashFiles('kernels/**', 'build_kernels.py', 'tools/build_kernel_bundle.py') }}
-          restore-keys: |
-            ccache-kernels-
-
       - name: ccache env (host-side C++ only)
         run: |
           echo "CCACHE_DIR=/root/.ccache" >> "$GITHUB_ENV"
